@@ -1,0 +1,5 @@
+name: local
+tracking_backend: file
+tracking_uri: ./mlruns
+artifact_root: ./artifacts
+strict_mode: true

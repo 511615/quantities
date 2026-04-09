@@ -1,0 +1,3 @@
+default_feature_set: baseline_market_features
+enforce_available_time: true
+lineage_required: true

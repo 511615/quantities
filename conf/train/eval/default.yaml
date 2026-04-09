@@ -1,0 +1,5 @@
+primary_metric: loss
+metrics:
+  - loss
+  - mse
+aggregation: mean

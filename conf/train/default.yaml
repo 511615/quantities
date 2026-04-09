@@ -1,0 +1,5 @@
+seed: 7
+epochs: 1
+batch_size: 32
+runner: local
+deterministic: true

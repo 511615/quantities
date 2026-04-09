@@ -1,0 +1,16 @@
+defaults:
+  - data: market_default
+  - dataset: rolling_default
+  - model: baseline_linear
+  - objective: regression
+  - trainer: torch_default
+  - eval: default
+  - tracking: mlflow
+  - search: ray_tune
+  - runtime: default
+  - _self_
+
+experiment:
+  name: baseline_training
+  task_type: regression
+  stage: research

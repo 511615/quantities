@@ -1,0 +1,28 @@
+defaults:
+  - env: local
+  - data@data.sources: sources
+  - data@data.schema: schema
+  - data@data.feature_store: feature_store
+  - data@data.dataset_policies: dataset_policies
+  - model@model: registry
+  - train@train: default
+  - train@train.metrics: metrics
+  - train@train.callbacks: callbacks
+  - train@train.hpo: hpo
+  - backtest@backtest: vectorized
+  - backtest@backtest.event_driven: event_driven
+  - backtest@backtest.costs: costs
+  - backtest@backtest.portfolio_rules: portfolio_rules
+  - experiment@experiment.tracking: tracking
+  - experiment@experiment.lineage: lineage
+  - experiment@experiment.reproducibility: reproducibility
+  - agent@agent: research
+  - agent@agent.guardrails: guardrails
+  - agent@agent.tools: tools
+  - _self_
+
+project:
+  name: quant-platform
+  version: 0.1.0
+  artifact_root: artifacts
+  manifest_root: data/manifests

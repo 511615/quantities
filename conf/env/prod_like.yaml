@@ -1,0 +1,5 @@
+name: prod_like
+tracking_backend: mlflow
+tracking_uri: ./mlruns
+artifact_root: ./artifacts
+strict_mode: true

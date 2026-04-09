@@ -1,0 +1,20 @@
+split_policy: rolling_walk_forward
+feature_set_id: feature_set_v1
+label_id: forward_return_1d
+target_column: label
+features:
+  - ret_1d
+  - vol_5d
+  - turnover_5d
+group_key: symbol
+rolling:
+  train_size: 120
+  valid_size: 20
+  test_size: 20
+  step_size: 20
+  embargo: 1
+  purge_gap: 0
+  expanding_train: false
+batching:
+  batch_size: 256
+  shuffle: false

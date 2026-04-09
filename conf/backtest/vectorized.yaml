@@ -1,0 +1,4 @@
+engine: vectorized
+position_mode: sign
+allow_short: true
+initial_cash: 100000.0

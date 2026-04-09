@@ -1,0 +1,7 @@
+catalog:
+  market_ohlcv:
+    source: internal
+    venue: binance
+    frequency: 1h
+    schema_version: 1
+    path: data/silver/market_ohlcv.parquet

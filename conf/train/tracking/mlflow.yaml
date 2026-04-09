@@ -1,0 +1,6 @@
+enabled: true
+tracking_uri: ./mlruns
+experiment_name: quant-train
+artifact_root: ./artifacts
+candidate: true
+registry_ready: false

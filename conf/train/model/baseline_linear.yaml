@@ -1,0 +1,4 @@
+name: baseline_linear
+family: torch
+hidden_sizes: []
+dropout: 0.0

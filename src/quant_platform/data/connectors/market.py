@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from urllib.parse import urlencode
+from urllib.request import urlopen
+
+from quant_platform.data.contracts.ingestion import (
+    DataConnectorError,
+    ConnectorRegistration,
+    DataConnector,
+    IngestionCoverage,
+    IngestionRequest,
+    IngestionResult,
+)
+from quant_platform.data.contracts.market import NormalizedMarketBar
+
+
+class BinanceSpotKlinesConnector(DataConnector):
+    BASE_URL = "https://api.binance.com"
+
+    def __init__(self, base_url: str | None = None) -> None:
+        self.base_url = (base_url or self.BASE_URL).rstrip("/")
+        self.registration = ConnectorRegistration(
+            data_domain="market",
+            vendor="binance",
+            display_name="Binance Spot REST klines",
+            capabilities=["historical_klines", "incremental_fetch"],
+            status="active",
+        )
+
+    def ingest(self, request: IngestionRequest) -> IngestionResult:
+        symbol = self._require_identifier(request)
+        interval = request.frequency or "1h"
+        rows = self._fetch_klines(
+            symbol=symbol,
+            interval=interval,
+            start_time=request.time_range.start,
+            end_time=request.time_range.end,
+        )
+        return IngestionResult(
+            request_id=request.request_id,
+            data_domain=request.data_domain,
+            vendor=request.vendor,
+            storage_uri="",
+            normalized_uri="",
+            coverage=IngestionCoverage(
+                start_time=(rows[0].event_time if rows else None),
+                end_time=(rows[-1].event_time if rows else None),
+                complete=bool(rows),
+            ),
+            metadata={
+                "symbol": symbol,
+                "exchange": request.options.get("exchange", "binance"),
+                "frequency": interval,
+                "rows": [row.model_dump(mode="json") for row in rows],
+            },
+        )
+
+    def _fetch_klines(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> list[NormalizedMarketBar]:
+        start_ms = int(start_time.timestamp() * 1000)
+        end_ms = int(end_time.timestamp() * 1000)
+        cursor = start_ms
+        items: list[NormalizedMarketBar] = []
+        while cursor < end_ms:
+            query = urlencode(
+                {
+                    "symbol": symbol.upper(),
+                    "interval": interval,
+                    "startTime": cursor,
+                    "endTime": end_ms,
+                    "limit": 1000,
+                }
+            )
+            payload = self._request_json(f"{self.base_url}/api/v3/klines?{query}")
+            if not isinstance(payload, list):
+                raise DataConnectorError(
+                    data_domain="market",
+                    vendor="binance",
+                    identifier=symbol.upper(),
+                    message="Binance klines response is not a list.",
+                    retryable=True,
+                    code="invalid_payload",
+                )
+            if not payload:
+                break
+            batch = [self._row_to_bar(symbol.upper(), row) for row in payload if isinstance(row, list)]
+            items.extend(batch)
+            last_open_time = int(payload[-1][0])
+            if last_open_time < cursor:
+                raise DataConnectorError(
+                    data_domain="market",
+                    vendor="binance",
+                    identifier=symbol.upper(),
+                    message="Binance klines cursor did not advance.",
+                    retryable=True,
+                    code="cursor_stalled",
+                )
+            cursor = last_open_time + 1
+            if len(payload) < 1000:
+                break
+        items = [row for row in items if start_time <= row.event_time <= end_time]
+        items.sort(key=lambda row: row.event_time)
+        return items
+
+    def _request_json(self, url: str) -> object:
+        with urlopen(url, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _row_to_bar(self, symbol: str, row: list[object]) -> NormalizedMarketBar:
+        event_time = datetime.fromtimestamp(int(row[0]) / 1000, tz=UTC)
+        close_time = datetime.fromtimestamp(int(row[6]) / 1000, tz=UTC)
+        return NormalizedMarketBar(
+            event_time=event_time,
+            available_time=max(event_time, close_time),
+            symbol=symbol,
+            venue="binance",
+            open=float(row[1]),
+            high=float(row[2]),
+            low=float(row[3]),
+            close=float(row[4]),
+            volume=float(row[5]),
+        )
+
+    @staticmethod
+    def _require_identifier(request: IngestionRequest) -> str:
+        if not request.identifiers:
+            raise DataConnectorError(
+                data_domain="market",
+                vendor="binance",
+                message="Binance connector requires at least one symbol identifier.",
+                retryable=False,
+                code="identifier_required",
+            )
+        return request.identifiers[0]
+
+
+class InternalSmokeMarketConnector(DataConnector):
+    def __init__(self) -> None:
+        self.registration = ConnectorRegistration(
+            data_domain="market",
+            vendor="internal_smoke",
+            display_name="Internal smoke market bars",
+            capabilities=["deterministic_smoke_data"],
+            status="active",
+        )
+
+    def ingest(self, request: IngestionRequest) -> IngestionResult:
+        symbol = request.identifiers[0] if request.identifiers else "BTCUSDT"
+        rows = self._build_rows(symbol.upper(), request.time_range.start, request.time_range.end)
+        return IngestionResult(
+            request_id=request.request_id,
+            data_domain=request.data_domain,
+            vendor=request.vendor,
+            storage_uri="",
+            normalized_uri="",
+            coverage=IngestionCoverage(
+                start_time=(rows[0].event_time if rows else None),
+                end_time=(rows[-1].event_time if rows else None),
+                complete=bool(rows),
+            ),
+            metadata={
+                "symbol": symbol.upper(),
+                "exchange": request.options.get("exchange", "binance"),
+                "frequency": request.frequency or "1h",
+                "rows": [row.model_dump(mode="json") for row in rows],
+            },
+        )
+
+    def _build_rows(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> list[NormalizedMarketBar]:
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        factor = 1.0 + (sum(ord(ch) for ch in symbol) % 7) / 20
+        rows: list[NormalizedMarketBar] = []
+        previous_close = 100.0 * factor
+        for index in range(120):
+            event_time = base.replace(day=base.day + index // 24, hour=index % 24)
+            if event_time < start_time or event_time > end_time:
+                continue
+            wave = ((index % 9) - 4) * 0.35
+            regime = 0.2 if (index // 24) % 2 == 0 else -0.1
+            close = max(50.0, previous_close + wave + regime)
+            open_price = previous_close
+            rows.append(
+                NormalizedMarketBar(
+                    event_time=event_time,
+                    available_time=event_time,
+                    symbol=symbol,
+                    venue="binance",
+                    open=open_price,
+                    high=max(open_price, close) + 0.5,
+                    low=min(open_price, close) - 0.5,
+                    close=close,
+                    volume=(10.0 + (index % 7) * 1.3) * factor,
+                )
+            )
+            previous_close = close
+        return rows

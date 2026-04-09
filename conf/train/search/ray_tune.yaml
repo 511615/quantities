@@ -1,0 +1,11 @@
+enabled: false
+num_samples: 8
+metric: loss
+mode: min
+resources:
+  cpu: 1
+  gpu: 0
+space:
+  trainer.optimizer.lr:
+    type: choice
+    values: [0.001, 0.0005, 0.0001]

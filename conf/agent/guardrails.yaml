@@ -1,0 +1,2 @@
+allow_core_state_mutation: false
+allow_raw_dataframe_inputs: false

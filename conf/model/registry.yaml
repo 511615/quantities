@@ -1,0 +1,154 @@
+default_model: mean_baseline
+models:
+  mean_baseline:
+    family: baseline
+    advanced_kind: baseline
+    entrypoint: quant_platform.models.baselines.mean_baseline.MeanBaselineModel
+    input_adapter_key: tabular_passthrough
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities: []
+    default_hyperparams: {}
+    config_schema_version: "1"
+    aliases: []
+    benchmark_eligible: true
+    default_eligible: true
+    enabled: true
+  elastic_net:
+    family: linear
+    advanced_kind: baseline
+    entrypoint: quant_platform.models.baselines.elastic_net.ElasticNetModel
+    input_adapter_key: tabular_passthrough
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities: []
+    default_hyperparams:
+      alpha: 0.001
+      l1_ratio: 0.5
+    config_schema_version: "1"
+    aliases: []
+    benchmark_eligible: true
+    default_eligible: true
+    enabled: true
+  lightgbm:
+    family: tree
+    advanced_kind: baseline
+    entrypoint: quant_platform.models.baselines.lightgbm.LightGBMModel
+    input_adapter_key: tabular_passthrough
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities: []
+    default_hyperparams: {}
+    config_schema_version: "1"
+    aliases: []
+    benchmark_eligible: true
+    default_eligible: true
+    enabled: true
+  mlp:
+    family: deep
+    advanced_kind: baseline
+    entrypoint: quant_platform.models.baselines.mlp.MLPModel
+    input_adapter_key: tabular_passthrough
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities: []
+    default_hyperparams: {}
+    config_schema_version: "1"
+    aliases: []
+    benchmark_eligible: true
+    default_eligible: true
+    enabled: true
+  gru:
+    family: sequence
+    advanced_kind: baseline
+    entrypoint: quant_platform.models.baselines.gru.GRUSequenceModel
+    input_adapter_key: sequence_market
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities:
+      - sequence_input
+    default_hyperparams:
+      lookback: 2
+    config_schema_version: "1"
+    aliases: []
+    benchmark_eligible: true
+    default_eligible: true
+    enabled: true
+  transformer_reference:
+    family: deep
+    advanced_kind: transformer
+    entrypoint: quant_platform.models.advanced.transformer_sequence.TransformerSequenceModel
+    input_adapter_key: sequence_market
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities:
+      - sequence_input
+    default_hyperparams:
+      lookback: 3
+    config_schema_version: "1"
+    aliases:
+      - transformer
+    benchmark_eligible: true
+    default_eligible: false
+    enabled: true
+  temporal_fusion_reference:
+    family: deep
+    advanced_kind: temporal_fusion
+    entrypoint: quant_platform.models.advanced.temporal_fusion.TemporalFusionModel
+    input_adapter_key: temporal_fusion
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities:
+      - sequence_input
+    default_hyperparams:
+      lookback: 3
+    config_schema_version: "1"
+    aliases:
+      - tft_reference
+    benchmark_eligible: true
+    default_eligible: false
+    enabled: true
+  patch_mixer_reference:
+    family: deep
+    advanced_kind: patch_mixer
+    entrypoint: quant_platform.models.advanced.patch_mixer.PatchMixerModel
+    input_adapter_key: patch_sequence
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities:
+      - sequence_input
+      - moe_router_ready
+    default_hyperparams:
+      lookback: 4
+      patch_size: 2
+    config_schema_version: "1"
+    aliases:
+      - mixer_reference
+    benchmark_eligible: true
+    default_eligible: false
+    enabled: true
+  multimodal_reference:
+    family: deep
+    advanced_kind: multimodal
+    entrypoint: quant_platform.models.advanced.multimodal_fusion.MultimodalFusionModel
+    input_adapter_key: market_text_aligned
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities:
+      - sequence_input
+      - aligned_text
+      - allow_missing_text
+      - moe_router_ready
+    default_hyperparams:
+      lookback: 3
+      text_feature_prefixes:
+        - text_
+        - sentiment_
+        - news_
+      text_weight: 0.5
+    config_schema_version: "1"
+    aliases:
+      - multimodal
+    benchmark_eligible: true
+    default_eligible: false
+    enabled: true

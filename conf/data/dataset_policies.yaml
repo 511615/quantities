@@ -1,0 +1,6 @@
+allowed_splitters:
+  - time_series
+  - walk_forward
+  - purged_kfold
+forbid_random_split: true
+default_label_horizon: 1

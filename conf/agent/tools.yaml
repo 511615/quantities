@@ -1,0 +1,4 @@
+allowed_tools:
+  - experiment.read_manifest
+  - backtest.read_report
+  - training.read_metrics

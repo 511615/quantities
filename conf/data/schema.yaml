@@ -1,0 +1,11 @@
+required_columns:
+  - event_time
+  - available_time
+  - symbol
+  - venue
+  - open
+  - high
+  - low
+  - close
+  - volume
+timestamp_timezone: UTC

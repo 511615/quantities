@@ -1,0 +1,4 @@
+name: ranking
+loss: listwise_mse_stub
+prediction_transform: identity
+group_key: symbol

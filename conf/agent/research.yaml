@@ -1,0 +1,4 @@
+enabled: true
+task_types:
+  - summarize_experiment
+  - inspect_backtest

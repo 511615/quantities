@@ -1,0 +1,13 @@
+name: torch_trainer
+max_epochs: 10
+batch_size: 256
+amp: false
+early_stopping:
+  enabled: true
+  patience: 3
+optimizer:
+  name: adam
+  lr: 0.001
+  weight_decay: 0.0
+scheduler:
+  name: none
