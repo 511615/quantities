@@ -94,6 +94,7 @@ def build_backtest_summary_row(
     research_result: BacktestResult,
     simulation_result_uri: str,
     simulation_result: BacktestResult,
+    protocol_metadata: dict[str, object] | None = None,
 ) -> tuple[BacktestSummaryRow, list[str]]:
     research_metrics = load_protocol_metrics(store, research_result)
     simulation_metrics = load_protocol_metrics(store, simulation_result)
@@ -128,6 +129,7 @@ def build_backtest_summary_row(
             divergence_metrics=divergence_metrics,
             scenario_metrics=scenario_metrics,
             passed_consistency_checks=not warnings,
+            protocol_metadata=dict(protocol_metadata or {}),
         ),
         warnings,
     )

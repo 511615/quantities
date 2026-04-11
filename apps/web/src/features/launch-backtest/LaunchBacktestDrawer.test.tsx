@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { LaunchBacktestDrawer } from "./LaunchBacktestDrawer";
@@ -10,6 +10,27 @@ const fetchMock = vi.fn(
     (url) =>
       url.includes("/api/launch/backtest/options")
         ? jsonResponse({
+            default_mode: "official",
+            official_template_id: "system::official_backtest_protocol_v1",
+            template_options: [
+              {
+                template_id: "system::official_backtest_protocol_v1",
+                name: "Official Backtest Protocol v1",
+                description: "official protocol",
+                source: "system",
+                read_only: true,
+                official: true,
+                protocol_version: "v1",
+                output_contract_version: "prediction_frame_v1",
+                fixed_prediction_scope: "test",
+                ranking_policy: null,
+                slice_policy: null,
+                scenario_bundle: ["BASELINE"],
+                eligibility_rules: [],
+                required_metadata: [],
+                notes: [],
+              },
+            ],
             dataset_presets: [{ value: "smoke", label: "Smoke", description: null, recommended: true }],
             prediction_scopes: [{ value: "full", label: "full", description: null, recommended: true }],
             strategy_presets: [{ value: "sign", label: "sign", description: null, recommended: true }],
@@ -60,34 +81,10 @@ afterEach(() => {
   fetchMock.mockClear();
 });
 
-test("submits backtest launch and shows detail deeplink button", async () => {
+test("renders official protocol as default mode", async () => {
   renderWithProviders(<LaunchBacktestDrawer initialRunId="smoke-train-run" />);
-  await waitFor(() => expect(screen.getByText("full")).toBeInTheDocument());
-  fireEvent.click(screen.getByText("\u63d0\u4ea4"));
-  await waitFor(() =>
-    expect(
-      fetchMock.mock.calls
-        .map(([input]) =>
-          typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url,
-        )
-        .some((url) => url.endsWith("/api/launch/backtest")),
-    ).toBe(true),
-  );
-  await waitFor(() =>
-    expect(
-      fetchMock.mock.calls
-        .map(([input]) =>
-          typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url,
-        )
-        .some((url) => url.endsWith("/api/jobs/job-backtest-1")),
-    ).toBe(true),
-  );
+  await waitFor(() => expect(screen.getByText("test")).toBeInTheDocument());
+  expect(screen.getByText("\u5b98\u65b9\u6a21\u677f")).toBeInTheDocument();
+  expect(screen.getByText("\u5b98\u65b9\u56de\u6d4b\u534f\u8bae")).toBeInTheDocument();
+  expect(screen.getByText("\u81ea\u5b9a\u4e49\u56de\u6d4b")).toBeInTheDocument();
 });

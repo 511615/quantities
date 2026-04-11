@@ -57,6 +57,7 @@ class BacktestSummaryRow(FrozenModel):
     divergence_metrics: dict[str, float] = Field(default_factory=dict)
     scenario_metrics: dict[str, float] = Field(default_factory=dict)
     passed_consistency_checks: bool = True
+    protocol_metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class BacktestSummaryArtifact(FrozenModel):

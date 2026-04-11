@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 
-import { useBenchmarks } from "../shared/api/hooks";
+import { useBacktestOptions, useBenchmarks } from "../shared/api/hooks";
 import { formatDate, formatNumber } from "../shared/lib/format";
 import { I18N } from "../shared/lib/i18n";
 import { GlossaryHint } from "../shared/ui/GlossaryHint";
@@ -9,9 +9,52 @@ import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 
 export function BenchmarksPage() {
   const query = useBenchmarks();
+  const optionsQuery = useBacktestOptions();
+  const officialTemplate = optionsQuery.data?.template_options?.find(
+    (item) => item.template_id === optionsQuery.data?.official_template_id,
+  );
 
   return (
     <div className="page-stack">
+      {officialTemplate ? (
+        <section className="panel">
+          <PanelHeader
+            eyebrow={"Official Protocol"}
+            title={officialTemplate.name}
+            description={officialTemplate.description ?? "\u5e73\u53f0\u7edf\u4e00\u56de\u6d4b\u6a21\u677f\u3002"}
+            action={
+              <Link
+                className="link-button"
+                to={`/comparison?official_only=1&template_id=${encodeURIComponent(officialTemplate.template_id)}`}
+              >
+                {"\u67e5\u770b\u5bf9\u6bd4"}
+              </Link>
+            }
+          />
+          <div className="metric-grid detail-metric-grid">
+            <div className="metric-tile">
+              <span>{"\u6a21\u677f ID"}</span>
+              <strong>{officialTemplate.template_id}</strong>
+            </div>
+            <div className="metric-tile">
+              <span>{"Protocol"}</span>
+              <strong>{officialTemplate.protocol_version ?? "--"}</strong>
+            </div>
+            <div className="metric-tile">
+              <span>{"\u72b6\u6001"}</span>
+              <strong>{"\u4e0d\u53ef\u5220\u9664"}</strong>
+            </div>
+          </div>
+          <div className="stack-list">
+            {officialTemplate.scenario_bundle.slice(0, 4).map((item) => (
+              <div className="stack-item" key={item}>
+                <strong>{item}</strong>
+                <span>{"\u5b98\u65b9 stress bundle \u56fa\u5b9a\u7ec4\u6210\u90e8\u5206"}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
       <section className="panel">
         <PanelHeader
           eyebrow={I18N.nav.benchmarks}

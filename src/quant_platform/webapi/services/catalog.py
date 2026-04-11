@@ -109,6 +109,10 @@ from quant_platform.webapi.schemas.views import (
     WarningSummaryView,
     WorkbenchOverviewView,
 )
+from quant_platform.webapi.services.backtest_protocol import (
+    compute_protocol_result,
+    custom_backtest_template,
+)
 
 
 class ResearchWorkbenchService:
@@ -438,6 +442,10 @@ class ResearchWorkbenchService:
                 # Report materialization success is the primary lifecycle status.
                 # Consistency checks remain visible via passed_consistency_checks and warnings.
                 status="success",
+                template_id=self._protocol_template_id(row),
+                official=self._protocol_official(row),
+                protocol_version=self._protocol_version(row),
+                gate_status=self._protocol_gate_status(row),
                 passed_consistency_checks=(
                     bool(row.get("passed_consistency_checks"))
                     if isinstance(row.get("passed_consistency_checks"), bool)
@@ -479,10 +487,15 @@ class ResearchWorkbenchService:
             if row.get("backtest_id") != backtest_id:
                 continue
             artifacts = self._backtest_artifacts(row)
+            protocol = self._protocol_result_from_row(row)
             return BacktestReportView(
                 backtest_id=backtest_id,
                 model_name=self._str(row.get("model_name")),
                 run_id=self._str(row.get("run_id")),
+                template_id=self._protocol_template_id(row),
+                official=self._protocol_official(row),
+                protocol_version=self._protocol_version(row),
+                protocol=protocol,
                 passed_consistency_checks=(
                     bool(row.get("passed_consistency_checks"))
                     if isinstance(row.get("passed_consistency_checks"), bool)
@@ -553,6 +566,39 @@ class ResearchWorkbenchService:
                     train_mae=self._float(detail.metrics.get("mae")),
                 )
             )
+            backtest_row = self._preferred_backtest_row_for_run(
+                run_id,
+                template_id=request.template_id,
+                official_only=request.official_only,
+            )
+            if backtest_row is not None:
+                simulation_metrics = (
+                    backtest_row.get("simulation_metrics")
+                    if isinstance(backtest_row.get("simulation_metrics"), dict)
+                    else {}
+                )
+                rows.append(
+                    ComparisonRowView(
+                        row_id=f"backtest:{backtest_row.get('backtest_id')}",
+                        source_type="backtest",
+                        label=self._str(backtest_row.get("backtest_id")) or run_id,
+                        model_name=detail.model_name,
+                        dataset_id=detail.dataset_id,
+                        backend=detail.backend,
+                        status="success",
+                        template_id=self._protocol_template_id(backtest_row),
+                        official=self._protocol_official(backtest_row),
+                        protocol_version=self._protocol_version(backtest_row),
+                        gate_status=self._protocol_gate_status(backtest_row),
+                        train_mae=self._float(detail.metrics.get("mae")),
+                        annual_return=self._float(simulation_metrics.get("annual_return")),
+                        max_drawdown=self._float(simulation_metrics.get("max_drawdown")),
+                        turnover_total=self._float(simulation_metrics.get("turnover_total")),
+                        implementation_shortfall=self._float(
+                            simulation_metrics.get("implementation_shortfall")
+                        ),
+                    )
+                )
         return ModelComparisonView(rows=rows)
 
     def preview_artifact(self, uri: str) -> ArtifactPreviewResponse:
@@ -3242,6 +3288,11 @@ class ResearchWorkbenchService:
                 "dataset_id": self._str(summary.get("dataset_id")),
                 "prediction_scope": self._str(summary.get("prediction_scope")),
                 "comparison_warnings": comparison_warnings,
+                "protocol_metadata": (
+                    dict(row.get("protocol_metadata"))
+                    if isinstance(row.get("protocol_metadata"), dict)
+                    else {}
+                ),
             }
         return rows_by_id, self._path_mtime(summary_path)
 
@@ -3285,6 +3336,8 @@ class ResearchWorkbenchService:
             row["prediction_scope"] = self._str(row.get("prediction_scope")) or self._str(
                 job_result.get("prediction_scope")
             )
+            if not isinstance(row.get("protocol_metadata"), dict):
+                row["protocol_metadata"] = self._protocol_metadata_from_job_result(job_result)
             row["updated_at"] = updated_at or row.get("updated_at")
             simulation_uri = row.get("simulation_result_uri")
             if isinstance(simulation_uri, str) and simulation_uri:
@@ -3366,10 +3419,132 @@ class ResearchWorkbenchService:
                 "dataset_id": dataset_id,
                 "prediction_scope": prediction_scope,
                 "comparison_warnings": row_warnings,
+                "protocol_metadata": row.get("protocol_metadata", {}),
                 "updated_at": updated_at or self._path_mtime(research_path),
             }
         )
         return row
+
+    def _preferred_backtest_row_for_run(
+        self,
+        run_id: str,
+        *,
+        template_id: str | None,
+        official_only: bool,
+    ) -> dict[str, Any] | None:
+        candidates = [
+            row
+            for row in self._backtest_history_rows()
+            if self._str(row.get("run_id")) == run_id
+        ]
+        if template_id:
+            candidates = [
+                row for row in candidates if self._protocol_template_id(row) == template_id
+            ]
+        if official_only:
+            candidates = [row for row in candidates if self._protocol_official(row)]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda row: (
+                row.get("updated_at")
+                if isinstance(row.get("updated_at"), datetime)
+                else datetime.fromtimestamp(0, tz=UTC)
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    def _protocol_result_from_row(self, row: dict[str, Any]):
+        simulation_metrics = (
+            row.get("simulation_metrics")
+            if isinstance(row.get("simulation_metrics"), dict)
+            else {}
+        )
+        divergence_metrics = (
+            row.get("divergence_metrics")
+            if isinstance(row.get("divergence_metrics"), dict)
+            else {}
+        )
+        scenario_metrics = (
+            row.get("scenario_metrics")
+            if isinstance(row.get("scenario_metrics"), dict)
+            else {}
+        )
+        comparison_warnings = [
+            str(item)
+            for item in row.get("comparison_warnings", [])
+            if isinstance(item, str)
+        ]
+        return compute_protocol_result(
+            protocol_metadata=(
+                row.get("protocol_metadata")
+                if isinstance(row.get("protocol_metadata"), dict)
+                else None
+            ),
+            simulation_metrics={
+                str(key): float(value)
+                for key, value in simulation_metrics.items()
+                if isinstance(value, (int, float))
+            },
+            divergence_metrics={
+                str(key): float(value)
+                for key, value in divergence_metrics.items()
+                if isinstance(value, (int, float))
+            },
+            scenario_metrics={
+                str(key): float(value)
+                for key, value in scenario_metrics.items()
+                if isinstance(value, (int, float))
+            },
+            comparison_warnings=comparison_warnings,
+            passed_consistency_checks=(
+                bool(row.get("passed_consistency_checks"))
+                if isinstance(row.get("passed_consistency_checks"), bool)
+                else None
+            ),
+        )
+
+    def _protocol_metadata_from_job_result(self, job_result: dict[str, Any]) -> dict[str, Any]:
+        template = custom_backtest_template()
+        template_id = self._str(job_result.get("template_id")) or template.template_id
+        official = bool(job_result.get("official"))
+        protocol_version = (
+            self._str(job_result.get("protocol_version"))
+            or (template.protocol_version if not official else None)
+        )
+        template_name = (
+            self._str(job_result.get("template_name"))
+            or (template.name if template_id == template.template_id else "Official Backtest Protocol v1")
+        )
+        return {
+            "template_id": template_id,
+            "template_name": template_name,
+            "official": official,
+            "protocol_version": protocol_version,
+        }
+
+    def _protocol_template_id(self, row: dict[str, Any]) -> str | None:
+        protocol_metadata = row.get("protocol_metadata")
+        if not isinstance(protocol_metadata, dict):
+            return None
+        return self._str(protocol_metadata.get("template_id"))
+
+    def _protocol_official(self, row: dict[str, Any]) -> bool:
+        protocol_metadata = row.get("protocol_metadata")
+        if not isinstance(protocol_metadata, dict):
+            return False
+        return bool(protocol_metadata.get("official"))
+
+    def _protocol_version(self, row: dict[str, Any]) -> str | None:
+        protocol_metadata = row.get("protocol_metadata")
+        if not isinstance(protocol_metadata, dict):
+            return None
+        return self._str(protocol_metadata.get("protocol_version"))
+
+    def _protocol_gate_status(self, row: dict[str, Any]) -> str | None:
+        protocol = self._protocol_result_from_row(row)
+        return protocol.gate_status if protocol is not None else None
 
     def _match_simulation_result_uri(
         self,

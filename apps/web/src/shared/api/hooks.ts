@@ -156,17 +156,29 @@ export function useDatasetOhlcv(
 }
 
 export function useComparison(
-  runIds: string[],
-  benchmarkSelections: Array<{ benchmark_name: string; model_names: string[] }>,
+  query: {
+    runIds: string[];
+    benchmarkSelections: Array<{ benchmark_name: string; model_names: string[] }>;
+    templateId?: string;
+    officialOnly?: boolean;
+  },
 ) {
   return useQuery({
-    queryKey: ["comparison", runIds, benchmarkSelections],
+    queryKey: [
+      "comparison",
+      query.runIds,
+      query.benchmarkSelections,
+      query.templateId ?? null,
+      query.officialOnly ?? false,
+    ],
     queryFn: () =>
       api.compare({
-        run_ids: runIds,
-        benchmark_selections: benchmarkSelections,
+        run_ids: query.runIds,
+        benchmark_selections: query.benchmarkSelections,
+        template_id: query.templateId,
+        official_only: query.officialOnly,
       }),
-    enabled: runIds.length > 0 || benchmarkSelections.length > 0,
+    enabled: query.runIds.length > 0 || query.benchmarkSelections.length > 0,
   });
 }
 

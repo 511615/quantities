@@ -212,6 +212,7 @@ class BacktestWorkflowRequest(FrozenModel):
     benchmark_name: str | None = None
     data_source: str | None = None
     market_bars: list[NormalizedMarketBar] = Field(default_factory=list)
+    summary_row_metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class ReviewWorkflowRequest(FrozenModel):

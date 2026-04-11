@@ -115,6 +115,50 @@ export type BenchmarkRowView = {
   artifact_uri: string | null;
 };
 
+export type BacktestTemplateView = {
+  template_id: string;
+  name: string;
+  description: string | null;
+  source: string;
+  read_only: boolean;
+  official: boolean;
+  protocol_version: string | null;
+  output_contract_version: string | null;
+  fixed_prediction_scope: string | null;
+  ranking_policy: string | null;
+  slice_policy: string | null;
+  scenario_bundle: string[];
+  eligibility_rules: string[];
+  required_metadata: string[];
+  notes: string[];
+};
+
+export type GateResultView = {
+  key: string;
+  label: string;
+  passed: boolean | null;
+  severity: string;
+  detail: string | null;
+};
+
+export type RankComponentView = {
+  key: string;
+  label: string;
+  value: number | null;
+  detail: string | null;
+};
+
+export type BacktestProtocolResultView = {
+  template: BacktestTemplateView | null;
+  gate_status: string | null;
+  gate_results: GateResultView[];
+  rank_components: RankComponentView[];
+  slice_id: string | null;
+  slice_coverage: string[];
+  lookback_bucket: string | null;
+  metadata_summary: Record<string, string | null>;
+};
+
 export type BenchmarkListItemView = {
   benchmark_name: string;
   dataset_id: string;
@@ -147,6 +191,10 @@ export type BacktestListItemView = {
   run_id: string | null;
   model_name: string | null;
   status: string;
+  template_id?: string | null;
+  official?: boolean;
+  protocol_version?: string | null;
+  gate_status?: string | null;
   passed_consistency_checks: boolean | null;
   annual_return: number | null;
   max_drawdown: number | null;
@@ -189,6 +237,10 @@ export type BacktestReportView = {
   backtest_id: string;
   model_name: string | null;
   run_id: string | null;
+  template_id?: string | null;
+  official?: boolean;
+  protocol_version?: string | null;
+  protocol?: BacktestProtocolResultView | null;
   passed_consistency_checks: boolean | null;
   comparison_warnings: string[];
   divergence_metrics: Record<string, number>;
@@ -213,6 +265,13 @@ export type BenchmarkSelection = {
   model_names: string[];
 };
 
+export type ComparisonQuery = {
+  run_ids: string[];
+  benchmark_selections: BenchmarkSelection[];
+  template_id?: string;
+  official_only?: boolean;
+};
+
 export type ComparisonRowView = {
   row_id: string;
   source_type: string;
@@ -221,6 +280,10 @@ export type ComparisonRowView = {
   dataset_id: string | null;
   backend: string | null;
   status: string | null;
+  template_id?: string | null;
+  official?: boolean;
+  protocol_version?: string | null;
+  gate_status?: string | null;
   train_mae: number | null;
   mean_valid_mae: number | null;
   mean_test_mae: number | null;
@@ -314,6 +377,8 @@ export type LaunchTrainRequest = {
 
 export type LaunchBacktestRequest = {
   run_id: string;
+  mode?: "official" | "custom";
+  template_id?: string;
   dataset_id?: string;
   dataset_preset?: "smoke" | "real_benchmark";
   prediction_scope: "full" | "test";
@@ -348,6 +413,9 @@ export type TrainLaunchOptionsView = {
 };
 
 export type BacktestLaunchOptionsView = {
+  default_mode?: "official" | "custom";
+  official_template_id?: string | null;
+  template_options?: BacktestTemplateView[];
   dataset_presets: PresetOptionView[];
   prediction_scopes: PresetOptionView[];
   strategy_presets: PresetOptionView[];

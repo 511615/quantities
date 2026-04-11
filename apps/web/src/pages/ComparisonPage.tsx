@@ -24,11 +24,18 @@ export function ComparisonPage() {
     () => searchParams.get("runs")?.split(",").filter(Boolean) ?? [],
     [searchParams],
   );
+  const templateId = searchParams.get("template_id") ?? undefined;
+  const officialOnly = searchParams.get("official_only") === "1";
   const benchmarkSelections = useMemo(() => {
     const benchmarkName = searchParams.get("benchmark");
     return benchmarkName ? [{ benchmark_name: benchmarkName, model_names: [] }] : [];
   }, [searchParams]);
-  const query = useComparison(runIds, benchmarkSelections);
+  const query = useComparison({
+    runIds,
+    benchmarkSelections,
+    templateId,
+    officialOnly,
+  });
 
   if (query.isLoading) {
     return <LoadingState label={I18N.state.loading} />;
@@ -41,7 +48,9 @@ export function ComparisonPage() {
       <EmptyState
         title={I18N.state.empty}
         body={
-          "\u8bf7\u5148\u4ece\u8fd0\u884c\u9875\u52fe\u9009\u591a\u4e2a run \u8fdb\u5165\u5bf9\u6bd4\uff0c\u6216\u4f20\u5165 benchmark \u53c2\u6570\u3002"
+          officialOnly
+            ? "\u5f53\u524d\u5df2\u5207\u6362\u5230\u5b98\u65b9\u6a21\u677f\u8fc7\u6ee4\u89c6\u56fe\u3002\u8bf7\u4ece\u56de\u6d4b\u8be6\u60c5\u9875\u7684\u201c\u67e5\u770b\u540c\u6a21\u677f\u5bf9\u6bd4\u201d\u8fdb\u5165\uff0c\u6216\u5728 URL \u4e2d\u9644\u5e26 runs \u53c2\u6570\u3002"
+            : "\u8bf7\u5148\u4ece\u8fd0\u884c\u9875\u52fe\u9009\u591a\u4e2a run \u8fdb\u5165\u5bf9\u6bd4\uff0c\u6216\u4f20\u5165 benchmark \u53c2\u6570\u3002"
         }
       />
     );
@@ -55,7 +64,11 @@ export function ComparisonPage() {
         <PanelHeader
           eyebrow={I18N.nav.comparison}
           title={"\u6a21\u578b\u6027\u80fd\u5bf9\u6bd4"}
-          description={"\u7edf\u4e00\u5c55\u793a\u8bad\u7ec3\u6307\u6807\u3001benchmark \u8868\u73b0\u548c\u56de\u6d4b\u7ed3\u679c\u3002"}
+          description={
+            officialOnly
+              ? "\u5f53\u524d\u4ec5\u5c55\u793a\u5b98\u65b9\u6a21\u677f\u4e0b\u7684\u56de\u6d4b\u7ed3\u679c\uff0c\u4fbf\u4e8e\u5728\u76f8\u540c\u6807\u51c6\u4e0b\u6bd4\u8f83\u3002"
+              : "\u7edf\u4e00\u5c55\u793a\u8bad\u7ec3\u6307\u6807\u3001benchmark \u8868\u73b0\u548c\u56de\u6d4b\u7ed3\u679c\u3002"
+          }
         />
       </section>
 
@@ -83,6 +96,8 @@ export function ComparisonPage() {
               <th>{"\u6807\u7b7e"}</th>
               <th>{"\u6765\u6e90"}</th>
               <th>{I18N.nav.runs}</th>
+              <th>{"\u6a21\u677f"}</th>
+              <th>{"\u95e8\u7981"}</th>
               <th>{"\u8bad\u7ec3 MAE"}</th>
               <th>{"\u9a8c\u8bc1 MAE"}</th>
               <th>{"\u6d4b\u8bd5 MAE"}</th>
@@ -98,6 +113,8 @@ export function ComparisonPage() {
                 <td>{row.label}</td>
                 <td>{formatSourceTypeLabel(row.source_type)}</td>
                 <td>{row.model_name}</td>
+                <td>{row.template_id ?? (row.official ? "official" : "--")}</td>
+                <td>{row.gate_status ?? "--"}</td>
                 <td>{formatNumber(row.train_mae)}</td>
                 <td>{formatNumber(row.mean_valid_mae)}</td>
                 <td>{formatNumber(row.mean_test_mae)}</td>

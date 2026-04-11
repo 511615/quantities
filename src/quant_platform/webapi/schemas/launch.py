@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from quant_platform.webapi.schemas.views import BacktestTemplateView
+
 
 class LaunchApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -24,6 +26,8 @@ class LaunchTrainRequest(LaunchApiModel):
 
 class LaunchBacktestRequest(LaunchApiModel):
     run_id: str
+    mode: Literal["official", "custom"] = "custom"
+    template_id: str | None = None
     dataset_preset: Literal["smoke", "real_benchmark"] = "smoke"
     dataset_id: str | None = None
     prediction_scope: Literal["full", "test"] = "full"
@@ -58,6 +62,9 @@ class TrainLaunchOptionsView(LaunchApiModel):
 
 
 class BacktestLaunchOptionsView(LaunchApiModel):
+    default_mode: Literal["official", "custom"] = "official"
+    official_template_id: str | None = None
+    template_options: list[BacktestTemplateView] = Field(default_factory=list)
     dataset_presets: list[PresetOptionView] = Field(default_factory=list)
     prediction_scopes: list[PresetOptionView] = Field(default_factory=list)
     strategy_presets: list[PresetOptionView] = Field(default_factory=list)

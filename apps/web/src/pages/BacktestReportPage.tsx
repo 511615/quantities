@@ -1,5 +1,5 @@
 import type { EChartsOption } from "echarts";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { useBacktestDetail } from "../shared/api/hooks";
 import type { ArtifactView, BacktestEngineView, ScenarioDeltaView, TimeValuePoint } from "../shared/api/types";
@@ -29,6 +29,7 @@ const PERCENT_KEYS = new Set([
   "short_exposure",
   "signal_autocorrelation",
   "average_signal",
+  "worst_scenario_return_delta",
 ]);
 
 function formatMetric(key: string, value: number | null | undefined) {
@@ -59,8 +60,8 @@ function labelMetric(key: string) {
     calmar: "Calmar",
     information_ratio: "信息比率",
     sortino: "Sortino",
-    up_capture: "上涨捕获",
-    down_capture: "下跌捕获",
+    up_capture: "上行捕获",
+    down_capture: "下行捕获",
     var_95: "VaR 95",
     cvar_95: "CVaR 95",
     average_fee_bps: "平均手续费 bps",
@@ -89,6 +90,8 @@ function labelMetric(key: string) {
     profit_factor: "盈亏比",
     signal_autocorrelation: "信号自相关",
     signal_count: "信号数",
+    worst_scenario_return_delta: "最差压力场景收益变化",
+    simulation_minus_research_cumulative_return: "研究/仿真累计收益差",
   };
   return labels[key] ?? key;
 }
@@ -109,6 +112,9 @@ function labelScenario(key: string) {
     cost_x5: "成本五倍",
     latency_shock: "延迟冲击",
     liquidity_drought: "流动性枯竭",
+    long_only_fallback: "仅多头回退",
+    stale_signal: "信号陈旧",
+    broken_data_guard: "坏数据防护",
   };
   return labels[key] ?? key;
 }
@@ -116,13 +122,38 @@ function labelScenario(key: string) {
 function labelPnlKey(key: string) {
   const labels: Record<string, string> = {
     alpha_pnl: "Alpha PnL",
-    beta_or_benchmark_pnl: "Beta/基准 PnL",
+    beta_or_benchmark_pnl: "Beta / 基准 PnL",
     borrow_cost: "借贷成本",
     cash_pnl: "现金 PnL",
     funding_pnl: "资金费率",
     trading_cost: "交易成本",
   };
   return labels[key] ?? key;
+}
+
+function protocolLabel(key: string) {
+  const labels: Record<string, string> = {
+    train_start_time: "训练起点",
+    train_end_time: "训练终点",
+    lookback_window: "Lookback",
+    label_horizon: "Label Horizon",
+    modalities: "模态",
+    fusion_summary: "融合概要",
+    random_seed: "随机种子",
+    tuning_trials: "调参次数",
+    external_pretraining: "外部预训练",
+    synthetic_data: "合成数据",
+  };
+  return labels[key] ?? key;
+}
+
+function gateStatusLabel(status: string | null | undefined) {
+  const labels: Record<string, string> = {
+    passed: "已通过",
+    warning: "需复核",
+    failed: "未通过",
+  };
+  return labels[status ?? ""] ?? (status ?? "--");
 }
 
 function summarizeArtifacts(detailArtifacts: ArtifactView[], engineArtifacts: ArtifactView[] = []) {
@@ -331,6 +362,7 @@ export function BacktestReportPage() {
   const detail = mapBacktestDetail(query.data);
   const researchMetrics = detail.research?.metrics ?? {};
   const simulationMetrics = detail.simulation?.metrics ?? {};
+  const protocol = detail.protocol;
   const simulationCurve = detail.simulation?.positions ?? [];
   const scenarioSeries = detail.simulation?.scenarios ?? [];
   const simulationArtifacts = detail.simulation?.artifacts ?? [];
@@ -341,6 +373,7 @@ export function BacktestReportPage() {
     ...(detail.research?.warnings ?? []),
   ];
   const warningSummary = summarizeWarnings(warningItems);
+  const protocolMetadata = Object.entries(protocol?.metadata_summary ?? {}).filter(([, value]) => Boolean(value));
 
   return (
     <div className="page-stack">
@@ -378,6 +411,86 @@ export function BacktestReportPage() {
 
       {metricTiles("研究引擎", researchMetrics)}
       {metricTiles("仿真引擎", simulationMetrics)}
+
+      {protocol ? (
+        <section className="panel">
+          <PanelHeader
+            eyebrow={protocol.template?.official ? "Official Protocol" : "Backtest Protocol"}
+            title={protocol.template?.name ?? "Backtest Protocol"}
+            description="展示当前回测所绑定的模板、门禁结果、分组口径与披露摘要，便于后续在同一协议下比较不同模型。"
+            action={
+              protocol.template?.template_id ? (
+                <Link
+                  className="link-button"
+                  to={`/comparison?official_only=${protocol.template.official ? "1" : "0"}&template_id=${encodeURIComponent(protocol.template.template_id)}${detail.run_id ? `&runs=${encodeURIComponent(detail.run_id)}` : ""}`}
+                >
+                  查看同模板对比
+                </Link>
+              ) : undefined
+            }
+          />
+          <div className="metric-grid detail-metric-grid">
+            <div className="metric-tile">
+              <span>模板 ID</span>
+              <strong>{protocol.template?.template_id ?? "--"}</strong>
+            </div>
+            <div className="metric-tile">
+              <span>Protocol</span>
+              <strong>{protocol.template?.protocol_version ?? detail.protocol_version ?? "--"}</strong>
+            </div>
+            <div className="metric-tile">
+              <span>门禁状态</span>
+              <strong>{gateStatusLabel(protocol.gate_status)}</strong>
+            </div>
+            <div className="metric-tile">
+              <span>Lookback Bucket</span>
+              <strong>{protocol.lookback_bucket ?? "--"}</strong>
+            </div>
+          </div>
+
+          <div className="detail-grid wide-secondary">
+            <section className="panel">
+              <PanelHeader eyebrow="披露信息" title="协议元数据" />
+              {protocolMetadata.length > 0 ? (
+                <div className="stack-list">
+                  {protocolMetadata.map(([key, value]) => (
+                    <div className="stack-item" key={key}>
+                      <strong>{protocolLabel(key)}</strong>
+                      <span>{value}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState title="暂无披露信息" body="当前回测没有返回协议要求的训练元数据摘要。" />
+              )}
+            </section>
+
+            <section className="panel">
+              <PanelHeader eyebrow="门禁与评分" title="协议检查结果" />
+              <div className="stack-list">
+                {protocol.gate_results.map((item) => (
+                  <div className="stack-item align-start" key={item.key}>
+                    <strong>{`${item.label} · ${item.passed ? "通过" : "未通过"}`}</strong>
+                    <span>{item.detail ?? "--"}</span>
+                  </div>
+                ))}
+                {protocol.rank_components.map((item) => (
+                  <div className="stack-item" key={item.key}>
+                    <strong>{item.label}</strong>
+                    <span>{formatMetric(item.key, item.value)}</span>
+                  </div>
+                ))}
+                {protocol.slice_coverage.length > 0 ? (
+                  <div className="stack-item align-start">
+                    <strong>Slice Coverage</strong>
+                    <span>{protocol.slice_coverage.join(" / ")}</span>
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          </div>
+        </section>
+      ) : null}
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
@@ -427,7 +540,7 @@ export function BacktestReportPage() {
             ))}
           </div>
         ) : (
-          <EmptyState title="没有警告" body="当前回测没有对比告警或泄漏审计告警。" />
+          <EmptyState title="没有警告" body="当前回测没有对比警告或泄漏审计告警。" />
         )}
       </section>
 

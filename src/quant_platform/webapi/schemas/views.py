@@ -221,6 +221,50 @@ class BenchmarkRowView(ApiModel):
     artifact_uri: str | None = None
 
 
+class BacktestTemplateView(ApiModel):
+    template_id: str
+    name: str
+    description: str | None = None
+    source: str = "system"
+    read_only: bool = True
+    official: bool = False
+    protocol_version: str | None = None
+    output_contract_version: str | None = None
+    fixed_prediction_scope: str | None = None
+    ranking_policy: str | None = None
+    slice_policy: str | None = None
+    scenario_bundle: list[str] = Field(default_factory=list)
+    eligibility_rules: list[str] = Field(default_factory=list)
+    required_metadata: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class GateResultView(ApiModel):
+    key: str
+    label: str
+    passed: bool | None = None
+    severity: str = "info"
+    detail: str | None = None
+
+
+class RankComponentView(ApiModel):
+    key: str
+    label: str
+    value: float | None = None
+    detail: str | None = None
+
+
+class BacktestProtocolResultView(ApiModel):
+    template: BacktestTemplateView | None = None
+    gate_status: str | None = None
+    gate_results: list[GateResultView] = Field(default_factory=list)
+    rank_components: list[RankComponentView] = Field(default_factory=list)
+    slice_id: str | None = None
+    slice_coverage: list[str] = Field(default_factory=list)
+    lookback_bucket: str | None = None
+    metadata_summary: dict[str, str | None] = Field(default_factory=dict)
+
+
 class BenchmarkListItemView(ApiModel):
     benchmark_name: str
     dataset_id: str
@@ -254,6 +298,10 @@ class BacktestListItemView(ApiModel):
     run_id: str | None = None
     model_name: str | None = None
     status: str
+    template_id: str | None = None
+    official: bool = False
+    protocol_version: str | None = None
+    gate_status: str | None = None
     passed_consistency_checks: bool | None = None
     annual_return: float | None = None
     max_drawdown: float | None = None
@@ -296,6 +344,10 @@ class BacktestReportView(ApiModel):
     backtest_id: str
     model_name: str | None = None
     run_id: str | None = None
+    template_id: str | None = None
+    official: bool = False
+    protocol_version: str | None = None
+    protocol: BacktestProtocolResultView | None = None
     passed_consistency_checks: bool | None = None
     comparison_warnings: list[str] = Field(default_factory=list)
     divergence_metrics: dict[str, float] = Field(default_factory=dict)
@@ -325,6 +377,8 @@ class BenchmarkSelection(ApiModel):
 class ModelComparisonRequest(ApiModel):
     run_ids: list[str] = Field(default_factory=list)
     benchmark_selections: list[BenchmarkSelection] = Field(default_factory=list)
+    template_id: str | None = None
+    official_only: bool = False
 
 
 class ComparisonRowView(ApiModel):
@@ -335,6 +389,10 @@ class ComparisonRowView(ApiModel):
     dataset_id: str | None = None
     backend: str | None = None
     status: str | None = None
+    template_id: str | None = None
+    official: bool = False
+    protocol_version: str | None = None
+    gate_status: str | None = None
     train_mae: float | None = None
     mean_valid_mae: float | None = None
     mean_test_mae: float | None = None
@@ -366,6 +424,10 @@ class JobResultView(ApiModel):
     run_ids: list[str] = Field(default_factory=list)
     backtest_ids: list[str] = Field(default_factory=list)
     benchmark_names: list[str] = Field(default_factory=list)
+    template_id: str | None = None
+    template_name: str | None = None
+    official: bool = False
+    protocol_version: str | None = None
     fit_result_uris: list[str] = Field(default_factory=list)
     summary_artifacts: list[str] = Field(default_factory=list)
     prediction_scope: str | None = None

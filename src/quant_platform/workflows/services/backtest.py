@@ -79,6 +79,7 @@ class BacktestWorkflowService:
                 research_result=research_result,
                 simulation_result_uri=simulation_artifact.uri,
                 simulation_result=simulation_result,
+                protocol_metadata=request.summary_row_metadata,
             )
             summary_rows.append(summary_row)
             comparison_warnings.extend(row_warnings)

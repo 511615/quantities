@@ -208,6 +208,8 @@ export const api = {
   compare(body: {
     run_ids: string[];
     benchmark_selections: Array<{ benchmark_name: string; model_names: string[] }>;
+    template_id?: string;
+    official_only?: boolean;
   }) {
     return request<ModelComparisonView>("/api/comparisons/models", {
       method: "POST",

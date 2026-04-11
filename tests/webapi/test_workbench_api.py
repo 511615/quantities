@@ -1441,6 +1441,11 @@ def test_launch_backtest_dataset_preset_is_only_used_as_fallback() -> None:
     options_response = client.get("/api/launch/backtest/options")
     assert options_response.status_code == 200
     options_payload = options_response.json()
+    assert options_payload["default_mode"] == "official"
+    assert options_payload["official_template_id"] == "system::official_backtest_protocol_v1"
+    assert options_payload["template_options"][0]["official"] is True
+    assert options_payload["template_options"][0]["read_only"] is True
+    assert options_payload["template_options"][0]["fixed_prediction_scope"] == "test"
     assert {item["value"] for item in options_payload["dataset_presets"]} == {
         "smoke",
         "real_benchmark",

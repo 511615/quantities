@@ -39,6 +39,7 @@ from quant_platform.webapi.schemas.launch import (
     TrainLaunchOptionsView,
 )
 from quant_platform.webapi.schemas.views import (
+    BacktestTemplateView,
     DatasetAcquisitionRequest,
     DatasetAcquisitionSourceRequest,
     DatasetFusionRequest,
@@ -55,6 +56,15 @@ from quant_platform.webapi.schemas.views import (
     PipelineStageView,
     PipelineSummaryView,
     StableSummaryView,
+)
+from quant_platform.webapi.services.backtest_protocol import (
+    OFFICIAL_BACKTEST_TEMPLATE_ID,
+    build_custom_backtest_request,
+    build_official_backtest_request,
+    build_protocol_metadata,
+    custom_backtest_template,
+    derive_lookback_bucket,
+    official_backtest_template,
 )
 from quant_platform.webapi.services.catalog import ResearchWorkbenchService
 from quant_platform.workflows.contracts.requests import (
@@ -241,7 +251,11 @@ class JobService:
         return self.workbench.get_dataset_request_options()
 
     def get_backtest_options(self) -> BacktestLaunchOptionsView:
+        official_template = official_backtest_template()
         return BacktestLaunchOptionsView(
+            default_mode="official",
+            official_template_id=official_template.template_id,
+            template_options=[official_template],
             dataset_presets=[
                 PresetOptionView(
                     value="smoke",
@@ -285,11 +299,22 @@ class JobService:
             ],
             default_benchmark_symbol="BTCUSDT",
             constraints={
-                "required_fields": ["run_id", "prediction_scope", "strategy_preset"],
+                "required_fields": ["run_id"],
                 "dataset_selector": {
                     "accepted_fields": ["dataset_id", "dataset_preset"],
                     "priority": "dataset_id_gt_run_manifest_gt_dataset_preset",
                 },
+                "default_prediction_scope_by_mode": {
+                    "official": official_template.fixed_prediction_scope,
+                    "custom": "full",
+                },
+                "official_locked_fields": [
+                    "prediction_scope",
+                    "strategy_preset",
+                    "portfolio_preset",
+                    "cost_preset",
+                ],
+                "official_template_id": official_template.template_id,
             },
         )
 
@@ -371,6 +396,10 @@ class JobService:
         context: JobContext,
         request: LaunchBacktestRequest,
     ) -> JobResultView:
+        template = self._resolve_backtest_template_for_launch(request)
+        effective_prediction_scope = (
+            template.fixed_prediction_scope or request.prediction_scope
+        )
         model_artifact_uri = self.workbench.resolve_run_model_artifact_uri(request.run_id)
         if model_artifact_uri is None:
             raise JobExecutionError(
@@ -445,19 +474,40 @@ class JobService:
             )
             context.finish_stage("prepare", f"Loaded dataset '{dataset_ref.dataset_id}'")
 
-        context.start_stage("predict", f"Generating predictions for scope '{request.prediction_scope}'")
+        benchmark_symbol = self._resolve_benchmark_symbol(
+            request=request,
+            dataset_id=dataset_ref.dataset_id,
+        )
+        metadata_summary = self._build_backtest_metadata_summary(
+            run_manifest=run_manifest,
+            run_metadata=run_metadata,
+            dataset_id=dataset_ref.dataset_id,
+        )
+        protocol_metadata = build_protocol_metadata(
+            template=template,
+            launch_mode=request.mode,
+            prediction_scope=effective_prediction_scope,
+            dataset_id=dataset_ref.dataset_id,
+            dataset_frequency=self._dataset_frequency(dataset_ref.dataset_id),
+            target_name=self._label_target_name(dataset_ref.dataset_id),
+            label_horizon=self._dataset_label_horizon(dataset_ref.dataset_id),
+            lookback_bucket=self._dataset_lookback_bucket(dataset_ref.dataset_id),
+            metadata_summary=metadata_summary,
+        )
+
+        context.start_stage("predict", f"Generating predictions for scope '{effective_prediction_scope}'")
         prediction_frame = self.facade.prediction_runner.predict(
             PredictRequest(
                 model_artifact_uri=model_artifact_uri,
                 dataset_ref=dataset_ref,
                 prediction_scope=PredictionScope(
-                    scope_name=request.prediction_scope,
+                    scope_name=effective_prediction_scope,
                     as_of_time=dataset_ref.feature_view_ref.as_of_time,
                 ),
             )
         )
         prediction_artifact = self.facade.store.write_model(
-            f"predictions/{request.run_id}/{request.prediction_scope}.json",
+            f"predictions/{request.run_id}/{effective_prediction_scope}.json",
             prediction_frame,
         )
         context.finish_stage("predict", "Prediction artifact written")
@@ -474,12 +524,14 @@ class JobService:
                 ],
                 backtest_request_template=self._backtest_template(
                     prediction_frame_uri=prediction_artifact.uri,
-                    benchmark_symbol=request.benchmark_symbol,
+                    benchmark_symbol=benchmark_symbol,
+                    mode=request.mode,
                 ),
                 dataset_ref=dataset_ref,
                 benchmark_name="workbench_backtest",
                 data_source=data_source,
                 market_bars=market_bars,
+                summary_row_metadata=protocol_metadata,
             )
         )
         backtest_ids = [item.backtest_result.backtest_id for item in backtest_result.items]
@@ -488,7 +540,11 @@ class JobService:
             dataset_id=dataset_ref.dataset_id,
             run_ids=[request.run_id],
             backtest_ids=backtest_ids,
-            prediction_scope=request.prediction_scope,
+            prediction_scope=effective_prediction_scope,
+            template_id=template.template_id,
+            template_name=template.name,
+            official=template.official,
+            protocol_version=template.protocol_version,
         )
 
     def _run_dataset_request_job(
@@ -1098,27 +1154,118 @@ class JobService:
         *,
         prediction_frame_uri: str,
         benchmark_symbol: str,
+        mode: str,
     ) -> BacktestRequest:
-        return BacktestRequest(
+        if mode == "official":
+            return build_official_backtest_request(
+                prediction_frame_uri=prediction_frame_uri,
+                benchmark_symbol=benchmark_symbol,
+            )
+        return build_custom_backtest_request(
             prediction_frame_uri=prediction_frame_uri,
-            strategy_config=StrategyConfig(name="sign_strategy"),
-            portfolio_config=PortfolioConfig(
-                initial_cash=100000.0,
-                max_gross_leverage=1.0,
-                max_position_weight=1.0,
-            ),
-            cost_model=CostModel(fee_bps=5.0, slippage_bps=2.0),
-            benchmark_spec=BenchmarkSpec(name="buy_and_hold", symbol=benchmark_symbol),
-            calendar_spec=CalendarSpec(timezone="UTC", frequency="1h"),
-            # Keep workbench launches interactive: run baseline research/simulation first
-            # instead of the full stress matrix used in offline protocol batches.
-            scenario_specs=[
-                ScenarioSpec(
-                    name="BASELINE",
-                    description="default backtest configuration",
-                )
-            ],
+            benchmark_symbol=benchmark_symbol,
         )
+
+    def _resolve_backtest_template_for_launch(
+        self,
+        request: LaunchBacktestRequest,
+    ) -> BacktestTemplateView:
+        if request.mode == "official" or request.template_id == OFFICIAL_BACKTEST_TEMPLATE_ID:
+            return official_backtest_template()
+        return custom_backtest_template()
+
+    def _resolve_benchmark_symbol(
+        self,
+        *,
+        request: LaunchBacktestRequest,
+        dataset_id: str | None,
+    ) -> str:
+        if request.benchmark_symbol.strip():
+            return request.benchmark_symbol.strip()
+        if dataset_id:
+            detail = self.workbench.get_dataset_detail(dataset_id)
+            if detail is not None:
+                asset_id = detail.dataset.asset_id
+                if asset_id:
+                    return asset_id
+                symbols = detail.dataset.symbols_preview
+                if symbols:
+                    return symbols[0]
+        return "BTCUSDT"
+
+    def _build_backtest_metadata_summary(
+        self,
+        *,
+        run_manifest: dict[str, object],
+        run_metadata: dict[str, object],
+        dataset_id: str | None,
+    ) -> dict[str, str | None]:
+        detail = self.workbench.get_dataset_detail(dataset_id) if dataset_id else None
+        dataset_start = detail.dataset.freshness.data_start_time if detail is not None else None
+        dataset_end = detail.dataset.freshness.data_end_time if detail is not None else None
+        model_spec = run_metadata.get("model_spec") if isinstance(run_metadata.get("model_spec"), dict) else {}
+        hyperparams = model_spec.get("hyperparams") if isinstance(model_spec, dict) else {}
+        if not isinstance(hyperparams, dict):
+            hyperparams = {}
+        tracking_seed = self._str((run_manifest.get("repro_context") or {}).get("seed")) if isinstance(run_manifest.get("repro_context"), dict) else None
+        data_domains = detail.dataset.data_domains if detail is not None else []
+        return {
+            "train_start_time": dataset_start.isoformat() if dataset_start is not None else None,
+            "train_end_time": dataset_end.isoformat() if dataset_end is not None else None,
+            "lookback_window": self._stringify(hyperparams.get("lookback")),
+            "label_horizon": self._stringify(
+                detail.dataset.label_horizon if detail is not None else run_manifest.get("label_horizon")
+            ),
+            "modalities": ", ".join(data_domains) if data_domains else None,
+            "fusion_summary": self._str(detail.acquisition_profile.get("merge_policy_name")) if detail is not None else None,
+            "random_seed": tracking_seed,
+            "tuning_trials": self._stringify((run_manifest.get("tracking") or {}).get("trial_count")) if isinstance(run_manifest.get("tracking"), dict) else None,
+            "external_pretraining": self._stringify(run_metadata.get("pretrained")),
+            "synthetic_data": self._stringify(run_manifest.get("synthetic_reference")),
+        }
+
+    def _dataset_detail(self, dataset_id: str | None):
+        if not dataset_id:
+            return None
+        return self.workbench.get_dataset_detail(dataset_id)
+
+    def _dataset_frequency(self, dataset_id: str | None) -> str | None:
+        detail = self._dataset_detail(dataset_id)
+        return detail.dataset.frequency if detail is not None else None
+
+    def _dataset_label_horizon(self, dataset_id: str | None) -> int | None:
+        detail = self._dataset_detail(dataset_id)
+        return detail.dataset.label_horizon if detail is not None else None
+
+    def _label_target_name(self, dataset_id: str | None) -> str | None:
+        detail = self._dataset_detail(dataset_id)
+        if detail is None:
+            return None
+        label_columns = detail.label_columns
+        if label_columns:
+            return label_columns[0]
+        label_spec = detail.label_spec if isinstance(detail.label_spec, dict) else {}
+        return self._str(label_spec.get("label_name")) or self._str(label_spec.get("name"))
+
+    def _dataset_lookback_bucket(self, dataset_id: str | None) -> str | None:
+        detail = self._dataset_detail(dataset_id)
+        if detail is None:
+            return None
+        return derive_lookback_bucket(
+            detail.dataset.freshness.data_start_time,
+            detail.dataset.freshness.data_end_time,
+        )
+
+    @staticmethod
+    def _stringify(value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float, str)):
+            text = str(value).strip()
+            return text or None
+        return None
 
     def _update_stage(
         self,
