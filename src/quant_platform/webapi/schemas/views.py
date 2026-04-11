@@ -181,6 +181,9 @@ class RunDetailView(ApiModel):
     run_id: str
     model_name: str
     dataset_id: str | None = None
+    task_type: str | None = None
+    artifact_format_status: str = "legacy"
+    missing_artifacts: list[str] = Field(default_factory=list)
     family: str | None = None
     backend: str | None = None
     status: str
@@ -189,6 +192,11 @@ class RunDetailView(ApiModel):
     tracking_params: dict[str, str] = Field(default_factory=dict)
     manifest_metrics: dict[str, float] = Field(default_factory=dict)
     repro_context: dict[str, Any] = Field(default_factory=dict)
+    dataset_summary: dict[str, Any] = Field(default_factory=dict)
+    evaluation_summary: dict[str, Any] = Field(default_factory=dict)
+    evaluation_artifacts: list[ArtifactView] = Field(default_factory=list)
+    prediction_summary: dict[str, Any] = Field(default_factory=dict)
+    time_range: dict[str, Any] = Field(default_factory=dict)
     feature_importance: dict[str, float] = Field(default_factory=dict)
     predictions: list[PredictionArtifactView] = Field(default_factory=list)
     related_backtests: list[RelatedBacktestView] = Field(default_factory=list)
@@ -300,6 +308,13 @@ class BacktestReportView(ApiModel):
     review_summary: ReviewSummaryView | None = None
     warning_summary: WarningSummaryView | None = None
     glossary_hints: list[GlossaryHintView] = Field(default_factory=list)
+
+
+class BacktestDeleteResponse(ApiModel):
+    backtest_id: str
+    status: str
+    message: str
+    deleted_files: list[str] = Field(default_factory=list)
 
 
 class BenchmarkSelection(ApiModel):
@@ -542,6 +557,56 @@ class DatasetDetailView(ApiModel):
     readiness_profile: dict[str, Any] = Field(default_factory=dict)
     training_profile: dict[str, Any] = Field(default_factory=dict)
     links: list[DeepLinkView] = Field(default_factory=list)
+
+
+class DatasetNlpKeywordView(ApiModel):
+    term: str
+    score: float | None = None
+    count: int | None = None
+    weight: float | None = None
+
+
+class DatasetNlpSourceBreakdownView(ApiModel):
+    source: str
+    count: int
+    share: float
+
+
+class DatasetNlpTimelinePointView(ApiModel):
+    label: str
+    event_count: int
+    avg_sentiment: float | None = None
+
+
+class DatasetNlpEventPreviewView(ApiModel):
+    event_id: str
+    title: str
+    snippet: str
+    source: str
+    source_type: str | None = None
+    symbol: str | None = None
+    event_time: datetime
+    available_time: datetime | None = None
+    sentiment_score: float | None = None
+    url: str | None = None
+
+
+class DatasetNlpInspectionView(ApiModel):
+    dataset_id: str
+    contains_nlp: bool = False
+    coverage_summary: str | None = None
+    requested_start_time: datetime | None = None
+    requested_end_time: datetime | None = None
+    actual_start_time: datetime | None = None
+    actual_end_time: datetime | None = None
+    source_vendors: list[str] = Field(default_factory=list)
+    keyword_summary: list[DatasetNlpKeywordView] = Field(default_factory=list)
+    word_cloud_terms: list[DatasetNlpKeywordView] = Field(default_factory=list)
+    source_breakdown: list[DatasetNlpSourceBreakdownView] = Field(default_factory=list)
+    event_timeline: list[DatasetNlpTimelinePointView] = Field(default_factory=list)
+    sentiment_distribution: list[TimeValuePoint] = Field(default_factory=list)
+    recent_event_previews: list[DatasetNlpEventPreviewView] = Field(default_factory=list)
+    sample_feature_preview: dict[str, float | None] = Field(default_factory=dict)
 
 
 class DatasetRequestOptionView(ApiModel):

@@ -4,6 +4,7 @@ import { api } from "./client";
 import type {
   DatasetAcquisitionRequest,
   DatasetFusionRequest,
+  DatasetNlpInspectionView,
   DatasetPipelineRequest,
 } from "./types";
 
@@ -48,6 +49,22 @@ export function useBacktestDetail(backtestId: string) {
     queryKey: ["backtest", backtestId],
     queryFn: () => api.backtest(backtestId),
     enabled: Boolean(backtestId),
+  });
+}
+
+export function useDeleteBacktestMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (backtestId: string) => api.deleteBacktest(backtestId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["backtests"] }),
+        queryClient.invalidateQueries({ queryKey: ["backtest"] }),
+        queryClient.invalidateQueries({ queryKey: ["run"] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["workbench-overview"] }),
+      ]);
+    },
   });
 }
 
@@ -114,6 +131,14 @@ export function useDatasetReadiness(datasetId: string | null, enabled = true) {
   });
 }
 
+export function useDatasetNlpInspection(datasetId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["dataset", datasetId, "nlp-inspection"],
+    queryFn: () => api.datasetNlpInspection(datasetId ?? ""),
+    enabled: enabled && Boolean(datasetId),
+  });
+}
+
 export function useDatasetOhlcv(
   datasetId: string | null,
   params: {
@@ -149,6 +174,58 @@ export function useTrainOptions() {
   return useQuery({
     queryKey: ["launch-options", "train"],
     queryFn: () => api.trainOptions(),
+  });
+}
+
+export function useModelTemplates(includeDeleted = false) {
+  return useQuery({
+    queryKey: ["model-templates", includeDeleted],
+    queryFn: () => api.modelTemplates(includeDeleted),
+  });
+}
+
+export function useCreateModelTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof api.createModelTemplate>[0]) => api.createModelTemplate(body),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["model-templates"] }),
+        queryClient.invalidateQueries({ queryKey: ["launch-options", "train"] }),
+      ]);
+    },
+  });
+}
+
+export function useUpdateModelTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      templateId,
+      body,
+    }: {
+      templateId: string;
+      body: Parameters<typeof api.updateModelTemplate>[1];
+    }) => api.updateModelTemplate(templateId, body),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["model-templates"] }),
+        queryClient.invalidateQueries({ queryKey: ["launch-options", "train"] }),
+      ]);
+    },
+  });
+}
+
+export function useDeleteModelTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (templateId: string) => api.deleteModelTemplate(templateId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["model-templates"] }),
+        queryClient.invalidateQueries({ queryKey: ["launch-options", "train"] }),
+      ]);
+    },
   });
 }
 
@@ -219,15 +296,13 @@ export function useDeleteDatasetMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (datasetId: string) => api.deleteDataset(datasetId),
-    onSuccess: async (result, datasetId) => {
+    onSuccess: async (result) => {
       if (result.status !== "deleted") {
         return;
       }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["datasets"] }),
         queryClient.invalidateQueries({ queryKey: ["datasets", "training"] }),
-        queryClient.invalidateQueries({ queryKey: ["dataset", datasetId] }),
-        queryClient.invalidateQueries({ queryKey: ["dataset", datasetId, "dependencies"] }),
         queryClient.invalidateQueries({ queryKey: ["workbench-overview"] }),
       ]);
     },

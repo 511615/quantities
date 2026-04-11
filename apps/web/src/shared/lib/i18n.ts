@@ -30,6 +30,7 @@ export const I18N = {
     createTemplate: "\u65b0\u5efa\u6a21\u677f",
     editTemplate: "\u7f16\u8f91\u6a21\u677f",
     duplicateTemplate: "\u590d\u5236\u6a21\u677f",
+    trainWithTemplate: "\u4f7f\u7528\u6b64\u6a21\u677f\u8bad\u7ec3",
     delete: "\u5220\u9664",
     save: "\u4fdd\u5b58",
     close: "\u5173\u95ed",

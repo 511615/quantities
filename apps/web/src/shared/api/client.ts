@@ -1,5 +1,6 @@
 import type {
   ArtifactPreviewResponse,
+  BacktestDeleteResponse,
   BacktestLaunchOptionsView,
   BacktestReportView,
   BacktestsResponse,
@@ -22,22 +23,62 @@ import type {
   LaunchBacktestRequest,
   LaunchJobResponse,
   LaunchTrainRequest,
+  ModelTemplateCreateRequest,
+  ModelTemplateView,
+  ModelTemplateListResponse,
+  ModelTemplateUpdateRequest,
   ModelComparisonView,
   OhlcvBarsResponse,
   RunDetailView,
   TrainingDatasetListResponse,
   TrainingDatasetSummaryView,
   TrainLaunchOptionsView,
+  DatasetNlpInspectionView,
   WorkbenchOverviewView,
 } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
+function flattenErrorDetail(detail: unknown): string[] {
+  if (typeof detail === "string") {
+    return [detail];
+  }
+  if (Array.isArray(detail)) {
+    return detail.flatMap((item) => flattenErrorDetail(item));
+  }
+  if (detail && typeof detail === "object") {
+    const record = detail as Record<string, unknown>;
+    const location = Array.isArray(record.loc)
+      ? record.loc.map((item) => String(item)).join(".")
+      : null;
+    const message =
+      typeof record.msg === "string"
+        ? record.msg
+        : typeof record.message === "string"
+          ? record.message
+          : typeof record.detail === "string"
+            ? record.detail
+            : null;
+    if (location && message) {
+      return [`${location}: ${message}`];
+    }
+    if (message) {
+      return [message];
+    }
+    return Object.values(record).flatMap((value) => flattenErrorDetail(value));
+  }
+  return [];
+}
+
 async function readErrorMessage(response: Response): Promise<string> {
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
-    const payload = (await response.json()) as { detail?: string };
-    return payload.detail || `Request failed: ${response.status}`;
+    const payload = (await response.json()) as { detail?: unknown; message?: unknown };
+    const messages = flattenErrorDetail(payload.detail ?? payload.message);
+    if (messages.length > 0) {
+      return messages.join("\n");
+    }
+    return `Request failed: ${response.status}`;
   }
   const detail = await response.text();
   return detail || `Request failed: ${response.status}`;
@@ -78,6 +119,11 @@ export const api = {
   },
   backtest(backtestId: string) {
     return request<BacktestReportView>(`/api/backtests/${backtestId}`);
+  },
+  deleteBacktest(backtestId: string) {
+    return request<BacktestDeleteResponse>(`/api/backtests/${encodeURIComponent(backtestId)}`, {
+      method: "DELETE",
+    });
   },
   benchmarks() {
     return request<BenchmarkListItemView[]>("/api/benchmarks");
@@ -132,6 +178,11 @@ export const api = {
       `/api/datasets/${encodeURIComponent(datasetId)}/readiness`,
     );
   },
+  datasetNlpInspection(datasetId: string) {
+    return request<DatasetNlpInspectionView>(
+      `/api/datasets/${encodeURIComponent(datasetId)}/nlp-inspection`,
+    );
+  },
   datasetOhlcv(
     datasetId: string,
     params: {
@@ -165,6 +216,27 @@ export const api = {
   },
   trainOptions() {
     return request<TrainLaunchOptionsView>("/api/launch/train/options");
+  },
+  modelTemplates(includeDeleted = false) {
+    const query = includeDeleted ? "?include_deleted=true" : "";
+    return request<ModelTemplateListResponse>(`/api/models/templates${query}`);
+  },
+  createModelTemplate(body: ModelTemplateCreateRequest) {
+    return request<ModelTemplateView>("/api/models/templates", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  updateModelTemplate(templateId: string, body: ModelTemplateUpdateRequest) {
+    return request<ModelTemplateView>(`/api/models/templates/${encodeURIComponent(templateId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+  deleteModelTemplate(templateId: string) {
+    return request<void>(`/api/models/templates/${encodeURIComponent(templateId)}`, {
+      method: "DELETE",
+    });
   },
   backtestOptions() {
     return request<BacktestLaunchOptionsView>("/api/launch/backtest/options");

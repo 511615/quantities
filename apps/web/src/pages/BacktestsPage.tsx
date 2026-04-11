@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { useBacktests } from "../shared/api/hooks";
+import type { BacktestListItemView } from "../shared/api/types";
+import { useBacktests, useDeleteBacktestMutation } from "../shared/api/hooks";
 import { formatDate, formatNumber } from "../shared/lib/format";
 import { I18N } from "../shared/lib/i18n";
+import { ConfirmDialog } from "../shared/ui/ConfirmDialog";
 import { GlossaryHint } from "../shared/ui/GlossaryHint";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
@@ -12,6 +14,7 @@ import { StatusPill } from "../shared/ui/StatusPill";
 export function BacktestsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<BacktestListItemView | null>(null);
 
   const params = useMemo(() => {
     const next = new URLSearchParams({
@@ -28,6 +31,15 @@ export function BacktestsPage() {
   }, [search, statusFilter]);
 
   const query = useBacktests(params);
+  const deleteMutation = useDeleteBacktestMutation();
+
+  async function handleDeleteConfirm() {
+    if (!pendingDelete) {
+      return;
+    }
+    await deleteMutation.mutateAsync(pendingDelete.backtest_id);
+    setPendingDelete(null);
+  }
 
   return (
     <div className="page-stack">
@@ -70,6 +82,7 @@ export function BacktestsPage() {
                   <th>{"\u5e74\u5316\u6536\u76ca"}</th>
                   <th>{"\u544a\u8b66"}</th>
                   <th>{"\u72b6\u6001"}</th>
+                  <th>{"\u64cd\u4f5c"}</th>
                 </tr>
               </thead>
               <tbody>
@@ -84,6 +97,23 @@ export function BacktestsPage() {
                     <td>{item.warning_count}</td>
                     <td>
                       <StatusPill status={item.status} />
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        <Link className="link-button" to={`/backtests/${item.backtest_id}`}>
+                          {"\u8be6\u60c5"}
+                        </Link>
+                        <button
+                          className="link-button danger-link"
+                          onClick={() => {
+                            deleteMutation.reset();
+                            setPendingDelete(item);
+                          }}
+                          type="button"
+                        >
+                          {"\u5220\u9664"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -108,6 +138,32 @@ export function BacktestsPage() {
           </div>
         </div>
       </section>
+
+      <ConfirmDialog
+        cancelLabel={"\u53d6\u6d88"}
+        confirmDisabled={!pendingDelete || deleteMutation.isPending}
+        confirmLabel={deleteMutation.isPending ? "\u5220\u9664\u4e2d..." : "\u786e\u8ba4\u5220\u9664"}
+        message={
+          pendingDelete
+            ? `\u5c06\u6c38\u4e45\u5220\u9664\u56de\u6d4b ${pendingDelete.backtest_id}\uff0c\u5e76\u6e05\u7406\u5bf9\u5e94\u62a5\u544a\u4ea7\u7269\u3002\u5bf9\u5e94\u7684\u8bad\u7ec3 run \u4f1a\u4fdd\u7559\uff0c\u4f46\u4e0d\u518d\u663e\u793a\u8fd9\u6761\u56de\u6d4b\u8bb0\u5f55\u3002`
+            : ""
+        }
+        onCancel={() => {
+          deleteMutation.reset();
+          setPendingDelete(null);
+        }}
+        onConfirm={handleDeleteConfirm}
+        open={pendingDelete !== null}
+        title={"\u5220\u9664\u56de\u6d4b"}
+        tone="danger"
+      >
+        {deleteMutation.isError ? (
+          <div className="dialog-section">
+            <strong>{"\u5220\u9664\u5931\u8d25"}</strong>
+            <p>{(deleteMutation.error as Error).message}</p>
+          </div>
+        ) : null}
+      </ConfirmDialog>
     </div>
   );
 }

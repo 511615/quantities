@@ -20,6 +20,7 @@ import type {
   RunDetailView,
   TrainingDatasetListResponse,
   TrainLaunchOptionsView,
+  ModelTemplateListResponse,
   WorkbenchOverviewView,
 } from "../shared/api/types";
 
@@ -173,6 +174,7 @@ export const runDetailFixture: RunDetailView = {
   run_id: "smoke-train-run",
   model_name: "mean_baseline",
   dataset_id: "smoke_dataset",
+  task_type: "regression",
   family: "baseline",
   backend: "native",
   status: "success",
@@ -181,12 +183,101 @@ export const runDetailFixture: RunDetailView = {
   tracking_params: { dataset_id: "smoke_dataset" },
   manifest_metrics: { mae: 0.0111 },
   repro_context: { seed: 7 },
+  dataset_summary: {
+    dataset_type: "training_panel",
+    data_domain: "market",
+    data_domains: ["market"],
+    entity_scope: "single_asset",
+    entity_count: 1,
+    feature_schema_hash: "feature-hash-v1",
+    snapshot_version: "snapshot-v1",
+    readiness_status: "ready",
+    sample_count: 128,
+    feature_count: 12,
+    label_count: 128,
+  },
+  evaluation_summary: {
+    task_type: "regression",
+    selected_scope: "test",
+    sample_count: 128,
+    split_sample_counts: { train: 80, valid: 24, test: 24, full: 128 },
+    regression_metrics: {
+      mae: 0.0111,
+      rmse: 0.0222,
+      r2: 0.63,
+      bias: -0.0012,
+      sign_hit_rate: 0.67,
+      valid_mae: 0.0134,
+      sample_count: 24,
+    },
+    split_metrics: {
+      train: { mae: 0.0091, rmse: 0.0181, r2: 0.71, sign_hit_rate: 0.7, sample_count: 80 },
+      valid: { mae: 0.0134, rmse: 0.0251, r2: 0.58, sign_hit_rate: 0.62, sample_count: 24 },
+      test: { mae: 0.0111, rmse: 0.0222, r2: 0.63, sign_hit_rate: 0.67, sample_count: 24 },
+      full: { mae: 0.0108, rmse: 0.0217, r2: 0.65, sign_hit_rate: 0.68, sample_count: 128 },
+    },
+    coverage: {
+      start_time: "2026-04-01T00:00:00Z",
+      end_time: "2026-04-06T07:00:00Z",
+      missing_samples: 0,
+      available_scopes: ["train", "valid", "test", "full"],
+    },
+    feature_importance_summary: [
+      { name: "price_momentum", value: 0.71 },
+      { name: "volume_spike", value: 0.29 },
+    ],
+    series: {
+      prediction_vs_target_timeseries: [
+        { timestamp: "2026-04-05T00:00:00Z", prediction: 0.03, target: 0.025 },
+        { timestamp: "2026-04-05T01:00:00Z", prediction: -0.012, target: -0.02 },
+        { timestamp: "2026-04-05T02:00:00Z", prediction: 0.018, target: 0.01 },
+      ],
+      residual_timeseries: [
+        { timestamp: "2026-04-05T00:00:00Z", residual: 0.005 },
+        { timestamp: "2026-04-05T01:00:00Z", residual: 0.008 },
+        { timestamp: "2026-04-05T02:00:00Z", residual: 0.008 },
+      ],
+      prediction_vs_target_scatter: [
+        { prediction: 0.03, target: 0.025, timestamp: "2026-04-05T00:00:00Z" },
+        { prediction: -0.012, target: -0.02, timestamp: "2026-04-05T01:00:00Z" },
+        { prediction: 0.018, target: 0.01, timestamp: "2026-04-05T02:00:00Z" },
+      ],
+      residual_histogram: [
+        { label: "-0.02 to -0.01", count: 1, center: -0.015 },
+        { label: "0.00 to 0.01", count: 2, center: 0.005 },
+      ],
+    },
+  },
+  evaluation_artifacts: [
+    {
+      kind: "evaluation_summary",
+      label: "evaluation summary",
+      uri: "models/smoke-train-run/evaluation_summary.json",
+      exists: true,
+      previewable: true,
+    },
+  ],
+  prediction_summary: {
+    available_scopes: ["full", "test"],
+    primary_scope: "test",
+    sample_count: 152,
+  },
+  time_range: {
+    start_time: "2026-04-01T00:00:00Z",
+    end_time: "2026-04-06T07:00:00Z",
+    selected_scope: "test",
+  },
   feature_importance: { price_momentum: 0.71, volume_spike: 0.29 },
   predictions: [
     {
       scope: "full",
       sample_count: 128,
       uri: "predictions/smoke-train-run/full.json",
+    },
+    {
+      scope: "test",
+      sample_count: 24,
+      uri: "predictions/smoke-train-run/test.json",
     },
   ],
   related_backtests: [
@@ -207,6 +298,13 @@ export const runDetailFixture: RunDetailView = {
       exists: true,
       previewable: true,
     },
+    {
+      kind: "evaluation_summary",
+      label: "evaluation summary",
+      uri: "models/smoke-train-run/evaluation_summary.json",
+      exists: true,
+      previewable: true,
+    },
   ],
   notes: ["No review summary yet."],
   review_summary: {
@@ -220,12 +318,16 @@ export const runDetailFixture: RunDetailView = {
 };
 
 export const artifactPreviewFixture: ArtifactPreviewResponse = {
-  uri: "models/smoke-train-run/train_manifest.json",
+  uri: "models/smoke-train-run/evaluation_summary.json",
   kind: "json",
   is_json: true,
   content: {
-    run_id: "smoke-train-run",
-    metrics: { mae: 0.0111 },
+    task_type: "regression",
+    selected_scope: "test",
+    regression_metrics: {
+      mae: 0.0111,
+      rmse: 0.0222,
+    },
   },
 };
 
@@ -870,10 +972,54 @@ export const datasetOhlcvFixture: OhlcvBarsResponse = {
 export const trainOptionsFixture: TrainLaunchOptionsView = {
   dataset_presets: [{ value: "smoke", label: "smoke", description: null, recommended: true }],
   model_options: [{ value: "elastic_net", label: "Elastic Net", description: null, recommended: true }],
-  template_options: [],
+  template_options: [
+    {
+      value: "registry::elastic_net",
+      label: "Elastic Net default",
+      description: "Template sourced from model registry.",
+      recommended: true,
+    },
+  ],
   trainer_presets: [{ value: "fast", label: "fast", description: null, recommended: true }],
   default_seed: 7,
   constraints: {},
+};
+
+export const modelTemplatesFixture: ModelTemplateListResponse = {
+  items: [
+    {
+      template_id: "registry::elastic_net",
+      name: "Elastic Net default",
+      model_name: "elastic_net",
+      description: "Template sourced from model registry.",
+      source: "registry",
+      hyperparams: { alpha: 0.001, l1_ratio: 0.5 },
+      trainer_preset: "fast",
+      dataset_preset: "smoke",
+      read_only: true,
+      model_registered: true,
+      deleted_at: null,
+      created_at: "2026-04-08T12:00:00Z",
+      updated_at: "2026-04-08T12:00:00Z",
+    },
+    {
+      template_id: "custom-template-1",
+      name: "Custom Elastic Net",
+      model_name: "elastic_net",
+      description: "Custom template for training launches.",
+      source: "custom",
+      hyperparams: { alpha: 0.01, l1_ratio: 0.3 },
+      trainer_preset: "fast",
+      dataset_preset: "real_benchmark",
+      read_only: false,
+      model_registered: true,
+      deleted_at: null,
+      created_at: "2026-04-08T12:05:00Z",
+      updated_at: "2026-04-08T12:05:00Z",
+    },
+  ],
+  total: 2,
+  model_options_source: "registry",
 };
 
 export const backtestOptionsFixture: BacktestLaunchOptionsView = {

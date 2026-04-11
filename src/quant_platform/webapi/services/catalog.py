@@ -7,6 +7,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from quant_platform.backtest.contracts.backtest import BacktestResult
+from quant_platform.backtest.metrics.comparison import build_backtest_summary_row
+from quant_platform.common.enums.core import LabelKind
 from quant_platform.common.hashing.digest import stable_digest
 from quant_platform.common.io.files import LocalArtifactStore
 from quant_platform.common.types.core import FeatureField, TimeRange
@@ -14,13 +17,21 @@ from quant_platform.data.contracts.data_asset import DataAssetRef
 from quant_platform.data.contracts.market import NormalizedMarketBar
 from quant_platform.data.contracts.series import NormalizedSeriesPoint
 from quant_platform.datasets.builders.dataset_builder import DatasetBuilder
-from quant_platform.datasets.contracts.dataset import DatasetRef, DatasetSample
+from quant_platform.datasets.contracts.dataset import (
+    DatasetRef,
+    DatasetSample,
+    LabelSpec,
+    SamplePolicy,
+)
+from quant_platform.datasets.labeling.forward_return import ForwardReturnLabeler
 from quant_platform.datasets.manifests.dataset_manifest import DatasetBuildManifest
+from quant_platform.datasets.splits.time_series import TimeSeriesSplitPlanner
 from quant_platform.features.contracts.feature_view import (
     FeatureRow,
     FeatureViewBuildResult,
     FeatureViewRef,
 )
+from quant_platform.features.transforms.market_features import MarketFeatureBuilder
 from quant_platform.webapi.repositories.artifacts import ArtifactRepository
 from quant_platform.webapi.repositories.dataset_registry import (
     DatasetDependencyEntry,
@@ -30,6 +41,7 @@ from quant_platform.webapi.repositories.dataset_registry import (
 from quant_platform.webapi.schemas.views import (
     ArtifactPreviewResponse,
     ArtifactView,
+    BacktestDeleteResponse,
     BacktestEngineView,
     BacktestListItemView,
     BacktestReportView,
@@ -39,6 +51,7 @@ from quant_platform.webapi.schemas.views import (
     BenchmarkRowView,
     ComparisonRowView,
     DataFreshnessView,
+    DatasetAcquisitionRequest,
     DatasetDeleteResponse,
     DatasetAcquisitionSourceRequest,
     DatasetDependenciesResponse,
@@ -59,6 +72,11 @@ from quant_platform.webapi.schemas.views import (
     DatasetSliceView,
     DatasetSlicesResponse,
     DatasetListResponse,
+    DatasetNlpEventPreviewView,
+    DatasetNlpInspectionView,
+    DatasetNlpKeywordView,
+    DatasetNlpSourceBreakdownView,
+    DatasetNlpTimelinePointView,
     DatasetQualitySummaryView,
     DatasetSummaryView,
     DeepLinkView,
@@ -80,6 +98,7 @@ from quant_platform.webapi.schemas.views import (
     RelatedBacktestView,
     ReviewSummaryView,
     RunDetailView,
+    ScenarioDeltaView,
     StableSummaryView,
     TimeValuePoint,
     TrainingDatasetSummaryView,
@@ -191,7 +210,11 @@ class ResearchWorkbenchService:
         dataset_id: str | None,
         status: str | None,
     ) -> ExperimentsResponse:
-        items = [self._experiment_item(run_id) for run_id in self._run_ids()]
+        related_backtest_counts = self._related_backtest_count_map()
+        items = [
+            self._experiment_item_light(run_id, related_backtest_counts=related_backtest_counts)
+            for run_id in self._run_ids()
+        ]
         filtered = [
             item
             for item in items
@@ -250,40 +273,78 @@ class ResearchWorkbenchService:
         tracking = tracking or {}
         manifest = self.repository.read_json_if_exists(f"models/{run_id}/train_manifest.json") or self.repository.read_json_if_exists(f"models/{run_id}/manifest.json") or {}
         metadata = self.repository.read_json_if_exists(f"models/{run_id}/metadata.json") or {}
+        evaluation_summary = self.repository.read_json_if_exists(
+            f"models/{run_id}/evaluation_summary.json"
+        ) or {}
+        artifact_format_status, missing_artifacts, prediction_scopes = self._run_artifact_status(run_id)
+        feature_importance_payload = (
+            self.repository.read_json_if_exists(f"models/{run_id}/feature_importance.json") or {}
+        )
+        feature_importance = self._metrics(feature_importance_payload.get("feature_importance", {}))
         model_name = str((tracking.get("params") or {}).get("model_name") or metadata.get("model_name") or run_id)
         dataset_id = (tracking.get("params") or {}).get("dataset_id") or manifest.get("dataset_id")
-        predictions: list[PredictionArtifactView] = []
-        for path in self.repository.list_paths(f"predictions/{run_id}/*.json"):
-            payload = self._load(path)
-            rows = payload.get("rows", [])
-            predictions.append(
-                PredictionArtifactView(
-                    scope=path.stem,
-                    sample_count=len(rows) if isinstance(rows, list) else 0,
-                    uri=self.repository.display_uri(path),
-                )
-            )
+        predictions = self._prediction_artifacts(
+            run_id,
+            evaluation_summary=evaluation_summary,
+            prediction_scopes=prediction_scopes,
+        )
+        prediction_sample_total = sum(item.sample_count for item in predictions)
+        dataset_summary = self._run_dataset_summary(
+            dataset_id=(str(dataset_id) if isinstance(dataset_id, str) else None),
+            manifest=manifest,
+        )
+        time_range = self._run_time_range(evaluation_summary, dataset_summary)
+        prediction_summary = {
+            "available_scopes": [item.scope for item in predictions] or prediction_scopes,
+            "primary_scope": self._str(evaluation_summary.get("selected_scope"))
+            or (predictions[0].scope if predictions else None),
+            "sample_count": prediction_sample_total,
+        }
+        notes: list[str] = []
+        if not evaluation_summary:
+            notes.append("该 run 生成于评估快照增强前，暂无完整曲线与误差分布。")
+        if missing_artifacts:
+            notes.append(f"当前 run 缺少标准训练产物：{', '.join(missing_artifacts)}。")
+        if dataset_summary.get("readiness_status") == "warning":
+            notes.append("训练数据集带有 warning 状态，请结合数据详情页理解风险。")
         return RunDetailView(
             run_id=run_id,
             model_name=model_name,
             dataset_id=(str(dataset_id) if isinstance(dataset_id, str) else None),
+            task_type=self._str(evaluation_summary.get("task_type"))
+            or self._str((metadata.get("model_spec") or {}).get("task_type"))
+            or "regression",
+            artifact_format_status=artifact_format_status,
+            missing_artifacts=missing_artifacts,
             family=self.model_families.get(model_name),
             backend=self._backend(model_name),
-            status="success" if tracking else "partial",
+            status="success" if artifact_format_status == "complete" else ("partial" if tracking or manifest else "legacy"),
             created_at=self._dt(tracking.get("created_at")) or self._dt(manifest.get("created_at")),
-            metrics=self._metrics(tracking.get("metrics") or {}),
+            metrics=(
+                self._metrics(evaluation_summary.get("regression_metrics") or {})
+                or self._metrics(tracking.get("metrics") or {})
+            ),
             tracking_params={str(k): str(v) for k, v in (tracking.get("params") or {}).items()},
             manifest_metrics=self._metrics(manifest.get("metrics") or {}),
             repro_context=dict(manifest.get("repro_context") or {}),
-            feature_importance=self._metrics((self.repository.read_json_if_exists(f"models/{run_id}/feature_importance.json") or {}).get("feature_importance", {})),
+            dataset_summary=dataset_summary,
+            evaluation_summary=evaluation_summary if isinstance(evaluation_summary, dict) else {},
+            evaluation_artifacts=self._artifacts([
+                ("evaluation_summary", self.repository.artifact_root / "models" / run_id / "evaluation_summary.json"),
+                ("feature_importance", self.repository.artifact_root / "models" / run_id / "feature_importance.json"),
+            ]),
+            prediction_summary=prediction_summary,
+            time_range=time_range,
+            feature_importance=feature_importance,
             predictions=predictions,
             related_backtests=self._related_backtests(run_id),
             artifacts=self._artifacts([
                 ("tracking_summary", self.repository.artifact_root / "tracking" / f"{run_id}.json"),
                 ("train_manifest", self.repository.artifact_root / "models" / run_id / "train_manifest.json"),
                 ("model_metadata", self.repository.artifact_root / "models" / run_id / "metadata.json"),
+                ("evaluation_summary", self.repository.artifact_root / "models" / run_id / "evaluation_summary.json"),
             ]),
-            notes=[],
+            notes=notes,
             summary=StableSummaryView(status="success", headline=f"Run {run_id}"),
             pipeline_summary=None,
             review_summary=self._review_unavailable(),
@@ -364,21 +425,38 @@ class ResearchWorkbenchService:
         status: str | None,
     ) -> BacktestsResponse:
         items: list[BacktestListItemView] = []
-        summary = self.repository.read_json_if_exists("workflows/backtest/backtest_summary.json") or {}
-        for row in summary.get("rows", []):
-            if not isinstance(row, dict):
-                continue
-            metrics = row.get("simulation_metrics", {}) if isinstance(row.get("simulation_metrics"), dict) else {}
+        for row in self._backtest_history_rows():
+            metrics = (
+                row.get("simulation_metrics")
+                if isinstance(row.get("simulation_metrics"), dict)
+                else {}
+            )
             item = BacktestListItemView(
-                backtest_id=self._backtest_id(row.get("research_result_uri")),
+                backtest_id=str(row.get("backtest_id", "unknown_backtest")),
                 run_id=self._str(row.get("run_id")),
                 model_name=self._str(row.get("model_name")),
-                status=("success" if row.get("passed_consistency_checks") else "failed"),
-                passed_consistency_checks=bool(row.get("passed_consistency_checks")),
+                # Report materialization success is the primary lifecycle status.
+                # Consistency checks remain visible via passed_consistency_checks and warnings.
+                status="success",
+                passed_consistency_checks=(
+                    bool(row.get("passed_consistency_checks"))
+                    if isinstance(row.get("passed_consistency_checks"), bool)
+                    else None
+                ),
                 annual_return=self._float(metrics.get("annual_return")),
                 max_drawdown=self._float(metrics.get("max_drawdown")),
-                warning_count=len(summary.get("comparison_warnings", [])),
-                updated_at=datetime.now(UTC),
+                warning_count=len(
+                    [
+                        item
+                        for item in row.get("comparison_warnings", [])
+                        if isinstance(item, str)
+                    ]
+                ),
+                updated_at=(
+                    row.get("updated_at")
+                    if isinstance(row.get("updated_at"), datetime)
+                    else None
+                ),
             )
             text = f"{item.backtest_id} {item.run_id or ''} {item.model_name or ''}".lower()
             if search and search.lower() not in text:
@@ -397,23 +475,29 @@ class ResearchWorkbenchService:
         )
 
     def get_backtest_detail(self, backtest_id: str) -> BacktestReportView | None:
-        summary = self.repository.read_json_if_exists("workflows/backtest/backtest_summary.json") or {}
-        for row in summary.get("rows", []):
-            if not isinstance(row, dict):
+        for row in self._backtest_history_rows():
+            if row.get("backtest_id") != backtest_id:
                 continue
-            if self._backtest_id(row.get("research_result_uri")) != backtest_id:
-                continue
+            artifacts = self._backtest_artifacts(row)
             return BacktestReportView(
                 backtest_id=backtest_id,
                 model_name=self._str(row.get("model_name")),
                 run_id=self._str(row.get("run_id")),
-                passed_consistency_checks=bool(row.get("passed_consistency_checks")),
-                comparison_warnings=[str(x) for x in summary.get("comparison_warnings", []) if isinstance(x, str)],
+                passed_consistency_checks=(
+                    bool(row.get("passed_consistency_checks"))
+                    if isinstance(row.get("passed_consistency_checks"), bool)
+                    else None
+                ),
+                comparison_warnings=[
+                    str(item)
+                    for item in row.get("comparison_warnings", [])
+                    if isinstance(item, str)
+                ],
                 divergence_metrics=self._metrics(row.get("divergence_metrics", {})),
                 scenario_metrics=self._metrics(row.get("scenario_metrics", {})),
                 research=self._engine(row.get("research_result_uri")),
                 simulation=self._engine(row.get("simulation_result_uri")),
-                artifacts=[],
+                artifacts=artifacts,
                 summary=StableSummaryView(status="success", headline=f"Backtest {backtest_id}"),
                 pipeline_summary=None,
                 review_summary=self._review_unavailable(),
@@ -421,6 +505,35 @@ class ResearchWorkbenchService:
                 glossary_hints=self._glossary(["consistency_check", "max_drawdown"]),
             )
         return None
+
+    def delete_backtest(self, backtest_id: str) -> BacktestDeleteResponse | None:
+        detail = self.get_backtest_detail(backtest_id)
+        if detail is None:
+            return None
+
+        self._remove_backtest_from_summary(backtest_id)
+        self._remove_backtest_job_references(backtest_id)
+
+        artifact_uris: list[str] = []
+        for artifact in [
+            *detail.artifacts,
+            *(detail.research.artifacts if detail.research is not None else []),
+            *(detail.simulation.artifacts if detail.simulation is not None else []),
+        ]:
+            if artifact.uri:
+                artifact_uris.append(artifact.uri)
+
+        deleted_files = self._delete_artifact_uris(artifact_uris)
+
+        return BacktestDeleteResponse(
+            backtest_id=backtest_id,
+            status="deleted",
+            message=(
+                "Backtest was permanently deleted from local artifacts and list indexes. "
+                "Training runs remain available, but any links pointing at this backtest are removed."
+            ),
+            deleted_files=sorted(set(deleted_files)),
+        )
 
     def compare_models(self, request: ModelComparisonRequest) -> ModelComparisonView:
         rows: list[ComparisonRowView] = []
@@ -452,7 +565,7 @@ class ResearchWorkbenchService:
     def resolve_run_model_artifact_uri(self, run_id: str) -> str | None:
         metadata = self.repository.artifact_root / "models" / run_id / "metadata.json"
         if metadata.exists():
-            return self.repository.display_uri(metadata)
+            return str(metadata.resolve())
         legacy = self.repository.artifact_root / "models" / run_id / "manifest.json"
         if legacy.exists():
             payload = self._load(legacy)
@@ -634,20 +747,26 @@ class ResearchWorkbenchService:
         return self.get_trained_model(run_id)
 
     def list_datasets(self, *, page: int, per_page: int) -> DatasetListResponse:
-        items_by_id: dict[str, DatasetSummaryView] = {}
-        for payload in self._dataset_refs(visible_only=True):
+        items_by_id: dict[str, tuple[DatasetSummaryView, datetime, datetime]] = {}
+        epoch = datetime.fromtimestamp(0, tz=UTC)
+        for entry in self.dataset_registry.list_entries():
+            payload = entry.payload
+            if not self._is_public_dataset_payload(payload):
+                continue
             summary = self._dataset_summary(payload)
+            updated_at = self._dt(entry.updated_at) or epoch
+            as_of_time = summary.as_of_time or epoch
             existing = items_by_id.get(summary.dataset_id)
-            existing_time = existing.as_of_time if existing else None
-            if existing is None or (summary.as_of_time or datetime.fromtimestamp(0, tz=UTC)) >= (
-                existing_time or datetime.fromtimestamp(0, tz=UTC)
-            ):
-                items_by_id[summary.dataset_id] = summary
-        items = sorted(
-            items_by_id.values(),
-            key=lambda item: item.as_of_time or datetime.fromtimestamp(0, tz=UTC),
-            reverse=True,
-        )
+            if existing is None or (updated_at, as_of_time) >= (existing[1], existing[2]):
+                items_by_id[summary.dataset_id] = (summary, updated_at, as_of_time)
+        items = [
+            item[0]
+            for item in sorted(
+                items_by_id.values(),
+                key=lambda item: (item[1], item[2]),
+                reverse=True,
+            )
+        ]
         start = (page - 1) * per_page
         end = start + per_page
         return DatasetListResponse(items=items[start:end], total=len(items), page=page, per_page=per_page)
@@ -735,6 +854,185 @@ class ResearchWorkbenchService:
             ],
         )
 
+    def get_dataset_nlp_inspection(self, dataset_id: str) -> DatasetNlpInspectionView | None:
+        payload = self._dataset_ref(dataset_id)
+        if payload is None:
+            return None
+        manifest = self._dataset_manifest(payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        summary = self._dataset_summary(payload)
+        source_vendors = list(
+            dict.fromkeys(
+                [
+                    self._str(source.get("source_vendor"))
+                    for source in (acquisition_profile.get("source_specs") or [])
+                    if isinstance(source, dict) and self._str(source.get("source_vendor"))
+                ]
+                or ([self._str(acquisition_profile.get("source_vendor"))] if self._str(acquisition_profile.get("source_vendor")) else [])
+            )
+        )
+        if not self._dataset_contains_nlp(payload):
+            return DatasetNlpInspectionView(
+                dataset_id=dataset_id,
+                contains_nlp=False,
+                coverage_summary="当前数据集不包含 NLP / 舆情特征。",
+                requested_start_time=summary.freshness.data_start_time if summary else None,
+                requested_end_time=summary.freshness.data_end_time if summary else None,
+                source_vendors=source_vendors,
+            )
+
+        points = self._dataset_nlp_points(payload)
+        sample_features = self._dataset_nlp_sample_feature_preview(payload)
+        if not points:
+            return DatasetNlpInspectionView(
+                dataset_id=dataset_id,
+                contains_nlp=True,
+                coverage_summary="检测到 NLP 特征入口，但当前没有可供研究检查的事件快照。",
+                requested_start_time=summary.freshness.data_start_time if summary else None,
+                requested_end_time=summary.freshness.data_end_time if summary else None,
+                source_vendors=source_vendors,
+                sample_feature_preview=sample_features,
+            )
+
+        preview_map: dict[str, DatasetNlpEventPreviewView] = {}
+        keyword_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        timeline_stats: dict[str, dict[str, float]] = {}
+        sentiment_distribution = {"positive": 0.0, "neutral": 0.0, "negative": 0.0}
+        coverage_start: datetime | None = None
+        coverage_end: datetime | None = None
+
+        for point in points:
+            coverage_start = (
+                point.event_time if coverage_start is None else min(coverage_start, point.event_time)
+            )
+            coverage_end = (
+                point.event_time if coverage_end is None else max(coverage_end, point.event_time)
+            )
+            if point.metric_name == "event_count":
+                timeline = timeline_stats.setdefault(
+                    point.event_time.isoformat(),
+                    {"count": 0.0, "sentiment_total": 0.0, "sentiment_points": 0.0},
+                )
+                timeline["count"] += point.value
+            if point.metric_name == "sentiment_score":
+                timeline = timeline_stats.setdefault(
+                    point.event_time.isoformat(),
+                    {"count": 0.0, "sentiment_total": 0.0, "sentiment_points": 0.0},
+                )
+                timeline["sentiment_total"] += point.value
+                timeline["sentiment_points"] += 1.0
+                if point.value > 0.05:
+                    sentiment_distribution["positive"] += 1.0
+                elif point.value < -0.05:
+                    sentiment_distribution["negative"] += 1.0
+                else:
+                    sentiment_distribution["neutral"] += 1.0
+
+            if point.metric_name != "event_count":
+                continue
+            for term in self._load_json_list(point.dimensions.get("keywords_json")):
+                if not isinstance(term, dict):
+                    continue
+                key = self._str(term.get("term"))
+                count = self._int_or_none(term.get("count"))
+                if key and count:
+                    keyword_counts[key] = keyword_counts.get(key, 0) + count
+            for preview in self._load_json_list(point.dimensions.get("preview_events_json")):
+                if not isinstance(preview, dict):
+                    continue
+                preview_id = (
+                    self._str(preview.get("event_id"))
+                    or self._str(preview.get("url"))
+                    or stable_digest(preview)
+                )
+                if not preview_id:
+                    continue
+                event_time = self._dt(preview.get("event_time"))
+                if event_time is None:
+                    continue
+                source_name = self._str(preview.get("source")) or point.vendor
+                current = preview_map.get(preview_id)
+                candidate = DatasetNlpEventPreviewView(
+                    event_id=preview_id,
+                    title=self._str(preview.get("title")) or "(untitled)",
+                    snippet=self._str(preview.get("snippet")) or "",
+                    source=source_name,
+                    source_type=self._str(preview.get("source_type")),
+                    symbol=self._str(preview.get("symbol")) or point.dimensions.get("symbol"),
+                    event_time=event_time,
+                    available_time=self._dt(preview.get("available_time")),
+                    sentiment_score=self._float(preview.get("sentiment_score")),
+                    url=self._str(preview.get("url")),
+                )
+                if current is None or (
+                    candidate.available_time or candidate.event_time
+                ) > (current.available_time or current.event_time):
+                    preview_map[preview_id] = candidate
+
+        for preview in preview_map.values():
+            source_counts[preview.source] = source_counts.get(preview.source, 0) + 1
+        total_sources = sum(source_counts.values()) or 1
+        sentiment_total = sum(sentiment_distribution.values()) or 1.0
+        keyword_summary = sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))[:12]
+        word_cloud_terms = sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))[:30]
+        previews = sorted(
+            preview_map.values(),
+            key=lambda item: item.available_time or item.event_time,
+            reverse=True,
+        )[:12]
+        event_timeline = [
+            DatasetNlpTimelinePointView(
+                label=label,
+                event_count=int(stats["count"]),
+                avg_sentiment=(
+                    stats["sentiment_total"] / stats["sentiment_points"]
+                    if stats["sentiment_points"] > 0
+                    else None
+                ),
+            )
+            for label, stats in sorted(timeline_stats.items())
+        ]
+        coverage_summary = (
+            f"NLP 实际覆盖 {len(event_timeline)} 个 1h 时间桶，"
+            f"去重后 {len(preview_map)} 条文本事件，"
+            f"实际事件时间 {coverage_start.isoformat() if coverage_start else '--'}"
+            f" 到 {coverage_end.isoformat() if coverage_end else '--'}。"
+        )
+        return DatasetNlpInspectionView(
+            dataset_id=dataset_id,
+            contains_nlp=True,
+            coverage_summary=coverage_summary,
+            requested_start_time=summary.freshness.data_start_time if summary else None,
+            requested_end_time=summary.freshness.data_end_time if summary else None,
+            actual_start_time=coverage_start,
+            actual_end_time=coverage_end,
+            source_vendors=source_vendors,
+            keyword_summary=[
+                DatasetNlpKeywordView(term=term, score=float(count), count=count)
+                for term, count in keyword_summary
+            ],
+            word_cloud_terms=[
+                DatasetNlpKeywordView(term=term, count=count, weight=float(count))
+                for term, count in word_cloud_terms
+            ],
+            source_breakdown=[
+                DatasetNlpSourceBreakdownView(
+                    source=source,
+                    count=count,
+                    share=round(count / total_sources, 4),
+                )
+                for source, count in sorted(source_counts.items(), key=lambda item: (-item[1], item[0]))
+            ],
+            event_timeline=event_timeline,
+            sentiment_distribution=[
+                TimeValuePoint(label=label, value=round(value / sentiment_total, 4))
+                for label, value in sentiment_distribution.items()
+            ],
+            recent_event_previews=previews,
+            sample_feature_preview=sample_features,
+        )
+
     def get_dataset_dependencies(self, dataset_id: str) -> DatasetDependenciesResponse | None:
         if self._dataset_ref(dataset_id) is None:
             return None
@@ -743,7 +1041,7 @@ class ResearchWorkbenchService:
         return DatasetDependenciesResponse(
             dataset_id=dataset_id,
             items=[*[self._dependency_view(item) for item in dependencies], *blocking_items],
-            can_delete=len(blocking_items) == 0,
+            can_delete=True,
             blocking_items=blocking_items,
         )
 
@@ -753,23 +1051,24 @@ class ResearchWorkbenchService:
             return None
         dependencies = self.get_dataset_dependencies(dataset_id)
         blocking_items = dependencies.blocking_items if dependencies is not None else []
-        if blocking_items:
-            return DatasetDeleteResponse(
-                dataset_id=dataset_id,
-                status="blocked",
-                message="Dataset cannot be deleted because dependent resources still reference it.",
-                blocking_items=blocking_items,
-                deleted_files=[],
-            )
-
-        deleted_files = self._delete_dataset_artifacts(entry)
-        self.dataset_registry.remove_dataset(dataset_id)
+        delete_targets = [entry, *self._collect_internal_helper_entries(entry)]
+        deleted_files: list[str] = []
+        for target in delete_targets:
+            deleted_files.extend(self._delete_dataset_artifacts(target))
+            ref_path = self.repository.artifact_root / "datasets" / f"{target.dataset_id}_dataset_ref.json"
+            if ref_path.exists():
+                raise ValueError(f"Hard delete failed because dataset ref '{ref_path.name}' still exists.")
+            self.dataset_registry.remove_dataset(target.dataset_id)
         return DatasetDeleteResponse(
             dataset_id=dataset_id,
             status="deleted",
-            message="Dataset was permanently deleted from the registry and local artifacts.",
-            blocking_items=[],
-            deleted_files=deleted_files,
+            message=(
+                "Dataset was permanently deleted from the registry and local artifacts. "
+                "Existing runs, backtests, or downstream datasets will keep their ids and "
+                "surface missing dataset references instead of blocking deletion."
+            ),
+            blocking_items=blocking_items,
+            deleted_files=sorted(set(deleted_files)),
         )
 
     def build_fusion_dataset(self, request: DatasetFusionRequest) -> DatasetFusionBuildResponse:
@@ -819,9 +1118,9 @@ class ResearchWorkbenchService:
         missing_counts: dict[str, int] = {}
         fusion_domains: set[str] = {base_data_domain}
         for source in request.sources:
-            if source.data_domain not in {"macro", "on_chain"}:
+            if source.data_domain not in {"macro", "on_chain", "sentiment_events"}:
                 raise ValueError(
-                    "Fusion dataset building currently supports auxiliary sources from macro and on_chain domains."
+                    "Fusion dataset building currently supports auxiliary sources from macro, on_chain, and sentiment_events domains."
                 )
             points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
                 data_domain=source.data_domain,
@@ -998,8 +1297,6 @@ class ResearchWorkbenchService:
         freshness_candidates = [self._str(base_manifest_payload.get("freshness_status")) or "unknown"]
         for context in source_contexts:
             latest_point = max(context["points"], key=lambda item: item.available_time)
-            if latest_point.available_time > base_dataset_ref.feature_view_ref.as_of_time:
-                temporal_safety_passed = False
             freshness_candidates.append(
                 self._freshness_status(
                     base_dataset_ref.feature_view_ref.as_of_time,
@@ -1207,7 +1504,7 @@ class ResearchWorkbenchService:
         request_name: str,
         market_anchor_dataset_id: str,
         sources: list[DatasetAcquisitionSourceRequest],
-        merge_policy_name: str = "strict_timestamp_inner",
+        merge_policy_name: str = "available_time_safe_asof",
         request_origin: str = "dataset_request_multi_domain",
     ) -> DatasetFusionBuildResponse:
         if self.facade is None:
@@ -1235,18 +1532,22 @@ class ResearchWorkbenchService:
             f"market:{market_anchor_dataset_id}": self._str(base_acquisition_profile.get("request_origin")) or "unknown"
         }
         fusion_sources: list[DatasetFusionSourceRequest] = []
+        min_feature_coverage_ratio = 1.0
         for source in auxiliary_sources:
-            if source.data_domain not in {"macro", "on_chain"}:
+            if source.data_domain not in {"macro", "on_chain", "sentiment_events"}:
                 raise ValueError(
-                    f"Multi-domain merged dataset currently supports macro/on_chain auxiliaries, got '{source.data_domain}'."
+                    "Multi-domain merged dataset currently supports "
+                    f"macro/on_chain/sentiment_events auxiliaries, got '{source.data_domain}'."
                 )
+            if source.data_domain == "sentiment_events":
+                min_feature_coverage_ratio = min(min_feature_coverage_ratio, 0.8)
             if source.frequency != base_frequency:
                 raise ValueError(
                     f"Multi-domain source '{source.data_domain}' must use frequency '{base_frequency}', got '{source.frequency}'."
                 )
             if not source.identifier:
                 raise ValueError(
-                    f"Multi-domain source '{source.data_domain}' requires an identifier under strict merge mode."
+                    f"Multi-domain source '{source.data_domain}' requires an identifier for merged requests."
                 )
             try:
                 points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
@@ -1271,7 +1572,10 @@ class ResearchWorkbenchService:
                 raise ValueError(
                     f"Multi-domain source '{source.data_domain}/{source.vendor}/{source.identifier}' returned no rows."
                 )
-            if sorted({point.event_time for point in points}) != base_timestamps:
+            if (
+                merge_policy_name == "strict_timestamp_inner"
+                and sorted({point.event_time for point in points}) != base_timestamps
+            ):
                 raise ValueError(
                     f"Multi-domain source '{source.data_domain}/{source.vendor}/{source.identifier}' timestamps do not match the market anchor under strict_timestamp_inner."
                 )
@@ -1304,7 +1608,7 @@ class ResearchWorkbenchService:
                 alignment_policy_name=merge_policy_name,
                 missing_feature_policy_name="drop_if_missing",
                 alignment_policy={"merge_policy_name": merge_policy_name},
-                missing_feature_policy={"min_feature_coverage_ratio": 1.0},
+                missing_feature_policy={"min_feature_coverage_ratio": min_feature_coverage_ratio},
                 sources=fusion_sources,
             )
         )
@@ -1360,6 +1664,506 @@ class ResearchWorkbenchService:
             update={"acquisition_profile": acquisition_profile}
         )
         self.store.write_model(f"datasets/{dataset_id}_dataset_manifest.json", dataset_manifest)
+
+    def build_sentiment_dataset_from_request(
+        self,
+        request: DatasetAcquisitionRequest,
+        source: DatasetAcquisitionSourceRequest,
+    ) -> str:
+        return self.build_sentiment_dataset_from_sources(request, [source])
+
+    def build_sentiment_dataset_from_sources(
+        self,
+        request: DatasetAcquisitionRequest,
+        sources: list[DatasetAcquisitionSourceRequest],
+    ) -> str:
+        if self.facade is None:
+            raise ValueError("Facade is required to build sentiment datasets.")
+        if not sources:
+            raise ValueError("Sentiment dataset requests require at least one source.")
+
+        sorted_sources = sorted(
+            sources,
+            key=lambda item: (item.vendor, self._resolve_sentiment_identifier(item, request)),
+        )
+        dataset_id = self._slugify_dataset_id(
+            request.request_name or self._resolve_sentiment_identifier(sorted_sources[0], request)
+        )
+        sorted_points: list[NormalizedSeriesPoint] = []
+        source_specs: list[dict[str, Any]] = []
+        connector_status_by_source: dict[str, str] = {}
+        identifiers: list[str] = []
+        symbols: dict[str, str] = {}
+
+        for source in sorted_sources:
+            identifier = self._resolve_sentiment_identifier(source, request)
+            identifiers.append(identifier)
+            source_options = self._sentiment_source_options(
+                source,
+                request,
+                identifier=identifier,
+            )
+            points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
+                data_domain="sentiment_events",
+                identifier=identifier,
+                vendor=source.vendor,
+                frequency=source.frequency,
+                start_time=request.time_window.start_time,
+                end_time=request.time_window.end_time,
+                options=source_options,
+            )
+            if not points:
+                raise ValueError(
+                    f"Sentiment source 'sentiment_events/{source.vendor}/{identifier}' returned no rows."
+                )
+            sorted_points.extend(points)
+            connector_status_by_source[
+                f"sentiment_events:{source.vendor}:{identifier}"
+            ] = fetch_status
+            source_specs.append(
+                {
+                    "data_domain": source.data_domain,
+                    "source_vendor": source.vendor,
+                    "frequency": source.frequency,
+                    "identifier": identifier,
+                    "filters": source_options,
+                }
+            )
+
+        if not sorted_points:
+            raise ValueError("Sentiment request did not produce any aligned feature points.")
+        sorted_points.sort(key=lambda item: (item.event_time, item.vendor, item.metric_name))
+        points_payload = {"rows": [point.model_dump(mode="json") for point in sorted_points]}
+        points_artifact = self.store.write_json(
+            f"datasets/{dataset_id}_sentiment_points.json",
+            points_payload,
+        )
+
+        grouped_rows: dict[tuple[str, datetime], dict[str, Any]] = {}
+        feature_order: list[str] = []
+        feature_seen: set[str] = set()
+        include_vendor = len({point.vendor for point in sorted_points}) > 1
+        for point in sorted_points:
+            feature_name = self._sentiment_feature_name(
+                point.metric_name,
+                vendor=(point.vendor if include_vendor else None),
+            )
+            if feature_name not in feature_seen:
+                feature_order.append(feature_name)
+                feature_seen.add(feature_name)
+            row_key = (point.entity_key, point.event_time)
+            symbols[point.entity_key] = point.dimensions.get("symbol") or point.entity_key
+            entry = grouped_rows.setdefault(
+                row_key,
+                {
+                    "available_time": point.available_time,
+                    "values": {},
+                },
+            )
+            if point.available_time > entry["available_time"]:
+                entry["available_time"] = point.available_time
+            entry["values"][feature_name] = float(point.value)
+
+        feature_rows: list[FeatureRow] = []
+        for (entity_key, timestamp), entry in sorted(
+            grouped_rows.items(),
+            key=lambda item: (item[0][1], item[0][0]),
+        ):
+            feature_rows.append(
+                FeatureRow(
+                    entity_key=entity_key,
+                    timestamp=timestamp,
+                    available_time=entry["available_time"],
+                    values=entry["values"],
+                )
+            )
+        if len(feature_rows) < 3:
+            raise ValueError("Sentiment dataset requires at least three aligned feature rows.")
+
+        as_of_time = max(row.available_time for row in feature_rows)
+        time_range = TimeRange(
+            start=min(row.timestamp for row in feature_rows),
+            end=max(row.timestamp for row in feature_rows) + timedelta(seconds=1),
+        )
+        primary_entity = feature_rows[0].entity_key
+        primary_symbol = symbols.get(primary_entity, primary_entity)
+        vendor_slug = "_".join(sorted({self._sentiment_vendor_tag(source.vendor) for source in sorted_sources}))
+        primary_identifier = identifiers[0]
+        primary_vendor = (
+            sorted_sources[0].vendor
+            if len({source.vendor for source in sorted_sources}) == 1
+            else "multi_source"
+        )
+        data_ref = DataAssetRef(
+            asset_id=(
+                f"sentiment_{self._slugify_dataset_id(vendor_slug, suffix='')}_"
+                f"{self._slugify_dataset_id(primary_identifier)}_{sorted_sources[0].frequency}"
+            ),
+            schema_version=1,
+            source=primary_vendor,
+            symbol=primary_symbol,
+            venue=primary_vendor,
+            frequency=sorted_sources[0].frequency,
+            time_range=time_range,
+            storage_uri=points_artifact.uri,
+            content_hash=stable_digest(points_payload),
+            entity_key=primary_entity,
+            tags=["sentiment_events"],
+            request_origin="sentiment_dataset_request",
+        )
+        self.store.write_model(f"datasets/{data_ref.asset_id}_ref.json", data_ref)
+
+        feature_view_ref = FeatureViewRef(
+            feature_set_id="sentiment_hourly_snapshot_v1",
+            input_data_refs=[data_ref],
+            as_of_time=as_of_time,
+            feature_schema=[
+                FeatureField(
+                    name=feature_name,
+                    dtype="float",
+                    lineage_source="sentiment_events",
+                    max_available_time=as_of_time,
+                )
+                for feature_name in feature_order
+            ],
+            build_config_hash=stable_digest(
+                {
+                    "dataset_id": dataset_id,
+                    "identifiers": identifiers,
+                    "feature_names": feature_order,
+                    "as_of_time": as_of_time,
+                }
+            ),
+            storage_uri=f"artifact://datasets/{dataset_id}_feature_rows.json",
+        )
+        feature_result = FeatureViewBuildResult(feature_view_ref=feature_view_ref, rows=feature_rows)
+        self.store.write_json(
+            f"datasets/{dataset_id}_feature_rows.json",
+            {"rows": [row.model_dump(mode="json") for row in feature_rows]},
+        )
+
+        label_horizon = max(1, int(request.build_config.label_horizon))
+        uses_real_market_labels = primary_vendor == "reddit_history_csv"
+        label_feature = (
+            "forward_return_1"
+            if uses_real_market_labels
+            else self._default_sentiment_label_feature(feature_order)
+        )
+        market_anchor_dataset_id: str | None = None
+        labels: dict[tuple[str, datetime], float] = {}
+        rows_by_entity: dict[str, list[FeatureRow]] = {}
+        for row in feature_rows:
+            rows_by_entity.setdefault(row.entity_key, []).append(row)
+        if uses_real_market_labels:
+            market_context = self._build_sentiment_market_context(
+                dataset_id=dataset_id,
+                rows=feature_rows,
+                request=request,
+            )
+            feature_rows = market_context["feature_rows"]
+            feature_result = FeatureViewBuildResult(
+                feature_view_ref=feature_view_ref,
+                rows=feature_rows,
+            )
+            self.store.write_json(
+                f"datasets/{dataset_id}_feature_rows.json",
+                {"rows": [row.model_dump(mode="json") for row in feature_rows]},
+            )
+            rows_by_entity = {}
+            for row in feature_rows:
+                rows_by_entity.setdefault(row.entity_key, []).append(row)
+            labels = market_context["labels"]
+            market_anchor_dataset_id = market_context["market_anchor_dataset_id"]
+        else:
+            for entity_rows in rows_by_entity.values():
+                entity_rows.sort(key=lambda row: row.timestamp)
+                for index, row in enumerate(entity_rows):
+                    future_index = index + label_horizon
+                    if future_index >= len(entity_rows):
+                        continue
+                    current_value = row.values.get(label_feature)
+                    future_value = entity_rows[future_index].values.get(label_feature)
+                    if current_value is None or future_value is None:
+                        continue
+                    labels[(row.entity_key, row.timestamp)] = float(future_value - current_value)
+
+        label_spec = LabelSpec(
+            target_column=(
+                f"future_return_{label_horizon}"
+                if uses_real_market_labels
+                else f"future_{label_feature}_{label_horizon}"
+            ),
+            horizon=label_horizon,
+            kind=LabelKind(request.build_config.label_kind),
+        )
+        timestamps = sorted({row.timestamp for row in feature_rows})
+        train_end_index = max(1, len(timestamps) // 2)
+        valid_end_index = max(train_end_index + 1, int(len(timestamps) * 0.75))
+        split_manifest = TimeSeriesSplitPlanner.single_split(
+            timestamps=timestamps,
+            train_end_index=train_end_index,
+            valid_end_index=valid_end_index,
+        )
+        sample_policy = SamplePolicy(
+            min_history_bars=1,
+            drop_missing_targets=True,
+            universe=("multi_asset" if len(rows_by_entity) > 1 else "single_asset"),
+            recommended_training_use=request.dataset_type,
+        )
+        dataset_ref, samples, dataset_manifest = DatasetBuilder.build_dataset(
+            dataset_id=dataset_id,
+            feature_result=feature_result,
+            labels=labels,
+            label_spec=label_spec,
+            split_manifest=split_manifest,
+            sample_policy=sample_policy,
+        )
+        freshness_status = self._freshness_status(
+            as_of_time,
+            max(point.available_time for point in sorted_points),
+        )
+        dataset_manifest = dataset_manifest.model_copy(
+            update={
+                "asset_id": data_ref.asset_id,
+                "feature_set_id": "sentiment_hourly_snapshot_v1",
+                "raw_row_count": len(feature_rows),
+                "usable_sample_count": len(samples),
+                "readiness_status": "ready" if samples else "not_ready",
+                "alignment_status": "aligned",
+                "missing_feature_status": "clean",
+                "label_alignment_status": "aligned",
+                "split_integrity_status": "valid",
+                "temporal_safety_status": "passed",
+                "freshness_status": freshness_status,
+                "quality_status": "healthy",
+                "build_config": {
+                    "sample_policy_name": request.build_config.sample_policy_name,
+                    "alignment_policy_name": request.build_config.alignment_policy_name,
+                    "missing_feature_policy_name": request.build_config.missing_feature_policy_name,
+                    "sample_policy": request.build_config.sample_policy,
+                    "alignment_policy": request.build_config.alignment_policy,
+                    "missing_feature_policy": request.build_config.missing_feature_policy,
+                    "label_feature": label_feature,
+                    "label_source": (
+                        "bitstamp_archive_forward_return" if uses_real_market_labels else "sentiment_self_delta"
+                    ),
+                },
+                "acquisition_profile": {
+                    "request_name": request.request_name,
+                    "data_domain": "sentiment_events",
+                    "data_domains": ["sentiment_events"],
+                    "dataset_type": request.dataset_type,
+                    "request_origin": "sentiment_dataset_request",
+                    "source_vendor": primary_vendor,
+                    "frequency": sorted_sources[0].frequency,
+                    "identifier": (primary_identifier if len(identifiers) == 1 else None),
+                    "identifiers": identifiers,
+                    "symbols": sorted(set(symbols.values())),
+                    "source_specs": source_specs,
+                    "source_dataset_ids": (
+                        [market_anchor_dataset_id] if market_anchor_dataset_id else []
+                    ),
+                    "fusion_domains": [],
+                    "market_anchor_dataset_id": market_anchor_dataset_id,
+                    "label_source_vendor": (
+                        "bitstamp_archive" if uses_real_market_labels else None
+                    ),
+                    "connector_status_by_source": connector_status_by_source,
+                    "internal_visibility": "public",
+                },
+            }
+        )
+        dataset_samples_artifact = self.store.write_json(
+            f"datasets/{dataset_id}_dataset_samples.json",
+            {"samples": [sample.model_dump(mode="json") for sample in samples]},
+        )
+        dataset_manifest_artifact = self.store.write_model(
+            f"datasets/{dataset_id}_dataset_manifest.json",
+            dataset_manifest,
+        )
+        self.store.write_model(f"datasets/{dataset_id}_feature_view_ref.json", feature_view_ref)
+        dataset_ref = dataset_ref.model_copy(
+            update={
+                "dataset_manifest_uri": dataset_manifest_artifact.uri,
+                "dataset_samples_uri": dataset_samples_artifact.uri,
+                "entity_scope": sample_policy.universe,
+                "entity_count": len(rows_by_entity),
+                "readiness_status": dataset_manifest.readiness_status,
+            }
+        )
+        self.store.write_model(f"datasets/{dataset_id}_dataset_ref.json", dataset_ref)
+        self.facade.dataset_store[dataset_id] = samples
+        self.dataset_registry.bootstrap_from_artifacts()
+        return dataset_id
+
+    def _build_sentiment_market_context(
+        self,
+        *,
+        dataset_id: str,
+        rows: list[FeatureRow],
+        request: DatasetAcquisitionRequest,
+    ) -> dict[str, Any]:
+        if self.facade is None:
+            raise ValueError("Facade is required to build market-backed sentiment datasets.")
+        if not rows:
+            raise ValueError("Sentiment dataset requires feature rows before building market labels.")
+        start_time = min(row.timestamp for row in rows)
+        end_time = max(row.timestamp for row in rows) + self._frequency_delta("1h") * (
+            request.build_config.label_horizon + 1
+        )
+        market_bars, _ = self.facade.runtime.ingestion_service.fetch_market_bars(
+            symbol="BTCUSD",
+            vendor="bitstamp_archive",
+            exchange="bitstamp",
+            frequency="1h",
+            start_time=start_time,
+            end_time=end_time,
+        )
+        if not market_bars:
+            raise ValueError("bitstamp_archive returned no real market bars for sentiment dataset labeling.")
+        available_times = {bar.event_time for bar in market_bars}
+        aligned_rows = [row for row in rows if row.timestamp in available_times]
+        if len(aligned_rows) < 3:
+            raise ValueError("Too few rows overlap between Reddit history and Bitstamp archive for training.")
+        labels = ForwardReturnLabeler().build(
+            aligned_rows,
+            {bar.event_time: bar.close for bar in market_bars},
+            horizon=max(1, int(request.build_config.label_horizon)),
+        )
+        market_anchor_dataset_id = self._materialize_hidden_market_anchor_dataset(
+            dataset_id=f"{dataset_id}_market_anchor",
+            market_bars=market_bars,
+            request=request,
+        )
+        return {
+            "feature_rows": aligned_rows,
+            "labels": labels,
+            "market_anchor_dataset_id": market_anchor_dataset_id,
+        }
+
+    def _materialize_hidden_market_anchor_dataset(
+        self,
+        *,
+        dataset_id: str,
+        market_bars: list[NormalizedMarketBar],
+        request: DatasetAcquisitionRequest,
+    ) -> str:
+        if self.facade is None:
+            raise ValueError("Facade is required to build a market anchor dataset.")
+        if self._dataset_entry(dataset_id) is not None:
+            return dataset_id
+        sorted_bars = sorted(market_bars, key=lambda item: item.event_time)
+        data_ref, _ = self.facade.data_catalog.register_market_asset(
+            asset_id=f"{dataset_id}_asset",
+            source="bitstamp_archive",
+            frequency="1h",
+            rows=sorted_bars,
+            tags=["market", "bitstamp_archive", "internal_helper"],
+            request_origin="sentiment_market_anchor",
+            fallback_used=False,
+        )
+        as_of_time = max(bar.available_time for bar in sorted_bars)
+        feature_result = MarketFeatureBuilder().build(
+            feature_set_id="baseline_market_features",
+            data_ref=data_ref,
+            bars=sorted_bars,
+            as_of_time=as_of_time,
+        )
+        labels = ForwardReturnLabeler().build(
+            feature_result.rows,
+            {bar.event_time: bar.close for bar in sorted_bars},
+            horizon=max(1, int(request.build_config.label_horizon)),
+        )
+        timestamps = sorted({row.timestamp for row in feature_result.rows})
+        train_end_index = max(1, len(timestamps) // 2)
+        valid_end_index = max(train_end_index + 1, int(len(timestamps) * 0.75))
+        split_manifest = TimeSeriesSplitPlanner.single_split(
+            timestamps=timestamps,
+            train_end_index=train_end_index,
+            valid_end_index=valid_end_index,
+        )
+        dataset_ref, samples, dataset_manifest = DatasetBuilder.build_dataset(
+            dataset_id=dataset_id,
+            feature_result=feature_result,
+            labels=labels,
+            label_spec=LabelSpec(
+                target_column=f"future_return_{max(1, int(request.build_config.label_horizon))}",
+                horizon=max(1, int(request.build_config.label_horizon)),
+                kind=LabelKind(request.build_config.label_kind),
+            ),
+            split_manifest=split_manifest,
+            sample_policy=SamplePolicy(
+                min_history_bars=10,
+                drop_missing_targets=True,
+                universe="single_asset",
+                recommended_training_use="training_panel",
+            ),
+        )
+        dataset_manifest = dataset_manifest.model_copy(
+            update={
+                "asset_id": data_ref.asset_id,
+                "feature_set_id": "baseline_market_features",
+                "raw_row_count": len(feature_result.rows),
+                "usable_sample_count": len(samples),
+                "readiness_status": "ready" if samples else "not_ready",
+                "alignment_status": "aligned",
+                "missing_feature_status": "clean",
+                "label_alignment_status": "aligned",
+                "split_integrity_status": "valid",
+                "temporal_safety_status": "passed",
+                "freshness_status": self._freshness_status(
+                    as_of_time,
+                    max(bar.available_time for bar in sorted_bars),
+                ),
+                "quality_status": "healthy",
+                "acquisition_profile": {
+                    "request_name": f"{request.request_name}_market_anchor",
+                    "data_domain": "market",
+                    "data_domains": ["market"],
+                    "dataset_type": "training_panel",
+                    "request_origin": "sentiment_market_anchor",
+                    "source_vendor": "bitstamp_archive",
+                    "exchange": "bitstamp",
+                    "frequency": "1h",
+                    "symbols": ["BTCUSD"],
+                    "source_specs": [
+                        {
+                            "data_domain": "market",
+                            "source_vendor": "bitstamp_archive",
+                            "exchange": "bitstamp",
+                            "frequency": "1h",
+                            "symbol_selector": {"symbols": ["BTCUSD"]},
+                        }
+                    ],
+                    "source_dataset_ids": [],
+                    "fusion_domains": [],
+                    "connector_status_by_source": {"market:bitstamp_archive:BTCUSD": "archive_fetch"},
+                    "internal_visibility": "hidden",
+                },
+            }
+        )
+        dataset_samples_artifact = self.store.write_json(
+            f"datasets/{dataset_id}_dataset_samples.json",
+            {"samples": [sample.model_dump(mode="json") for sample in samples]},
+        )
+        dataset_manifest_artifact = self.store.write_model(
+            f"datasets/{dataset_id}_dataset_manifest.json",
+            dataset_manifest,
+        )
+        self.store.write_model(f"datasets/{dataset_id}_feature_view_ref.json", feature_result.feature_view_ref)
+        dataset_ref = dataset_ref.model_copy(
+            update={
+                "dataset_manifest_uri": dataset_manifest_artifact.uri,
+                "dataset_samples_uri": dataset_samples_artifact.uri,
+                "entity_scope": "single_asset",
+                "entity_count": 1,
+                "readiness_status": dataset_manifest.readiness_status,
+            }
+        )
+        self.store.write_model(f"datasets/{dataset_id}_dataset_ref.json", dataset_ref)
+        self.facade.dataset_store[dataset_id] = samples
+        self.dataset_registry.bootstrap_from_artifacts()
+        return dataset_id
 
     def get_dataset_slices(self, dataset_id: str) -> DatasetSlicesResponse | None:
         payload = self._dataset_ref(dataset_id)
@@ -1542,8 +2346,13 @@ class ResearchWorkbenchService:
             ],
             source_vendors=[
                 self._dataset_option("binance", "Binance Spot", "market 域首批真实连接器。", True),
+                self._dataset_option("bitstamp_archive", "Bitstamp Archive", "BTC/USD 历史 1h 价格线，优先用于真实历史训练与回测。"),
                 self._dataset_option("fred", "FRED", "macro 域首批真实连接器。"),
                 self._dataset_option("defillama", "DeFiLlama", "on_chain 域首批真实连接器。"),
+                self._dataset_option("gnews", "GNews / Google News", "sentiment_events 实时新闻源。", True),
+                self._dataset_option("gdelt", "GDELT DOC 2", "sentiment_events 候选历史新闻源，当前环境可能受限流影响。"),
+                self._dataset_option("reddit_history_csv", "Reddit History CSV", "基于本地 bitcoin_reddit_all.csv 的历史 Reddit 文本库，优先走 DB-first 快照。"),
+                self._dataset_option("reddit_public", "Reddit Public", "sentiment_events 社交源。"),
                 self._dataset_option("contract_only", "Contract Only", "仅冻结接口，不承诺本期真实拉取。"),
                 self._dataset_option("internal_smoke", "内部样例", "保留给 smoke 与现有自动化测试。"),
             ],
@@ -1595,9 +2404,9 @@ class ResearchWorkbenchService:
             ],
             alignment_policies=[
                 self._dataset_option("event_time_inner", "事件时间内连接", "按 entity_key + timestamp 对齐，只保留共同可用截面。", True),
-                self._dataset_option("strict_timestamp_inner", "严格时间戳内连接", "多域 request 主链默认策略，要求所有源同频且时间戳完全一致。"),
+                self._dataset_option("strict_timestamp_inner", "严格时间戳内连接", "显式严格模式，要求所有源同频且时间戳完全一致。"),
                 self._dataset_option("available_time_safe", "可用时间安全对齐", "要求 available_time 不晚于目标训练截面。"),
-                self._dataset_option("available_time_safe_asof", "安全 asof 对齐", "按最新可用时间向后对齐，适合不同频率跨域融合。"),
+                self._dataset_option("available_time_safe_asof", "安全 asof 对齐", "多域 request 主链默认策略，按最新可用时间向后对齐后直接产出 merged dataset。"),
             ],
             missing_feature_policies=[
                 self._dataset_option("drop_if_missing", "缺失即丢弃", "默认训练策略，超过阈值直接剔除样本。", True),
@@ -1606,7 +2415,7 @@ class ResearchWorkbenchService:
             domain_capabilities={
                 "market": {
                     "supports_real_ingestion": True,
-                    "supported_vendors": ["binance", "internal_smoke"],
+                    "supported_vendors": ["binance", "bitstamp_archive", "internal_smoke"],
                     "supported_dataset_types": ["display_slice", "training_panel"],
                     "supported_frequencies": ["1h", "4h", "1d"],
                 },
@@ -1629,23 +2438,35 @@ class ResearchWorkbenchService:
                     "supported_frequencies": ["1h", "1d"],
                 },
                 "sentiment_events": {
-                    "supports_real_ingestion": False,
-                    "supported_vendors": ["contract_only"],
+                    "supports_real_ingestion": True,
+                    "supported_vendors": ["gnews", "gdelt", "reddit_public", "reddit_history_csv"],
                     "supported_dataset_types": ["display_slice", "training_panel"],
-                    "supported_frequencies": ["1h", "1d"],
+                    "supported_frequencies": ["1h"],
+                    "supports_multi_source_same_domain": True,
                 },
             },
             constraints={
-                "current_supported_domains": ["market", "macro", "on_chain"],
+                "current_supported_domains": ["market", "macro", "on_chain", "sentiment_events"],
                 "current_supported_asset_modes": ["single_asset", "multi_asset"],
-                "current_supported_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DFF", "TOTAL"],
+                "current_supported_symbols": [
+                    "BTCUSDT",
+                    "BTCUSD",
+                    "ETHUSDT",
+                    "SOLUSDT",
+                    "BNBUSDT",
+                    "DFF",
+                    "TOTAL",
+                    "btc_news",
+                    "BTC",
+                    "ETH",
+                ],
                 "multi_asset_status": "multi_domain_registry_ready",
                 "request_flow": "api_datasets_requests_via_jobs",
                 "train_entry_mode": "dataset_id_gt_dataset_preset",
                 "registry_backend": "sqlite_manifest_index",
                 "artifact_source_of_truth": "registry_and_manifest",
                 "fallback_mode": "disabled_on_mainline",
-                "supported_merge_policies": ["strict_timestamp_inner"],
+                "supported_merge_policies": ["available_time_safe_asof", "strict_timestamp_inner"],
                 "multi_domain_request_requires_market": True,
                 "multi_domain_request_direct_merge": True,
             },
@@ -1889,6 +2710,8 @@ class ResearchWorkbenchService:
             return "macro"
         if "llama" in lowered or "chain" in lowered:
             return "on_chain"
+        if "gnews" in lowered or "reddit" in lowered or "sentiment" in lowered or "news" in lowered:
+            return "sentiment_events"
         if "binance" in lowered or "market" in lowered:
             return "market"
         return None
@@ -1952,6 +2775,85 @@ class ResearchWorkbenchService:
         raw = f"{domain}_{identifier}_{metric_name}"
         return self._slugify_dataset_id(raw, suffix="")
 
+    def _sentiment_feature_name(self, metric_name: str, vendor: str | None = None) -> str:
+        if vendor is None:
+            mapping = {
+                "sentiment_score": "sentiment_score",
+                "positive_ratio": "sentiment_positive_ratio",
+                "negative_ratio": "sentiment_negative_ratio",
+                "mention_count": "news_mention_count",
+                "source_count": "news_source_count",
+                "event_count": "news_event_count",
+                "event_intensity": "text_event_intensity",
+            }
+            if metric_name in mapping:
+                return mapping[metric_name]
+            return f"text_{self._slugify_dataset_id(metric_name, suffix='')}"
+
+        source_tag = self._sentiment_vendor_tag(vendor)
+        mapping = {
+            "sentiment_score": f"sentiment_{source_tag}_score",
+            "positive_ratio": f"sentiment_{source_tag}_positive_ratio",
+            "negative_ratio": f"sentiment_{source_tag}_negative_ratio",
+            "mention_count": f"text_{source_tag}_mention_count",
+            "source_count": f"text_{source_tag}_source_count",
+            "event_count": f"text_{source_tag}_event_count",
+            "event_intensity": f"text_{source_tag}_event_intensity",
+        }
+        if metric_name in mapping:
+            return mapping[metric_name]
+        return f"text_{source_tag}_{self._slugify_dataset_id(metric_name, suffix='')}"
+
+    def _sentiment_vendor_tag(self, vendor: str) -> str:
+        lowered = vendor.lower()
+        if "reddit" in lowered:
+            return "social"
+        if "gnews" in lowered or "news" in lowered:
+            return "news"
+        return self._slugify_dataset_id(vendor, suffix="")
+
+    def _default_sentiment_label_feature(self, feature_order: list[str]) -> str:
+        for feature_name in feature_order:
+            if "sentiment" in feature_name and "score" in feature_name:
+                return feature_name
+        return feature_order[0]
+
+    def _resolve_sentiment_identifier(
+        self,
+        source: DatasetAcquisitionSourceRequest,
+        request: DatasetAcquisitionRequest,
+    ) -> str:
+        identifier = self._str(source.identifier)
+        if identifier:
+            return identifier
+        symbol_selector = source.symbol_selector or request.symbol_selector
+        if symbol_selector is not None and symbol_selector.symbols:
+            raw_symbol = str(symbol_selector.symbols[0]).strip()
+            if raw_symbol.endswith("USDT"):
+                raw_symbol = raw_symbol[:-4]
+            return raw_symbol
+        query = self._str(source.filters.get("query"))
+        if query:
+            return query
+        raise ValueError("Sentiment dataset requests require identifier or symbol_selector.")
+
+    def _sentiment_source_options(
+        self,
+        source: DatasetAcquisitionSourceRequest,
+        request: DatasetAcquisitionRequest,
+        *,
+        identifier: str,
+    ) -> dict[str, Any]:
+        symbol_selector = source.symbol_selector or request.symbol_selector
+        symbol = None
+        if symbol_selector is not None and symbol_selector.symbols:
+            symbol = str(symbol_selector.symbols[0])
+        return {
+            **dict(source.filters),
+            **({"symbol": symbol} if symbol else {}),
+            "identifier": identifier,
+        }
+
     def _slugify_dataset_id(self, value: str, suffix: str = "") -> str:
         cleaned = [character.lower() if character.isalnum() else "_" for character in value.strip()]
         slug = "".join(cleaned).strip("_")
@@ -1977,26 +2879,42 @@ class ResearchWorkbenchService:
     def _run_ids(self) -> list[str]:
         ids = {path.stem for path in self.repository.list_paths("tracking/*.json")}
         ids.update(path.name for path in self.repository.list_paths("models/*") if path.is_dir())
-        return sorted(ids)
+        return sorted(run_id for run_id in ids if self._run_artifact_status(run_id)[0] == "complete")
 
     def _related_backtests(self, run_id: str) -> list[RelatedBacktestView]:
-        payload = self.repository.read_json_if_exists("workflows/backtest/backtest_summary.json") or {}
         results: list[RelatedBacktestView] = []
-        for row in payload.get("rows", []):
-            if not isinstance(row, dict) or row.get("run_id") != run_id:
+        for row in self._backtest_history_rows():
+            if row.get("run_id") != run_id:
                 continue
-            metrics = row.get("simulation_metrics", {}) if isinstance(row.get("simulation_metrics"), dict) else {}
+            metrics = (
+                row.get("simulation_metrics")
+                if isinstance(row.get("simulation_metrics"), dict)
+                else {}
+            )
             results.append(
                 RelatedBacktestView(
-                    backtest_id=self._backtest_id(row.get("research_result_uri")),
+                    backtest_id=str(row.get("backtest_id", "unknown_backtest")),
                     model_name=str(row.get("model_name", "unknown")),
                     run_id=run_id,
                     annual_return=self._float(metrics.get("annual_return")),
                     max_drawdown=self._float(metrics.get("max_drawdown")),
-                    passed_consistency_checks=bool(row.get("passed_consistency_checks")),
+                    passed_consistency_checks=(
+                        bool(row.get("passed_consistency_checks"))
+                        if isinstance(row.get("passed_consistency_checks"), bool)
+                        else None
+                    ),
                 )
             )
         return results
+
+    def _related_backtest_count_map(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in self._backtest_history_rows():
+            run_id = self._str(row.get("run_id"))
+            if not run_id:
+                continue
+            counts[run_id] = counts.get(run_id, 0) + 1
+        return counts
 
     def _backtest_id(self, uri: Any) -> str:
         if not isinstance(uri, str) or not uri:
@@ -2006,34 +2924,122 @@ class ResearchWorkbenchService:
         backtest_id = payload.get("backtest_id")
         return str(backtest_id) if isinstance(backtest_id, str) and backtest_id else path.stem
 
+    def _run_artifact_status(self, run_id: str) -> tuple[str, list[str], list[str]]:
+        model_dir = self.repository.artifact_root / "models" / run_id
+        prediction_dir = self.repository.artifact_root / "predictions" / run_id
+        prediction_scopes = (
+            sorted(path.stem for path in prediction_dir.glob("*.json"))
+            if prediction_dir.exists()
+            else []
+        )
+        missing: list[str] = []
+        if not (model_dir / "metadata.json").exists():
+            missing.append("metadata.json")
+        if not ((model_dir / "train_manifest.json").exists() or (model_dir / "manifest.json").exists()):
+            missing.append("train_manifest.json")
+        if not (model_dir / "evaluation_summary.json").exists():
+            missing.append("evaluation_summary.json")
+        if "full" not in prediction_scopes:
+            missing.append("predictions/full.json")
+        return ("complete" if not missing else "legacy", missing, prediction_scopes)
+
     def _engine(self, uri: Any) -> BacktestEngineView | None:
         if not isinstance(uri, str) or not uri:
             return None
         payload = self._load(self.repository.resolve_uri(uri.replace("\\", "/")))
         if not payload:
             return None
-        report = self._load(self.repository.resolve_uri(str(payload.get("report_uri", "")).replace("\\", "/")))
-        pnl = self._load(self.repository.resolve_uri(str(payload.get("pnl_uri", "")).replace("\\", "/")))
-        positions = self._load(self.repository.resolve_uri(str(payload.get("positions_uri", "")).replace("\\", "/")))
+        report_path = self.repository.resolve_uri(str(payload.get("report_uri", "")).replace("\\", "/"))
+        pnl_path = self.repository.resolve_uri(str(payload.get("pnl_uri", "")).replace("\\", "/"))
+        positions_path = self.repository.resolve_uri(str(payload.get("positions_uri", "")).replace("\\", "/"))
+        diagnostics_path = self.repository.resolve_uri(
+            str(payload.get("diagnostics_uri", "")).replace("\\", "/")
+        )
+        scenarios_path = self.repository.resolve_uri(
+            str(payload.get("scenario_summary_uri", "")).replace("\\", "/")
+        )
+        leakage_path = self.repository.resolve_uri(
+            str(payload.get("leakage_audit_uri", "")).replace("\\", "/")
+        )
+        report = self._load(report_path)
+        pnl = self._load(pnl_path)
+        positions = self._load(positions_path)
+        diagnostics = self._load(diagnostics_path)
+        scenarios = self._load(scenarios_path)
+        leakage = self._load(leakage_path)
+        merged_metrics = self._metrics(
+            {
+                **(diagnostics.get("performance_metrics") or {}),
+                **(diagnostics.get("execution_metrics") or {}),
+                **(diagnostics.get("risk_metrics") or {}),
+            }
+        )
+        warnings = [str(item) for item in diagnostics.get("warnings", []) if isinstance(item, str)]
+        warnings.extend(self._leakage_warnings(leakage))
         return BacktestEngineView(
             backtest_id=str(payload.get("backtest_id", "unknown")),
             engine_type=str(payload.get("engine_type", "unknown")),
             report_summary=self._str(report.get("summary")),
-            metrics=self._metrics(payload.get("risk_metrics", {})),
-            diagnostics={},
+            metrics=merged_metrics or self._metrics(payload.get("risk_metrics", {})),
+            diagnostics=diagnostics,
             pnl_snapshot=self._metrics(pnl),
-            positions=[
-                TimeValuePoint(
-                    label=str(r.get("timestamp", f"p{i}")),
-                    value=float(r.get("target_weight", 0.0) or 0.0),
-                )
-                for i, r in enumerate(positions.get("positions", []))
-                if isinstance(r, dict)
-            ],
-            scenarios=[],
-            warnings=[],
-            artifacts=[],
+            positions=self._portfolio_curve_points(positions),
+            scenarios=self._scenario_deltas(scenarios),
+            warnings=list(dict.fromkeys(warnings)),
+            artifacts=self._artifacts(
+                [
+                    ("backtest_report", report_path),
+                    ("backtest_pnl", pnl_path),
+                    ("backtest_positions", positions_path),
+                    ("backtest_diagnostics", diagnostics_path),
+                    ("backtest_scenarios", scenarios_path),
+                    ("backtest_leakage", leakage_path),
+                ]
+            ),
         )
+
+    def _portfolio_curve_points(self, payload: dict[str, Any]) -> list[TimeValuePoint]:
+        snapshots = payload.get("snapshots", [])
+        if not isinstance(snapshots, list):
+            return []
+        return [
+            TimeValuePoint(
+                label=str(snapshot.get("timestamp", f"p{index}")),
+                value=float(snapshot.get("equity", snapshot.get("nav", 0.0)) or 0.0),
+            )
+            for index, snapshot in enumerate(snapshots)
+            if isinstance(snapshot, dict)
+        ]
+
+    def _scenario_deltas(self, payload: dict[str, Any]) -> list[ScenarioDeltaView]:
+        scenarios = payload.get("scenarios", [])
+        if not isinstance(scenarios, list):
+            return []
+        return [
+            ScenarioDeltaView(
+                scenario_name=str(item.get("scenario_name", f"scenario_{index}")),
+                cumulative_return_delta=float(item.get("pnl_delta", 0.0) or 0.0),
+            )
+            for index, item in enumerate(scenarios)
+            if isinstance(item, dict)
+        ]
+
+    def _leakage_warnings(self, payload: dict[str, Any]) -> list[str]:
+        warnings: list[str] = []
+        for key, value in payload.items():
+            if isinstance(value, bool) and not value:
+                warnings.append(f"{key} failed")
+        return warnings
+
+    def _backtest_artifacts(self, row: dict[str, Any]) -> list[ArtifactView]:
+        pairs: list[tuple[str, Path]] = []
+        for kind, uri in [
+            ("research_result", row.get("research_result_uri")),
+            ("simulation_result", row.get("simulation_result_uri")),
+        ]:
+            if isinstance(uri, str) and uri:
+                pairs.append((kind, self.repository.resolve_uri(uri.replace("\\", "/"))))
+        return self._artifacts(pairs)
 
     def _dataset_refs(self, *, visible_only: bool = False) -> list[dict[str, Any]]:
         payloads = [entry.payload for entry in self.dataset_registry.list_entries()]
@@ -2139,17 +3145,14 @@ class ResearchWorkbenchService:
         return items
 
     def _backtest_dataset_dependencies(self, dataset_id: str) -> list[DatasetDependencyView]:
-        summary = self.repository.read_json_if_exists("workflows/backtest/backtest_summary.json") or {}
-        summary_dataset_id = self._str(summary.get("dataset_id"))
         run_ids = {item.dependency_id for item in self._run_dataset_dependencies(dataset_id)}
         items: list[DatasetDependencyView] = []
-        for row in summary.get("rows", []):
-            if not isinstance(row, dict):
-                continue
+        for row in self._backtest_history_rows():
             run_id = self._str(row.get("run_id"))
-            if summary_dataset_id != dataset_id and run_id not in run_ids:
+            row_dataset_id = self._str(row.get("dataset_id"))
+            if row_dataset_id != dataset_id and run_id not in run_ids:
                 continue
-            backtest_id = self._backtest_id(row.get("research_result_uri"))
+            backtest_id = str(row.get("backtest_id", "unknown_backtest"))
             model_name = self._str(row.get("model_name")) or run_id or backtest_id
             items.append(
                 DatasetDependencyView(
@@ -2163,11 +3166,301 @@ class ResearchWorkbenchService:
                     metadata={
                         "run_id": run_id,
                         "model_name": model_name,
-                        "prediction_scope": self._str(summary.get("prediction_scope")),
+                        "prediction_scope": self._str(row.get("prediction_scope")),
                     },
                 )
             )
         return items
+
+    def _backtest_history_rows(self) -> list[dict[str, Any]]:
+        summary_rows_by_id, summary_updated_at = self._latest_backtest_summary_rows()
+        rows: list[dict[str, Any]] = []
+        seen_backtest_ids: set[str] = set()
+        simulation_candidates = self.repository.list_paths("workflows/backtest/*_simulation.json")
+        used_simulation_paths: set[Path] = set()
+
+        for job in self._successful_backtest_jobs():
+            job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+            backtest_ids = [
+                str(item)
+                for item in job_result.get("backtest_ids", [])
+                if isinstance(item, str) and item
+            ]
+            run_ids = [
+                str(item)
+                for item in job_result.get("run_ids", [])
+                if isinstance(item, str) and item
+            ]
+            for index, backtest_id in enumerate(backtest_ids):
+                if backtest_id in seen_backtest_ids:
+                    continue
+                run_id = run_ids[index] if index < len(run_ids) else (run_ids[0] if run_ids else None)
+                row = self._build_backtest_history_row(
+                    backtest_id=backtest_id,
+                    run_id=run_id,
+                    summary_row=summary_rows_by_id.get(backtest_id),
+                    job=job,
+                    simulation_candidates=simulation_candidates,
+                    used_simulation_paths=used_simulation_paths,
+                )
+                if row is None:
+                    continue
+                rows.append(row)
+                seen_backtest_ids.add(backtest_id)
+
+        for backtest_id, row in summary_rows_by_id.items():
+            if backtest_id in seen_backtest_ids:
+                continue
+            fallback_row = dict(row)
+            fallback_row["updated_at"] = summary_updated_at
+            rows.append(fallback_row)
+
+        rows.sort(
+            key=lambda row: (
+                row.get("updated_at")
+                if isinstance(row.get("updated_at"), datetime)
+                else datetime.fromtimestamp(0, tz=UTC)
+            ),
+            reverse=True,
+        )
+        return rows
+
+    def _latest_backtest_summary_rows(self) -> tuple[dict[str, dict[str, Any]], datetime | None]:
+        summary_path = self.repository.artifact_root / "workflows" / "backtest" / "backtest_summary.json"
+        summary = self.repository.read_json_if_exists("workflows/backtest/backtest_summary.json") or {}
+        comparison_warnings = [
+            str(item) for item in summary.get("comparison_warnings", []) if isinstance(item, str)
+        ]
+        rows_by_id: dict[str, dict[str, Any]] = {}
+        for row in summary.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            backtest_id = self._backtest_id(row.get("research_result_uri"))
+            rows_by_id[backtest_id] = {
+                **row,
+                "backtest_id": backtest_id,
+                "dataset_id": self._str(summary.get("dataset_id")),
+                "prediction_scope": self._str(summary.get("prediction_scope")),
+                "comparison_warnings": comparison_warnings,
+            }
+        return rows_by_id, self._path_mtime(summary_path)
+
+    def _successful_backtest_jobs(self) -> list[dict[str, Any]]:
+        jobs: list[dict[str, Any]] = []
+        for path in self.repository.list_paths("webapi/jobs/*.json"):
+            payload = self._load(path)
+            if payload.get("job_type") != "backtest" or payload.get("status") != "success":
+                continue
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                continue
+            backtest_ids = result.get("backtest_ids")
+            if not isinstance(backtest_ids, list) or not backtest_ids:
+                continue
+            jobs.append(payload)
+        jobs.sort(
+            key=lambda payload: self._backtest_job_finished_at(payload)
+            or self._dt(payload.get("updated_at"))
+            or datetime.fromtimestamp(0, tz=UTC)
+        )
+        return jobs
+
+    def _build_backtest_history_row(
+        self,
+        *,
+        backtest_id: str,
+        run_id: str | None,
+        summary_row: dict[str, Any] | None,
+        job: dict[str, Any],
+        simulation_candidates: list[Path],
+        used_simulation_paths: set[Path],
+    ) -> dict[str, Any] | None:
+        job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        updated_at = self._backtest_job_finished_at(job) or self._dt(job.get("updated_at"))
+        if summary_row is not None:
+            row = dict(summary_row)
+            row["run_id"] = self._str(row.get("run_id")) or run_id
+            row["model_name"] = self._str(row.get("model_name")) or run_id or backtest_id
+            row["dataset_id"] = self._str(row.get("dataset_id")) or self._str(job_result.get("dataset_id"))
+            row["prediction_scope"] = self._str(row.get("prediction_scope")) or self._str(
+                job_result.get("prediction_scope")
+            )
+            row["updated_at"] = updated_at or row.get("updated_at")
+            simulation_uri = row.get("simulation_result_uri")
+            if isinstance(simulation_uri, str) and simulation_uri:
+                used_simulation_paths.add(
+                    self.repository.resolve_uri(simulation_uri.replace("\\", "/")).resolve()
+                )
+            return row
+
+        research_path = self.repository.artifact_root / "workflows" / "backtest" / f"{backtest_id}_research.json"
+        if not research_path.exists():
+            return None
+        simulation_uri = self._match_simulation_result_uri(
+            job=job,
+            research_path=research_path,
+            simulation_candidates=simulation_candidates,
+            used_simulation_paths=used_simulation_paths,
+        )
+        row = self._reconstruct_backtest_summary_row(
+            backtest_id=backtest_id,
+            run_id=run_id,
+            research_path=research_path,
+            simulation_uri=simulation_uri,
+            dataset_id=self._str(job_result.get("dataset_id")),
+            prediction_scope=self._str(job_result.get("prediction_scope")),
+            updated_at=updated_at,
+        )
+        if row is not None:
+            return row
+        return {
+            "backtest_id": backtest_id,
+            "run_id": run_id,
+            "model_name": run_id or backtest_id,
+            "research_result_uri": self.repository.display_uri(research_path),
+            "simulation_result_uri": simulation_uri,
+            "dataset_id": self._str(job_result.get("dataset_id")),
+            "prediction_scope": self._str(job_result.get("prediction_scope")),
+            "comparison_warnings": [],
+            "updated_at": updated_at or self._path_mtime(research_path),
+        }
+
+    def _reconstruct_backtest_summary_row(
+        self,
+        *,
+        backtest_id: str,
+        run_id: str | None,
+        research_path: Path,
+        simulation_uri: str | None,
+        dataset_id: str | None,
+        prediction_scope: str | None,
+        updated_at: datetime | None,
+    ) -> dict[str, Any] | None:
+        if not simulation_uri:
+            return None
+        research_payload = self._load(research_path)
+        simulation_path = self.repository.resolve_uri(simulation_uri.replace("\\", "/"))
+        simulation_payload = self._load(simulation_path)
+        if not research_payload or not simulation_payload:
+            return None
+        try:
+            research_result = BacktestResult.model_validate(research_payload)
+            simulation_result = BacktestResult.model_validate(simulation_payload)
+        except Exception:  # noqa: BLE001
+            return None
+        prediction_frame_uri = self._prediction_frame_uri(run_id, prediction_scope)
+        summary_row, row_warnings = build_backtest_summary_row(
+            store=self.store,
+            model_name=run_id or backtest_id,
+            run_id=run_id or backtest_id,
+            prediction_frame_uri=prediction_frame_uri,
+            research_result_uri=self.repository.display_uri(research_path),
+            research_result=research_result,
+            simulation_result_uri=self.repository.display_uri(simulation_path),
+            simulation_result=simulation_result,
+        )
+        row = summary_row.model_dump(mode="json")
+        row.update(
+            {
+                "backtest_id": backtest_id,
+                "dataset_id": dataset_id,
+                "prediction_scope": prediction_scope,
+                "comparison_warnings": row_warnings,
+                "updated_at": updated_at or self._path_mtime(research_path),
+            }
+        )
+        return row
+
+    def _match_simulation_result_uri(
+        self,
+        *,
+        job: dict[str, Any],
+        research_path: Path,
+        simulation_candidates: list[Path],
+        used_simulation_paths: set[Path],
+    ) -> str | None:
+        available_candidates = [
+            path.resolve() for path in simulation_candidates if path.resolve() not in used_simulation_paths
+        ]
+        if not available_candidates:
+            return None
+        backtest_stage = self._job_stage(job, "backtest")
+        stage_start = (
+            self._dt(backtest_stage.get("started_at"))
+            if isinstance(backtest_stage, dict)
+            else None
+        )
+        stage_finish = (
+            self._dt(backtest_stage.get("finished_at"))
+            if isinstance(backtest_stage, dict)
+            else None
+        )
+        if stage_start and stage_finish:
+            in_window = [
+                path
+                for path in available_candidates
+                if (mtime := self._path_mtime(path)) is not None
+                and stage_start - timedelta(seconds=1) <= mtime <= stage_finish + timedelta(seconds=1)
+            ]
+            if in_window:
+                selected = min(
+                    in_window,
+                    key=lambda path: abs(
+                        (
+                            (self._path_mtime(path) or stage_finish)
+                            - (self._path_mtime(research_path) or stage_finish)
+                        ).total_seconds()
+                    ),
+                )
+                used_simulation_paths.add(selected)
+                return self.repository.display_uri(selected)
+        research_mtime = self._path_mtime(research_path)
+        if research_mtime is None:
+            return None
+        nearby = [
+            path
+            for path in available_candidates
+            if (mtime := self._path_mtime(path)) is not None
+            and abs((mtime - research_mtime).total_seconds()) <= 30.0
+        ]
+        if not nearby:
+            return None
+        selected = min(
+            nearby,
+            key=lambda path: abs(
+                ((self._path_mtime(path) or research_mtime) - research_mtime).total_seconds()
+            ),
+        )
+        used_simulation_paths.add(selected)
+        return self.repository.display_uri(selected)
+
+    def _backtest_job_finished_at(self, payload: dict[str, Any]) -> datetime | None:
+        stage = self._job_stage(payload, "backtest")
+        if isinstance(stage, dict):
+            return self._dt(stage.get("finished_at")) or self._dt(stage.get("started_at"))
+        return None
+
+    def _job_stage(self, payload: dict[str, Any], name: str) -> dict[str, Any] | None:
+        stages = payload.get("stages")
+        if not isinstance(stages, list):
+            return None
+        for stage in stages:
+            if isinstance(stage, dict) and stage.get("name") == name:
+                return stage
+        return None
+
+    def _prediction_frame_uri(self, run_id: str | None, prediction_scope: str | None) -> str:
+        if not run_id:
+            return ""
+        scope = prediction_scope or "full"
+        return self.repository.display_uri(
+            self.repository.artifact_root / "predictions" / run_id / f"{scope}.json"
+        )
+
+    def _path_mtime(self, path: Path) -> datetime | None:
+        if not path.exists():
+            return None
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
 
     def _dataset_reference_dependencies(self, dataset_id: str) -> list[DatasetDependencyView]:
         target_tokens = {dataset_id, f"dataset://{dataset_id}"}
@@ -2254,6 +3547,26 @@ class ResearchWorkbenchService:
             return self.repository.artifact_root / uri.removeprefix("artifact://")
         return self.repository.resolve_uri(uri.replace("\\", "/"))
 
+    def _delete_artifact_uris(self, uris: list[str]) -> list[str]:
+        deleted_files: list[str] = []
+        seen: set[Path] = set()
+        for uri in uris:
+            path = self._resolve_artifact_path(uri)
+            resolved = path.resolve()
+            if resolved in seen or not resolved.exists():
+                continue
+            seen.add(resolved)
+            try:
+                resolved.relative_to(self.repository.artifact_root)
+            except ValueError:
+                continue
+            if resolved.is_dir():
+                shutil.rmtree(resolved)
+            else:
+                resolved.unlink(missing_ok=True)
+            deleted_files.append(self.repository.display_uri(resolved))
+        return sorted(deleted_files)
+
     def _delete_dataset_artifacts(self, entry: DatasetRegistryEntry) -> list[str]:
         dataset_dir = self.repository.artifact_root / "datasets"
         candidate_paths: list[Path] = []
@@ -2268,21 +3581,6 @@ class ResearchWorkbenchService:
         ]:
             if isinstance(uri, str) and uri:
                 candidate_paths.append(self._resolve_artifact_path(uri))
-
-        all_entries = self.dataset_registry.list_entries()
-        for dependency in self.dataset_registry.list_dependencies(entry.dataset_id):
-            if dependency.dependency_kind != "data_asset":
-                continue
-            is_shared = any(
-                upstream.dependency_kind == "data_asset" and upstream.dependency_id == dependency.dependency_id
-                for dataset_entry in all_entries
-                if dataset_entry.dataset_id != entry.dataset_id
-                for upstream in self.dataset_registry.list_dependencies(dataset_entry.dataset_id)
-            )
-            if is_shared:
-                continue
-            for pattern in [f"{dependency.dependency_id}_*.json", f"{dependency.dependency_id}.json"]:
-                candidate_paths.extend(dataset_dir.glob(pattern))
 
         deleted_files: list[str] = []
         seen: set[Path] = set()
@@ -2302,6 +3600,135 @@ class ResearchWorkbenchService:
             deleted_files.append(self.repository.display_uri(resolved))
         return sorted(deleted_files)
 
+    def _remove_backtest_from_summary(self, backtest_id: str) -> None:
+        summary_path = self.repository.artifact_root / "workflows" / "backtest" / "backtest_summary.json"
+        summary = self._load(summary_path)
+        rows = summary.get("rows")
+        if not isinstance(rows, list):
+            return
+
+        filtered_rows: list[Any] = []
+        changed = False
+        removable_ids = {
+            backtest_id,
+            f"{backtest_id}_research",
+            f"{backtest_id}_simulation",
+        }
+        for row in rows:
+            if not isinstance(row, dict):
+                filtered_rows.append(row)
+                continue
+            row_backtest_id = self._backtest_id(row.get("research_result_uri"))
+            simulation_backtest_id = self._backtest_id(row.get("simulation_result_uri"))
+            if row_backtest_id in removable_ids or simulation_backtest_id in removable_ids:
+                changed = True
+                continue
+            filtered_rows.append(row)
+
+        if not changed:
+            return
+
+        summary["rows"] = filtered_rows
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _remove_backtest_job_references(self, backtest_id: str) -> None:
+        jobs_root = self.repository.artifact_root / "webapi" / "jobs"
+        if not jobs_root.exists():
+            return
+
+        for path in self.repository.list_paths("webapi/jobs/*.json"):
+            payload = self._load(path)
+            result = payload.get("result")
+            if payload.get("job_type") != "backtest" or not isinstance(result, dict):
+                continue
+
+            backtest_ids = result.get("backtest_ids")
+            if not isinstance(backtest_ids, list) or backtest_id not in backtest_ids:
+                continue
+
+            result["backtest_ids"] = [
+                item for item in backtest_ids if isinstance(item, str) and item != backtest_id
+            ]
+
+            deeplinks = result.get("deeplinks")
+            if isinstance(deeplinks, dict):
+                detail_href = deeplinks.get("backtest_detail")
+                if isinstance(detail_href, str) and detail_href.rstrip("/").endswith(f"/backtests/{backtest_id}"):
+                    deeplinks["backtest_detail"] = None
+
+            result_links = result.get("result_links")
+            if isinstance(result_links, list):
+                result["result_links"] = [
+                    item
+                    for item in result_links
+                    if not (
+                        isinstance(item, dict)
+                        and (
+                            item.get("kind") == "backtest_detail"
+                            or (
+                                isinstance(item.get("href"), str)
+                                and str(item.get("href")).rstrip("/").endswith(f"/backtests/{backtest_id}")
+                            )
+                        )
+                    )
+                ]
+
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _collect_internal_helper_entries(self, entry: DatasetRegistryEntry) -> list[DatasetRegistryEntry]:
+        collected: list[DatasetRegistryEntry] = []
+        seen = {entry.dataset_id}
+        queue = list(self._internal_helper_dataset_ids(entry))
+        while queue:
+            helper_id = queue.pop(0)
+            if helper_id in seen:
+                continue
+            seen.add(helper_id)
+            helper_entry = self._dataset_entry(helper_id)
+            if helper_entry is None or not self._is_internal_helper_dataset(helper_entry):
+                continue
+            collected.append(helper_entry)
+            queue.extend(self._internal_helper_dataset_ids(helper_entry))
+        return collected
+
+    def _internal_helper_dataset_ids(self, entry: DatasetRegistryEntry) -> list[str]:
+        manifest = entry.manifest or self._dataset_manifest(entry.payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        candidate_ids: list[str] = []
+        market_anchor_dataset_id = self._str(acquisition_profile.get("market_anchor_dataset_id"))
+        if market_anchor_dataset_id:
+            candidate_ids.append(market_anchor_dataset_id)
+        source_dataset_ids = acquisition_profile.get("source_dataset_ids")
+        if isinstance(source_dataset_ids, list):
+            candidate_ids.extend(
+                source_dataset_id
+                for source_dataset_id in source_dataset_ids
+                if isinstance(source_dataset_id, str) and source_dataset_id
+            )
+        unique_ids: list[str] = []
+        seen: set[str] = set()
+        for candidate_id in candidate_ids:
+            if candidate_id == entry.dataset_id or candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+            unique_ids.append(candidate_id)
+        return unique_ids
+
+    def _is_internal_helper_dataset(self, entry: DatasetRegistryEntry) -> bool:
+        manifest = entry.manifest or self._dataset_manifest(entry.payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        internal_visibility = self._str(acquisition_profile.get("internal_visibility"))
+        request_origin = self._str(acquisition_profile.get("request_origin")) or entry.request_origin
+        return (
+            internal_visibility == "hidden"
+            or (request_origin or "").startswith("sentiment_market_anchor")
+            or entry.dataset_id.endswith("_market_anchor")
+        )
+
     def _dataset_sample_count(self, payload: dict[str, Any]) -> int | None:
         samples_uri = self._str(payload.get("dataset_samples_uri"))
         dataset_id = str(payload.get("dataset_id", "unknown"))
@@ -2312,6 +3739,89 @@ class ResearchWorkbenchService:
         )
         rows = self._load(path).get("samples", [])
         return len(rows) if isinstance(rows, list) else None
+
+    def _dataset_feature_rows(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        feature_view_ref = payload.get("feature_view_ref") or {}
+        storage_uri = self._str(feature_view_ref.get("storage_uri"))
+        dataset_id = str(payload.get("dataset_id", "unknown"))
+        path = (
+            self._resolve_artifact_path(storage_uri)
+            if storage_uri
+            else self.repository.artifact_root / "datasets" / f"{dataset_id}_feature_rows.json"
+        )
+        rows = self._load(path).get("rows", [])
+        return [item for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
+
+    def _dataset_contains_nlp(self, payload: dict[str, Any]) -> bool:
+        manifest = self._dataset_manifest(payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        data_domains = self._resolved_data_domains(acquisition_profile)
+        if "sentiment_events" in data_domains:
+            return True
+        feature_names = {item.get("name") for item in self._feature_schema(payload) if isinstance(item, dict)}
+        return any(
+            isinstance(name, str) and name.startswith(("sentiment_", "text_", "news_", "social_"))
+            for name in feature_names
+        )
+
+    def _dataset_nlp_points(self, payload: dict[str, Any]) -> list[NormalizedSeriesPoint]:
+        candidate_paths: list[Path] = []
+        dataset_id = str(payload.get("dataset_id", "unknown"))
+        candidate_paths.append(self.repository.artifact_root / "datasets" / f"{dataset_id}_sentiment_points.json")
+        for input_ref in self._dataset_input_refs(payload):
+            if self._input_ref_domain(input_ref) != "sentiment_events":
+                continue
+            storage_uri = self._str(input_ref.get("storage_uri"))
+            if storage_uri:
+                candidate_paths.append(self._resolve_artifact_path(storage_uri))
+        points: list[NormalizedSeriesPoint] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for path in candidate_paths:
+            if not path.exists():
+                continue
+            rows = self._load(path).get("rows", [])
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    point = NormalizedSeriesPoint.model_validate(row)
+                except Exception:  # noqa: BLE001
+                    continue
+                key = (
+                    point.vendor,
+                    point.metric_name,
+                    point.entity_key,
+                    point.event_time.isoformat(),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                points.append(point)
+        points.sort(key=lambda item: (item.event_time, item.vendor, item.metric_name))
+        return points
+
+    def _dataset_nlp_sample_feature_preview(self, payload: dict[str, Any]) -> dict[str, float | None]:
+        samples = self._load_dataset_samples(payload)
+        if not samples:
+            return {}
+        preview: dict[str, float | None] = {}
+        for feature_name, value in samples[0].features.items():
+            if feature_name.startswith(("sentiment_", "text_", "news_", "social_")):
+                preview[feature_name] = float(value) if value is not None else None
+            if len(preview) >= 12:
+                break
+        return preview
+
+    def _load_json_list(self, value: object) -> list[Any]:
+        if not isinstance(value, str) or not value:
+            return []
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return payload if isinstance(payload, list) else []
 
     def _dataset_bars_rows(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -2338,7 +3848,10 @@ class ResearchWorkbenchService:
 
     def _dataset_raw_row_count(self, payload: dict[str, Any]) -> int | None:
         rows = self._dataset_bars_rows(payload)
-        return len(rows) if rows else None
+        if rows:
+            return len(rows)
+        feature_rows = self._dataset_feature_rows(payload)
+        return len(feature_rows) if feature_rows else None
 
     def _dataset_summary(self, payload: dict[str, Any]) -> DatasetSummaryView:
         input_refs = self._dataset_input_refs(payload)
@@ -2470,6 +3983,94 @@ class ResearchWorkbenchService:
             prediction_scopes=[p.scope for p in detail.predictions],
             tags={},
         )
+
+    def _experiment_item_light(
+        self,
+        run_id: str,
+        *,
+        related_backtest_counts: dict[str, int] | None = None,
+    ) -> ExperimentListItem:
+        tracking = self.repository.read_json_if_exists(f"tracking/{run_id}.json") or {}
+        manifest = (
+            self.repository.read_json_if_exists(f"models/{run_id}/train_manifest.json")
+            or self.repository.read_json_if_exists(f"models/{run_id}/manifest.json")
+            or {}
+        )
+        metadata = self.repository.read_json_if_exists(f"models/{run_id}/metadata.json") or {}
+        evaluation_summary = (
+            self.repository.read_json_if_exists(f"models/{run_id}/evaluation_summary.json") or {}
+        )
+        artifact_format_status, _, prediction_scopes = self._run_artifact_status(run_id)
+        model_name = str(
+            (tracking.get("params") or {}).get("model_name") or metadata.get("model_name") or run_id
+        )
+        metrics = (
+            self._metrics(evaluation_summary.get("regression_metrics") or {})
+            or self._metrics(tracking.get("metrics") or {})
+        )
+        mae = metrics.get("mae")
+        return ExperimentListItem(
+            run_id=run_id,
+            model_name=model_name,
+            dataset_id=(
+                self._str((tracking.get("params") or {}).get("dataset_id"))
+                or self._str(manifest.get("dataset_id"))
+            ),
+            family=self.model_families.get(model_name),
+            backend=self._backend(model_name),
+            status=(
+                "success"
+                if artifact_format_status == "complete"
+                else ("partial" if tracking or manifest else "legacy")
+            ),
+            created_at=self._dt(tracking.get("created_at")) or self._dt(manifest.get("created_at")),
+            primary_metric_name=("mae" if mae is not None else None),
+            primary_metric_value=mae,
+            metrics=metrics,
+            backtest_count=(related_backtest_counts or {}).get(run_id, 0),
+            prediction_scopes=prediction_scopes,
+            tags={},
+        )
+
+    def _prediction_artifacts(
+        self,
+        run_id: str,
+        *,
+        evaluation_summary: dict[str, Any],
+        prediction_scopes: list[str],
+    ) -> list[PredictionArtifactView]:
+        coverage = evaluation_summary.get("coverage", {})
+        partition_counts = coverage.get("partition_sample_count", {})
+        predictions: list[PredictionArtifactView] = []
+        for path in self.repository.list_paths(f"predictions/{run_id}/*.json"):
+            sample_count = 0
+            if isinstance(partition_counts, dict):
+                sample_count = self._int_or_none(partition_counts.get(path.stem)) or 0
+            if path.stem == "full" and sample_count <= 0:
+                sample_count = (
+                    self._int_or_none(evaluation_summary.get("sample_count"))
+                    or self._int_or_none(coverage.get("sample_count"))
+                    or 0
+                )
+            predictions.append(
+                PredictionArtifactView(
+                    scope=path.stem,
+                    sample_count=sample_count,
+                    uri=self.repository.display_uri(path),
+                )
+            )
+        if predictions:
+            return predictions
+        return [
+            PredictionArtifactView(
+                scope=scope,
+                sample_count=0,
+                uri=self.repository.display_uri(
+                    self.repository.artifact_root / "predictions" / run_id / f"{scope}.json"
+                ),
+            )
+            for scope in prediction_scopes
+        ]
 
     def _builtin_templates(self) -> list[ModelTemplateView]:
         now = datetime.now(UTC)
@@ -2718,6 +4319,10 @@ class ResearchWorkbenchService:
         checks: list[str] = []
         dataset_type = self._resolved_dataset_type(payload, manifest)
         is_multi_domain = len(self._resolved_data_domains(acquisition_profile)) > 1
+        is_sentiment_only = (
+            self._str(acquisition_profile.get("data_domain")) == "sentiment_events"
+            and not is_multi_domain
+        )
         if dataset_type == "fusion_training_panel" or is_multi_domain:
             samples = self._load_dataset_samples(payload)
             if samples:
@@ -2743,6 +4348,34 @@ class ResearchWorkbenchService:
                 checks.append("已基于融合训练样本统计缺失特征和重复键情况。")
             else:
                 checks.append("暂未找到物化后的融合训练样本，质量指标使用保守空值。")
+        elif is_sentiment_only:
+            feature_rows = self._dataset_feature_rows(payload)
+            if feature_rows:
+                total_cells = 0
+                missing_cells = 0
+                seen_keys: set[tuple[str, str]] = set()
+                duplicates = 0
+                for row in feature_rows:
+                    values = row.get("values")
+                    if not isinstance(values, dict):
+                        continue
+                    total_cells += len(values)
+                    missing_cells += sum(
+                        1 for value in values.values() if value is None or value == ""
+                    )
+                    entity_key = str(row.get("entity_key") or "")
+                    timestamp = str(row.get("timestamp") or row.get("event_time") or "")
+                    key = (entity_key, timestamp)
+                    if key in seen_keys:
+                        duplicates += 1
+                    else:
+                        seen_keys.add(key)
+                missing_ratio = (missing_cells / total_cells) if total_cells else 0.0
+                duplicate_rows = duplicates
+                duplicate_ratio = (duplicates / len(feature_rows)) if feature_rows else 0.0
+                checks.append("已基于情绪特征行快照统计缺失特征和重复键情况。")
+            else:
+                checks.append("暂未找到情绪特征快照，质量指标使用保守空值。")
         else:
             rows = self._dataset_bars_rows(payload)
             if isinstance(rows, list) and rows:
@@ -2916,6 +4549,80 @@ class ResearchWorkbenchService:
             for kind, path in pairs
             if path.exists()
         ]
+
+    def _run_dataset_summary(
+        self,
+        *,
+        dataset_id: str | None,
+        manifest: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not dataset_id:
+            return {}
+        detail = self.get_dataset_detail(dataset_id)
+        dataset_summary = {
+            "dataset_type": self._str(manifest.get("dataset_type")),
+            "data_domain": self._str(manifest.get("data_domain")),
+            "data_domains": manifest.get("data_domains")
+            if isinstance(manifest.get("data_domains"), list)
+            else [],
+            "entity_scope": self._str(manifest.get("entity_scope")),
+            "entity_count": self._int_or_none(manifest.get("entity_count")),
+            "feature_schema_hash": self._str(manifest.get("feature_schema_hash")),
+            "snapshot_version": self._str(manifest.get("snapshot_version")),
+            "readiness_status": self._str(manifest.get("dataset_readiness_status")),
+        }
+        if detail is None:
+            return dataset_summary
+        dataset = detail.dataset
+        dataset_summary.update(
+            {
+                "dataset_type": dataset.dataset_type or dataset_summary["dataset_type"],
+                "data_domain": dataset.data_domain or dataset_summary["data_domain"],
+                "data_domains": dataset.data_domains or dataset_summary["data_domains"],
+                "entity_scope": dataset.entity_scope or dataset_summary["entity_scope"],
+                "entity_count": dataset.entity_count or dataset_summary["entity_count"],
+                "feature_schema_hash": detail.schema_profile.get("feature_schema_hash")
+                or dataset_summary["feature_schema_hash"],
+                "snapshot_version": dataset.snapshot_version
+                or dataset_summary["snapshot_version"],
+                "readiness_status": dataset.readiness_status
+                or dataset_summary["readiness_status"],
+                "dataset_category": dataset.dataset_category,
+                "sample_count": dataset.sample_count,
+                "feature_count": detail.feature_count,
+                "label_count": detail.label_count,
+                "data_start_time": detail.dataset.freshness.data_start_time.isoformat()
+                if detail.dataset.freshness.data_start_time
+                else None,
+                "data_end_time": detail.dataset.freshness.data_end_time.isoformat()
+                if detail.dataset.freshness.data_end_time
+                else None,
+            }
+        )
+        return dataset_summary
+
+    def _run_time_range(
+        self,
+        evaluation_summary: dict[str, Any],
+        dataset_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        coverage = evaluation_summary.get("coverage") if isinstance(evaluation_summary, dict) else {}
+        if isinstance(coverage, dict):
+            start_time = self._str(coverage.get("start_time"))
+            end_time = self._str(coverage.get("end_time"))
+            if start_time or end_time:
+                return {
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "selected_scope": self._str(evaluation_summary.get("selected_scope")),
+                }
+        return {
+            "start_time": self._str(dataset_summary.get("data_start_time")),
+            "end_time": self._str(dataset_summary.get("data_end_time")),
+            "selected_scope": self._str(evaluation_summary.get("selected_scope"))
+            if isinstance(evaluation_summary, dict)
+            else None,
+        }
 
     def _load(self, path: Path) -> dict[str, Any]:
         if not path.exists():

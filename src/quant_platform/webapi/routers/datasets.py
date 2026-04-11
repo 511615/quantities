@@ -15,6 +15,7 @@ from quant_platform.webapi.schemas.views import (
     DatasetFusionBuildResponse,
     DatasetFusionRequest,
     DatasetListResponse,
+    DatasetNlpInspectionView,
     DatasetPipelinePlanView,
     DatasetPipelineRequest,
     DatasetReadinessSummaryView,
@@ -85,6 +86,17 @@ def get_dataset_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="Dataset not found.")
     return detail
+
+
+@router.get("/{dataset_id}/nlp-inspection", response_model=DatasetNlpInspectionView)
+def get_dataset_nlp_inspection(
+    services: ServicesDep,
+    dataset_id: str,
+) -> DatasetNlpInspectionView:
+    inspection = services.workbench.get_dataset_nlp_inspection(dataset_id)
+    if inspection is None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return inspection
 
 
 @router.get("/{dataset_id}/dependencies", response_model=DatasetDependenciesResponse)

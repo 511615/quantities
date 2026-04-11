@@ -151,6 +151,7 @@ def save_model_artifact(
     input_metadata: dict[str, object] | None = None,
     prediction_metadata: dict[str, object] | None = None,
 ) -> ModelArtifactMeta:
+    artifact_dir = artifact_dir.resolve()
     registration = default_registration(
         spec, advanced_kind=advanced_kind, input_adapter_key=input_adapter_key
     )

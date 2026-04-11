@@ -34,6 +34,7 @@ body,
 
 body {
   margin: 0;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top left, rgba(199, 255, 115, 0.05), transparent 24%),
     radial-gradient(circle at bottom right, rgba(130, 217, 255, 0.06), transparent 20%),
@@ -71,14 +72,21 @@ strong,
 .workbench-shell {
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr);
+  width: 100%;
   min-height: 100vh;
+  overflow-x: clip;
 }
 
 .workspace-nav {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
+  align-self: start;
   gap: 1.5rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
   padding: 1.6rem 1.2rem;
   border-right: 1px solid var(--line);
   background:
@@ -92,6 +100,10 @@ strong,
 .workspace-note {
   display: grid;
   gap: 1rem;
+}
+
+.workspace-note {
+  margin-top: auto;
 }
 
 .nav-caption {
@@ -174,15 +186,18 @@ strong,
 }
 
 .workspace-main {
+  min-width: 0;
   padding: 1.6rem;
 }
 
 .page-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1.2rem;
 }
 
 .panel {
+  min-width: 0;
   padding: 1.2rem;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
@@ -205,6 +220,11 @@ strong,
   box-shadow: var(--shadow);
 }
 
+.hero-strip > :first-child {
+  flex: 1 1 44rem;
+  min-width: 0;
+}
+
 .compact-hero h1,
 .hero-strip h1 {
   margin: 0.2rem 0 0.75rem;
@@ -223,12 +243,27 @@ strong,
   flex-wrap: wrap;
   gap: 0.8rem;
   align-items: flex-start;
+  justify-content: flex-end;
+  flex: 0 1 34rem;
+  min-width: 0;
+}
+
+.hero-actions > * {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
   gap: 1.2rem;
+}
+
+.workspace-primary,
+.workspace-sidebar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
 }
 
 .detail-grid {
@@ -253,6 +288,10 @@ strong,
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.panel-header > :first-child {
+  min-width: 0;
 }
 
 .panel-header h2,
@@ -355,6 +394,7 @@ strong,
   border-bottom: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .data-table th {
@@ -362,6 +402,12 @@ strong,
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.data-table th:last-child,
+.data-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
 }
 
 .compact-table td,
@@ -383,7 +429,7 @@ strong,
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.8rem;
 }
 
@@ -457,6 +503,7 @@ strong,
   border: 1px solid transparent;
   border-radius: 12px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .action-button {
@@ -485,6 +532,45 @@ strong,
 
 .drawer-wrap {
   position: relative;
+}
+
+.template-actions {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 10.5rem;
+}
+
+.template-actions .action-button,
+.template-actions .link-button,
+.template-actions .drawer-wrap,
+.template-actions .drawer-wrap > .action-button {
+  width: 100%;
+}
+
+.trained-model-table-shell {
+  overflow-x: auto;
+}
+
+.trained-models-table {
+  min-width: 60rem;
+}
+
+.trained-models-table th:last-child,
+.trained-models-table td:last-child {
+  width: 15.5rem;
+  white-space: normal;
+}
+
+.trained-model-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(7rem, 1fr));
+  align-items: start;
+  min-width: 14.5rem;
+}
+
+.trained-model-actions > * {
+  width: 100%;
 }
 
 .drawer-panel {
@@ -582,6 +668,7 @@ strong,
 .artifact-list,
 .activity-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.7rem;
 }
 
@@ -593,6 +680,7 @@ strong,
   align-items: center;
   justify-content: space-between;
   gap: 0.8rem;
+  min-width: 0;
 }
 
 .align-start,
@@ -637,12 +725,23 @@ strong,
 .activity-copy {
   flex: 1;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.24rem;
+  min-width: 0;
 }
 
 .table-title-cell {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.28rem;
+  min-width: 0;
+}
+
+.stack-item > *,
+.activity-copy > *,
+.table-title-cell > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .detail-columns {
@@ -873,6 +972,154 @@ strong,
   border: 1px solid rgba(199, 255, 115, 0.16);
   border-radius: 18px;
   background: linear-gradient(135deg, rgba(199, 255, 115, 0.08), rgba(255, 255, 255, 0.02));
+}
+
+.dataset-nlp-grid,
+.dataset-nlp-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.nlp-summary-panel {
+  grid-column: span 2;
+}
+
+.nlp-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin-bottom: 0.9rem;
+}
+
+.nlp-preview-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.nlp-preview-row {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.nlp-preview-row strong {
+  font-size: 0.96rem;
+}
+
+.nlp-preview-row span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.nlp-preview-row p {
+  margin: 0;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.nlp-keyword-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.nlp-keyword-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.42rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.nlp-keyword-pill small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.nlp-word-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.8rem;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  min-height: 140px;
+}
+
+.nlp-word-cloud span {
+  color: rgba(255, 255, 255, 0.9);
+  line-height: 1.1;
+}
+
+.compact-cloud {
+  min-height: 0;
+  margin-top: 0.9rem;
+}
+
+.nlp-source-breakdown {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 20rem;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.nlp-source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.nlp-source-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.nlp-source-row strong,
+.nlp-source-row span {
+  overflow-wrap: anywhere;
+}
+
+.nlp-sentiment-grid {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.nlp-sentiment-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 60px;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.nlp-sentiment-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.nlp-sentiment-bar div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-soft), var(--accent));
+}
+
+.text-muted {
+  color: var(--muted);
 }
 
 .dataset-label-with-hint {
@@ -1213,14 +1460,16 @@ strong,
   .detail-columns,
   .dataset-hero-grid,
   .dataset-field-layout,
-  .dataset-lifecycle-grid {
+  .dataset-lifecycle-grid,
+  .dataset-nlp-layout {
     grid-template-columns: 1fr;
   }
 
   .quick-link-grid,
   .parameter-grid,
   .definition-grid,
-  .dataset-domain-grid {
+  .dataset-domain-grid,
+  .nlp-stat-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1229,12 +1478,15 @@ strong,
   }
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 900px) {
   .workbench-shell {
     grid-template-columns: 1fr;
   }
 
   .workspace-nav {
+    position: static;
+    height: auto;
+    overflow-y: visible;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -1266,6 +1518,7 @@ strong,
   .workspace-grid,
   .dataset-domain-grid,
   .dataset-hero-grid,
+  .dataset-nlp-layout,
   .dataset-field-layout,
   .dataset-lifecycle-grid,
   .detail-columns,
@@ -1301,5 +1554,14 @@ strong,
   .info-tooltip:hover .info-tooltip-panel,
   .info-tooltip:focus-within .info-tooltip-panel {
     transform: translate(0, 0);
+  }
+
+  .nlp-summary-panel {
+    grid-column: span 1;
+  }
+
+  .trained-model-actions {
+    grid-template-columns: 1fr;
+    min-width: 12rem;
   }
 }

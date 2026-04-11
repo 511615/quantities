@@ -3,46 +3,42 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { LaunchBacktestDrawer } from "../features/launch-backtest/LaunchBacktestDrawer";
 import { LaunchTrainDrawer } from "../features/launch-training/LaunchTrainDrawer";
-import { useDatasetDetail, useRuns } from "../shared/api/hooks";
-import { formatDate } from "../shared/lib/format";
-import { GlossaryKey, I18N } from "../shared/lib/i18n";
 import {
-  ALGORITHM_DEFINITIONS,
-  AlgorithmKey,
-  MODEL_TEMPLATES_STORAGE_KEY,
-  ModelTemplate,
-  TRAINED_MODELS_STORAGE_KEY,
-  TrainedModelMeta,
-  algorithmCategory,
-  algorithmLabel,
-  buildTemplate,
-  defaultTemplates,
-  deriveTemplateFromRun,
-  getAlgorithmDefinition,
-  summarizeRunMetrics,
+  useCreateModelTemplateMutation,
+  useDatasetDetail,
+  useDeleteModelTemplateMutation,
+  useModelTemplates,
+  useRuns,
+  useTrainOptions,
+  useUpdateModelTemplateMutation,
+} from "../shared/api/hooks";
+import { formatDate } from "../shared/lib/format";
+import { I18N } from "../shared/lib/i18n";
+import {
+  type TemplateDraft,
+  buildTemplateDraft,
+  modelCategory,
+  modelLabel,
+  modelSuitableData,
   summarizeTemplateParameters,
+  templateDraftFromRun,
+  templateDraftFromView,
 } from "../shared/lib/modelRegistry";
 import { ConfirmDialog } from "../shared/ui/ConfirmDialog";
-import { GlossaryHint } from "../shared/ui/GlossaryHint";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 import { StatusPill } from "../shared/ui/StatusPill";
 
-type TemplateDraft = ModelTemplate;
-
 type TemplateEditorMode = "create" | "edit";
 
-function loadTemplates(): ModelTemplate[] {
-  const stored = window.localStorage.getItem(MODEL_TEMPLATES_STORAGE_KEY);
-  if (!stored) {
-    return defaultTemplates();
-  }
-  try {
-    return JSON.parse(stored) as ModelTemplate[];
-  } catch {
-    return defaultTemplates();
-  }
-}
+type TrainedModelMeta = {
+  runId: string;
+  displayName: string;
+  note: string;
+  hidden?: boolean;
+};
+
+const TRAINED_MODELS_STORAGE_KEY = "quant-workbench:trained-models";
 
 function loadRunMeta(): Record<string, TrainedModelMeta> {
   const stored = window.localStorage.getItem(TRAINED_MODELS_STORAGE_KEY);
@@ -56,40 +52,34 @@ function loadRunMeta(): Record<string, TrainedModelMeta> {
   }
 }
 
-function buildDraft(algorithm: AlgorithmKey): TemplateDraft {
-  return buildTemplate(algorithm);
+function buildHyperparamsText(hyperparams: Record<string, unknown>): string {
+  return JSON.stringify(hyperparams, null, 2);
 }
 
-function templateCopy(template: ModelTemplate): ModelTemplate {
-  const now = new Date().toISOString();
+function duplicateDraft(template: TemplateDraft): TemplateDraft {
   return {
     ...template,
-    id: `${template.algorithm}-${now}`,
-    name: `${template.name} \u526f\u672c`,
-    createdAt: now,
-    updatedAt: now,
+    template_id: undefined,
+    name: `${template.name} 副本`,
+    read_only: false,
   };
 }
 
-function applyAlgorithmToDraft(draft: TemplateDraft, algorithm: AlgorithmKey): TemplateDraft {
-  const next = buildTemplate(algorithm);
+function applyModelDefaults(current: TemplateDraft, modelName: string): TemplateDraft {
+  const next = buildTemplateDraft(modelName);
   return {
-    ...draft,
-    algorithm,
-    datasetId: draft.datasetId || next.datasetId,
-    targetColumn: draft.targetColumn || next.targetColumn,
-    commonParams: next.commonParams,
-    algorithmParams: next.algorithmParams,
-    updatedAt: new Date().toISOString(),
+    ...current,
+    model_name: modelName,
+    hyperparams: next.hyperparams,
   };
 }
 
 export function ModelsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [templates, setTemplates] = useState<ModelTemplate[]>(() => loadTemplates());
   const [runMeta, setRunMeta] = useState<Record<string, TrainedModelMeta>>(() => loadRunMeta());
   const [templateMode, setTemplateMode] = useState<TemplateEditorMode>("create");
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft | null>(null);
+  const [hyperparamsText, setHyperparamsText] = useState("{}");
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [templateDeleteId, setTemplateDeleteId] = useState<string | null>(null);
   const [runDeleteId, setRunDeleteId] = useState<string | null>(null);
@@ -119,15 +109,21 @@ export function ModelsPage() {
     return next;
   }, [deferredRunSearch]);
 
+  const templatesQuery = useModelTemplates();
+  const trainOptionsQuery = useTrainOptions();
   const runsQuery = useRuns(params);
-
-  useEffect(() => {
-    window.localStorage.setItem(MODEL_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
-  }, [templates]);
+  const createTemplateMutation = useCreateModelTemplateMutation();
+  const updateTemplateMutation = useUpdateModelTemplateMutation();
+  const deleteTemplateMutation = useDeleteModelTemplateMutation();
 
   useEffect(() => {
     window.localStorage.setItem(TRAINED_MODELS_STORAGE_KEY, JSON.stringify(runMeta));
   }, [runMeta]);
+
+  const modelOptions = trainOptionsQuery.data?.model_options ?? [];
+  const trainerPresets = trainOptionsQuery.data?.trainer_presets ?? [];
+  const datasetPresets = trainOptionsQuery.data?.dataset_presets ?? [];
+  const templates = templatesQuery.data?.items ?? [];
 
   function switchTab(tab: "templates" | "trained") {
     setSearchParams((current) => {
@@ -138,75 +134,98 @@ export function ModelsPage() {
   }
 
   function openCreateTemplate() {
+    const defaultModel = modelOptions[0]?.value ?? "elastic_net";
+    const draft = buildTemplateDraft(defaultModel);
     setTemplateMode("create");
-    setTemplateDraft(buildDraft("elastic_net"));
+    setTemplateDraft(draft);
+    setHyperparamsText(buildHyperparamsText(draft.hyperparams));
     setTemplateError(null);
   }
 
-  function openEditTemplate(template: ModelTemplate) {
+  function openEditTemplate(templateId: string) {
+    const template = templates.find((item) => item.template_id === templateId);
+    if (!template || template.read_only) {
+      return;
+    }
+    const draft = templateDraftFromView(template);
     setTemplateMode("edit");
-    setTemplateDraft({ ...template });
+    setTemplateDraft(draft);
+    setHyperparamsText(buildHyperparamsText(draft.hyperparams));
     setTemplateError(null);
   }
 
-  function handleTemplateSave() {
+  function openDuplicateTemplate(templateId: string) {
+    const template = templates.find((item) => item.template_id === templateId);
+    if (!template) {
+      return;
+    }
+    const draft = duplicateDraft(templateDraftFromView(template));
+    setTemplateMode("create");
+    setTemplateDraft(draft);
+    setHyperparamsText(buildHyperparamsText(draft.hyperparams));
+    setTemplateError(null);
+  }
+
+  async function handleTemplateSave() {
     if (!templateDraft) {
       return;
     }
     if (!templateDraft.name.trim()) {
-      setTemplateError("\u8bf7\u8f93\u5165\u6a21\u677f\u540d\u79f0\u3002");
+      setTemplateError("请输入模板名称。");
       return;
     }
-    if (!templateDraft.datasetId.trim()) {
-      setTemplateError("\u8bf7\u8f93\u5165\u6570\u636e\u96c6\u6807\u8bc6\u3002");
-      return;
-    }
-    if (!templateDraft.targetColumn.trim()) {
-      setTemplateError("\u8bf7\u8f93\u5165\u76ee\u6807\u5217\u3002");
+    if (!templateDraft.model_name.trim()) {
+      setTemplateError("请选择模型类型。");
       return;
     }
 
-    const nextTemplate = {
-      ...templateDraft,
-      updatedAt: new Date().toISOString(),
+    let parsedHyperparams: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(hyperparamsText || "{}") as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("invalid");
+      }
+      parsedHyperparams = parsed as Record<string, unknown>;
+    } catch {
+      setTemplateError("超参数 JSON 解析失败，请输入合法对象。");
+      return;
+    }
+
+    const payload = {
+      name: templateDraft.name.trim(),
+      model_name: templateDraft.model_name,
+      description: templateDraft.description.trim() || null,
+      hyperparams: parsedHyperparams,
+      trainer_preset: templateDraft.trainer_preset,
+      dataset_preset: templateDraft.dataset_preset,
     };
 
-    setTemplates((current) => {
-      if (templateMode === "edit") {
-        return current.map((item) => (item.id === nextTemplate.id ? nextTemplate : item));
+    try {
+      if (templateMode === "edit" && templateDraft.template_id) {
+        await updateTemplateMutation.mutateAsync({
+          templateId: templateDraft.template_id,
+          body: payload,
+        });
+      } else {
+        await createTemplateMutation.mutateAsync(payload);
       }
-      return [nextTemplate, ...current];
-    });
-    setTemplateDraft(null);
-    setTemplateError(null);
-  }
-
-  function applyRecommendedDefaults() {
-    if (!templateDraft) {
-      return;
+      setTemplateDraft(null);
+      setTemplateError(null);
+    } catch (error) {
+      setTemplateError((error as Error).message);
     }
-    const definition = getAlgorithmDefinition(templateDraft.algorithm);
-    setTemplateDraft((current) =>
-      current
-        ? {
-            ...current,
-            datasetId: definition.defaultDataset,
-            targetColumn: definition.defaultTargetColumn,
-            commonParams: definition.commonDefaults,
-            algorithmParams: Object.fromEntries(
-              definition.parameterFields.map((field) => [field.key, field.defaultValue]),
-            ),
-          }
-        : current,
-    );
   }
 
-  function handleTemplateDeleteConfirm() {
+  async function handleTemplateDeleteConfirm() {
     if (!templateDeleteId) {
       return;
     }
-    setTemplates((current) => current.filter((item) => item.id !== templateDeleteId));
-    setTemplateDeleteId(null);
+    try {
+      await deleteTemplateMutation.mutateAsync(templateDeleteId);
+      setTemplateDeleteId(null);
+    } catch (error) {
+      setTemplateError((error as Error).message);
+    }
   }
 
   function openRunMetaEditor(runId: string) {
@@ -251,6 +270,7 @@ export function ModelsPage() {
   }
 
   const visibleRuns = (runsQuery.data?.items ?? []).filter((item) => !runMeta[item.run_id]?.hidden);
+  const templateSavePending = createTemplateMutation.isPending || updateTemplateMutation.isPending;
 
   return (
     <div className="page-stack">
@@ -258,9 +278,7 @@ export function ModelsPage() {
         <PanelHeader
           eyebrow={I18N.nav.models}
           title={I18N.nav.models}
-          description={
-            "\u628a\u6a21\u677f\u8bbe\u8ba1\u3001\u5df2\u8bad\u7ec3\u4ea7\u7269\u7ba1\u7406\u548c\u56de\u6d4b\u53d1\u8d77\u6536\u5728\u540c\u4e00\u5de5\u4f5c\u9762\u91cc\u3002"
-          }
+          description={"把模板设计、已训练产物管理和回测发起收在同一工作面里。"}
           action={
             <div className="table-actions">
               <LaunchTrainDrawer
@@ -276,17 +294,17 @@ export function ModelsPage() {
                 }
                 description={
                   launchTrainRequested && requestedDatasetId
-                    ? "\u5f53\u524d\u662f\u4ece\u6570\u636e\u96c6\u9875\u8df3\u8fc7\u6765\u7684 dataset-aware \u8bad\u7ec3\u6a21\u5f0f\uff0c\u4f1a\u76f4\u63a5\u4ee5 dataset_id \u4f5c\u4e3a\u8bad\u7ec3\u5165\u53e3\u3002"
+                    ? "当前是从数据集页跳过来的 dataset-aware 训练模式，会直接以 dataset_id 作为训练入口。"
                     : undefined
                 }
                 title={
                   launchTrainRequested && requestedDatasetId
-                    ? "\u57fa\u4e8e\u5f53\u524d\u6570\u636e\u96c6\u53d1\u8d77\u8bad\u7ec3"
+                    ? "基于当前数据集发起训练"
                     : undefined
                 }
                 triggerLabel={
                   launchTrainRequested && requestedDatasetId
-                    ? "\u7ee7\u7eed\u8fd9\u4efd\u6570\u636e\u96c6\u8bad\u7ec3"
+                    ? "继续这份数据集训练"
                     : undefined
                 }
               />
@@ -318,70 +336,91 @@ export function ModelsPage() {
             <PanelHeader
               eyebrow={I18N.nav.modelTemplates}
               title={I18N.nav.modelTemplates}
-              description={I18N.model.templateSection}
+              description={"模板直接来自后端注册与存储，可直接作为训练入口使用。"}
               action={
-                <button className="action-button" onClick={openCreateTemplate} type="button">
+                <button
+                  className="action-button"
+                  onClick={openCreateTemplate}
+                  type="button"
+                  disabled={trainOptionsQuery.isLoading || modelOptions.length === 0}
+                >
                   {I18N.action.createTemplate}
                 </button>
               }
             />
-            {templates.length > 0 ? (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>{"\u6a21\u677f\u540d\u79f0"}</th>
-                    <th>{"\u7b97\u6cd5\u7c7b\u578b"}</th>
-                    <th>{"\u9ed8\u8ba4\u53c2\u6570"}</th>
-                    <th>{"\u9002\u7528\u6570\u636e"}</th>
-                    <th>{"\u542f\u7528\u72b6\u6001"}</th>
-                    <th>{"\u64cd\u4f5c"}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {templates.map((template) => (
-                    <tr key={template.id}>
-                      <td>{template.name}</td>
-                      <td>{getAlgorithmDefinition(template.algorithm).label}</td>
-                      <td>{summarizeTemplateParameters(template)}</td>
-                      <td>{getAlgorithmDefinition(template.algorithm).suitableData}</td>
-                      <td>
-                        <StatusPill status={template.enabled ? "success" : "partial"} />
-                      </td>
-                      <td>
-                        <div className="table-actions">
-                          <button className="link-button" onClick={() => openEditTemplate(template)} type="button">
-                            {I18N.action.editTemplate}
-                          </button>
-                          <button
-                            className="link-button"
-                            onClick={() => {
-                              setTemplateMode("create");
-                              setTemplateDraft(templateCopy(template));
-                              setTemplateError(null);
-                            }}
-                            type="button"
-                          >
-                            {I18N.action.duplicateTemplate}
-                          </button>
-                          <button
-                            className="link-button danger-link"
-                            onClick={() => setTemplateDeleteId(template.id)}
-                            type="button"
-                          >
-                            {I18N.action.delete}
-                          </button>
-                        </div>
-                      </td>
+            {templatesQuery.isLoading ? <LoadingState label={I18N.state.loading} /> : null}
+            {templatesQuery.isError ? (
+              <ErrorState message={(templatesQuery.error as Error).message} />
+            ) : null}
+            {!templatesQuery.isLoading && !templatesQuery.isError ? (
+              templates.length > 0 ? (
+                <table className="data-table trained-models-table">
+                  <thead>
+                    <tr>
+                      <th>{"模板名称"}</th>
+                      <th>{"算法类型"}</th>
+                      <th>{"默认参数"}</th>
+                      <th>{"默认训练入口"}</th>
+                      <th>{"启用状态"}</th>
+                      <th>{"操作"}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <EmptyState
-                title={I18N.state.empty}
-                body={"\u5f53\u524d\u8fd8\u6ca1\u6709\u6a21\u578b\u6a21\u677f\uff0c\u53ef\u4ece\u63a8\u8350\u9ed8\u8ba4\u503c\u5f00\u59cb\u3002"}
-              />
-            )}
+                  </thead>
+                  <tbody>
+                    {templates.map((template) => (
+                      <tr key={template.template_id}>
+                        <td>{template.name}</td>
+                        <td>{modelLabel(template.model_name)}</td>
+                        <td>{summarizeTemplateParameters(template)}</td>
+                        <td>{`${template.dataset_preset} / ${template.trainer_preset}`}</td>
+                        <td>
+                          <StatusPill status={template.model_registered ? "success" : "partial"} />
+                        </td>
+                        <td>
+                          <div className="table-actions template-actions">
+                            <LaunchTrainDrawer
+                              triggerLabel={I18N.action.trainWithTemplate}
+                              title={`基于 ${template.name} 发起训练`}
+                              description={"这个入口会直接把当前模板的 model_name 与 hyperparams 交给训练后端。"}
+                              initialTemplateId={template.template_id}
+                            />
+                            {!template.read_only ? (
+                              <button
+                                className="link-button"
+                                onClick={() => openEditTemplate(template.template_id)}
+                                type="button"
+                              >
+                                {I18N.action.editTemplate}
+                              </button>
+                            ) : null}
+                            <button
+                              className="link-button"
+                              onClick={() => openDuplicateTemplate(template.template_id)}
+                              type="button"
+                            >
+                              {I18N.action.duplicateTemplate}
+                            </button>
+                            {!template.read_only ? (
+                              <button
+                                className="link-button danger-link"
+                                onClick={() => setTemplateDeleteId(template.template_id)}
+                                type="button"
+                              >
+                                {I18N.action.delete}
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <EmptyState
+                  title={I18N.state.empty}
+                  body={"当前还没有模型模板，可从已注册模型创建一个新的可训练模板。"}
+                />
+              )
+            ) : null}
           </section>
 
           {templateDraft ? (
@@ -389,252 +428,120 @@ export function ModelsPage() {
               <PanelHeader
                 eyebrow={templateMode === "edit" ? I18N.action.editTemplate : I18N.action.createTemplate}
                 title={templateMode === "edit" ? I18N.action.editTemplate : I18N.action.createTemplate}
-                description={"\u57fa\u4e8e\u5206\u533a\u914d\u7f6e\u5668\u5904\u7406\u57fa\u7840\u4fe1\u606f\u3001\u901a\u7528\u53c2\u6570\u548c\u7b97\u6cd5\u4e13\u5c5e\u53c2\u6570\u3002"}
+                description={"模板字段与真实训练契约保持一致：模型、超参数、默认 trainer preset、默认 dataset preset。"}
                 action={
-                  <div className="table-actions">
-                    <button className="link-button" onClick={applyRecommendedDefaults} type="button">
-                      {I18N.action.applyDefaults}
-                    </button>
-                    <button className="link-button" onClick={() => setTemplateDraft(null)} type="button">
-                      {I18N.action.close}
-                    </button>
-                  </div>
+                  <button className="link-button" onClick={() => setTemplateDraft(null)} type="button">
+                    {I18N.action.close}
+                  </button>
                 }
               />
               <div className="form-section-grid">
-                <section className="form-section">
-                  <h3>{I18N.model.basicInfo}</h3>
-                  <label>
-                    <span>{"\u540d\u79f0"}</span>
-                    <input
-                      className="field"
-                      onChange={(event) =>
-                        setTemplateDraft((current) =>
-                          current ? { ...current, name: event.target.value } : current,
-                        )
-                      }
-                      value={templateDraft.name}
-                    />
-                  </label>
-                  <label>
-                    <span>{"\u7b97\u6cd5\u7c7b\u578b"}</span>
-                    <select
-                      className="field"
-                      onChange={(event) =>
-                        setTemplateDraft((current) =>
-                          current
-                            ? applyAlgorithmToDraft(current, event.target.value as AlgorithmKey)
-                            : current,
-                        )
-                      }
-                      value={templateDraft.algorithm}
-                    >
-                      {ALGORITHM_DEFINITIONS.map((definition) => (
-                        <option key={definition.key} value={definition.key}>
-                          {definition.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>{"\u6570\u636e\u96c6"}</span>
-                    <input
-                      className="field"
-                      onChange={(event) =>
-                        setTemplateDraft((current) =>
-                          current ? { ...current, datasetId: event.target.value } : current,
-                        )
-                      }
-                      value={templateDraft.datasetId}
-                    />
-                  </label>
-                  <label>
-                    <span>{"\u76ee\u6807\u5217"}</span>
-                    <input
-                      className="field"
-                      onChange={(event) =>
-                        setTemplateDraft((current) =>
-                          current ? { ...current, targetColumn: event.target.value } : current,
-                        )
-                      }
-                      value={templateDraft.targetColumn}
-                    />
-                  </label>
-                  <label>
-                    <span>{"\u8bad\u7ec3\u8bf4\u660e"}</span>
-                    <textarea
-                      className="field area-field"
-                      onChange={(event) =>
-                        setTemplateDraft((current) =>
-                          current ? { ...current, trainingNote: event.target.value } : current,
-                        )
-                      }
-                      value={templateDraft.trainingNote}
-                    />
-                  </label>
-                  <label className="toggle-row">
-                    <input
-                      checked={templateDraft.enabled}
-                      onChange={(event) =>
-                        setTemplateDraft((current) =>
-                          current ? { ...current, enabled: event.target.checked } : current,
-                        )
-                      }
-                      type="checkbox"
-                    />
-                    <span>{templateDraft.enabled ? I18N.status.enabled : I18N.status.disabled}</span>
-                  </label>
-                </section>
-
-                <section className="form-section">
-                  <h3>{I18N.model.trainingParams}</h3>
-                  <FormField
-                    glossaryKey="batch_size"
-                    label={"\u6279\u5927\u5c0f"}
-                    value={String(templateDraft.commonParams.batchSize)}
-                    onChange={(value) =>
+                <label>
+                  <span>{"名称"}</span>
+                  <input
+                    className="field"
+                    onChange={(event) =>
                       setTemplateDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              commonParams: {
-                                ...current.commonParams,
-                                batchSize: Number(value),
-                              },
-                            }
-                          : current,
+                        current ? { ...current, name: event.target.value } : current,
                       )
                     }
+                    value={templateDraft.name}
                   />
-                  <FormField
-                    glossaryKey="epochs"
-                    label={"\u8bad\u7ec3\u8f6e\u6b21"}
-                    value={String(templateDraft.commonParams.epochs)}
-                    onChange={(value) =>
-                      setTemplateDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              commonParams: {
-                                ...current.commonParams,
-                                epochs: Number(value),
-                              },
-                            }
-                          : current,
-                      )
-                    }
-                  />
-                  <FormField
-                    label={"\u968f\u673a\u79cd\u5b50"}
-                    value={String(templateDraft.commonParams.seed)}
-                    onChange={(value) =>
-                      setTemplateDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              commonParams: {
-                                ...current.commonParams,
-                                seed: Number(value),
-                              },
-                            }
-                          : current,
-                      )
-                    }
-                  />
-                  <label>
-                    <span>{"\u9a8c\u8bc1\u7b56\u7565"}</span>
-                    <select
-                      className="field"
-                      onChange={(event) =>
-                        setTemplateDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                commonParams: {
-                                  ...current.commonParams,
-                                  validationStrategy: event.target.value,
-                                },
-                              }
-                            : current,
-                        )
+                </label>
+                <label>
+                  <span>{"模型类型"}</span>
+                  <select
+                    className="field"
+                    onChange={(event) => {
+                      const nextDraft = templateDraft ? applyModelDefaults(templateDraft, event.target.value) : null;
+                      setTemplateDraft(nextDraft);
+                      if (nextDraft) {
+                        setHyperparamsText(buildHyperparamsText(nextDraft.hyperparams));
                       }
-                      value={templateDraft.commonParams.validationStrategy}
-                    >
-                      <option value="\u65f6\u95f4\u5207\u5206">{"\u65f6\u95f4\u5207\u5206"}</option>
-                      <option value="\u6eda\u52a8\u65f6\u95f4\u7a97">{"\u6eda\u52a8\u65f6\u95f4\u7a97"}</option>
-                      <option value="\u6b65\u8fdb\u5f0f validation">{"\u6b65\u8fdb\u5f0f validation"}</option>
-                    </select>
-                  </label>
-                </section>
+                    }}
+                    value={templateDraft.model_name}
+                  >
+                    {modelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>{"默认数据集预置"}</span>
+                  <select
+                    className="field"
+                    onChange={(event) =>
+                      setTemplateDraft((current) =>
+                        current ? { ...current, dataset_preset: event.target.value } : current,
+                      )
+                    }
+                    value={templateDraft.dataset_preset}
+                  >
+                    {datasetPresets.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>{"默认训练预置"}</span>
+                  <select
+                    className="field"
+                    onChange={(event) =>
+                      setTemplateDraft((current) =>
+                        current ? { ...current, trainer_preset: event.target.value } : current,
+                      )
+                    }
+                    value={templateDraft.trainer_preset}
+                  >
+                    {trainerPresets.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
 
-              <section className="form-section">
-                <h3>{I18N.model.algorithmParams}</h3>
-                <div className="parameter-grid">
-                  {getAlgorithmDefinition(templateDraft.algorithm).parameterFields
-                    .filter((field) => !field.advanced)
-                    .map((field) => (
-                      <FormField
-                        glossaryKey={field.glossaryKey}
-                        key={field.key}
-                        label={field.label}
-                        value={String(templateDraft.algorithmParams[field.key] ?? field.defaultValue)}
-                        onChange={(value) =>
-                          setTemplateDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  algorithmParams: {
-                                    ...current.algorithmParams,
-                                    [field.key]: value.includes(".") ? Number(value) : Number(value) || value,
-                                  },
-                                }
-                              : current,
-                          )
-                        }
-                        step={field.step}
-                      />
-                    ))}
-                </div>
-              </section>
+              <label>
+                <span>{"说明"}</span>
+                <textarea
+                  className="field area-field"
+                  onChange={(event) =>
+                    setTemplateDraft((current) =>
+                      current ? { ...current, description: event.target.value } : current,
+                    )
+                  }
+                  value={templateDraft.description}
+                />
+              </label>
 
-              <details className="details-panel">
-                <summary>{I18N.model.advancedParams}</summary>
-                <div className="parameter-grid">
-                  {getAlgorithmDefinition(templateDraft.algorithm).parameterFields
-                    .filter((field) => field.advanced)
-                    .map((field) => (
-                      <FormField
-                        glossaryKey={field.glossaryKey}
-                        key={field.key}
-                        label={field.label}
-                        value={String(templateDraft.algorithmParams[field.key] ?? field.defaultValue)}
-                        onChange={(value) =>
-                          setTemplateDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  algorithmParams: {
-                                    ...current.algorithmParams,
-                                    [field.key]: value.includes(".") ? Number(value) : Number(value) || value,
-                                  },
-                                }
-                              : current,
-                          )
-                        }
-                        step={field.step}
-                      />
-                    ))}
-                </div>
-              </details>
+              <section className="form-section">
+                <h3>{"超参数"}</h3>
+                <p className="drawer-copy">{`${modelCategory(templateDraft.model_name)} · ${modelSuitableData(templateDraft.model_name)}`}</p>
+                <textarea
+                  className="field area-field"
+                  onChange={(event) => setHyperparamsText(event.target.value)}
+                  spellCheck={false}
+                  value={hyperparamsText}
+                />
+              </section>
 
               {templateError ? <p className="form-error">{templateError}</p> : null}
               <div className="dialog-actions inline-actions">
                 <button className="link-button" onClick={() => setTemplateDraft(null)} type="button">
                   {I18N.action.cancel}
                 </button>
-                <button className="action-button" onClick={handleTemplateSave} type="button">
-                  {I18N.action.save}
+                <button
+                  className="action-button"
+                  onClick={() => void handleTemplateSave()}
+                  type="button"
+                  disabled={templateSavePending}
+                >
+                  {templateSavePending ? "保存中..." : I18N.action.save}
                 </button>
               </div>
             </section>
@@ -651,7 +558,7 @@ export function ModelsPage() {
                 <input
                   className="field search-field"
                   onChange={(event) => setRunSearch(event.target.value)}
-                  placeholder="\u641c\u7d22 run_id / \u6a21\u578b / \u6570\u636e\u96c6"
+                  placeholder={"搜索 run_id / 模型 / 数据集"}
                   value={runSearch}
                 />
               }
@@ -660,16 +567,17 @@ export function ModelsPage() {
             {runsQuery.isError ? <ErrorState message={(runsQuery.error as Error).message} /> : null}
             {!runsQuery.isLoading && !runsQuery.isError ? (
               visibleRuns.length > 0 ? (
-                <table className="data-table">
+                <div className="trained-model-table-shell">
+                  <table className="data-table trained-models-table">
                   <thead>
                     <tr>
-                      <th>{"\u5b9e\u4f8b\u540d\u79f0"}</th>
-                      <th>{"\u6765\u6e90\u6a21\u677f"}</th>
-                      <th>{"\u521b\u5efa\u65f6\u95f4"}</th>
-                      <th>{"\u6307\u6807\u6458\u8981"}</th>
-                      <th>{"\u5173\u8054\u56de\u6d4b"}</th>
-                      <th>{"\u72b6\u6001"}</th>
-                      <th>{"\u64cd\u4f5c"}</th>
+                      <th>{"实例名称"}</th>
+                      <th>{"来源模板"}</th>
+                      <th>{"创建时间"}</th>
+                      <th>{"指标摘要"}</th>
+                      <th>{"关联回测"}</th>
+                      <th>{"状态"}</th>
+                      <th>{"操作"}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -682,17 +590,17 @@ export function ModelsPage() {
                           </div>
                         </td>
                         <td>
-                          {algorithmLabel(run.model_name)}
-                          <div className="table-subcopy">{algorithmCategory(run.model_name)}</div>
+                          {modelLabel(run.model_name)}
+                          <div className="table-subcopy">{modelCategory(run.model_name)}</div>
                         </td>
                         <td>{formatDate(run.created_at)}</td>
-                        <td>{summarizeRunMetrics(run)}</td>
+                        <td>{`${run.primary_metric_name?.toUpperCase() ?? "MAE"}=${run.primary_metric_value?.toFixed(4) ?? "--"} / backtests=${run.backtest_count}`}</td>
                         <td>{run.backtest_count}</td>
                         <td>
                           <StatusPill status={run.status} />
                         </td>
                         <td>
-                          <div className="table-actions">
+                          <div className="table-actions trained-model-actions">
                             <Link className="link-button" to={`/models/trained/${run.run_id}`}>
                               {I18N.action.openDetail}
                             </Link>
@@ -703,7 +611,9 @@ export function ModelsPage() {
                               className="link-button"
                               onClick={() => {
                                 setTemplateMode("create");
-                                setTemplateDraft(templateCopy(deriveTemplateFromRun(run)));
+                                const draft = templateDraftFromRun(run);
+                                setTemplateDraft(draft);
+                                setHyperparamsText(buildHyperparamsText(draft.hyperparams));
                                 setTemplateError(null);
                                 switchTab("templates");
                               }}
@@ -730,11 +640,12 @@ export function ModelsPage() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                  </table>
+                </div>
               ) : (
                 <EmptyState
                   title={I18N.state.empty}
-                  body={"\u5f53\u524d\u6ca1\u6709\u53ef\u5c55\u793a\u7684\u5df2\u8bad\u7ec3\u6a21\u578b\u5b9e\u4f8b\u3002"}
+                  body={"当前没有可展示的已训练模型实例。"}
                 />
               )
             ) : null}
@@ -745,7 +656,7 @@ export function ModelsPage() {
               <PanelHeader
                 eyebrow={I18N.action.rename}
                 title={I18N.action.rename}
-                description={"\u53ef\u4e3a\u5df2\u8bad\u7ec3\u6a21\u578b\u6dfb\u52a0\u5c55\u793a\u540d\u548c\u7814\u7a76\u5907\u6ce8\u3002"}
+                description={"可为已训练模型添加展示名和研究备注。"}
                 action={
                   <button className="link-button" onClick={() => setEditingRunId(null)} type="button">
                     {I18N.action.close}
@@ -754,7 +665,7 @@ export function ModelsPage() {
               />
               <div className="form-section-grid">
                 <label>
-                  <span>{"\u5c55\u793a\u540d\u79f0"}</span>
+                  <span>{"展示名称"}</span>
                   <input
                     className="field"
                     onChange={(event) =>
@@ -764,7 +675,7 @@ export function ModelsPage() {
                   />
                 </label>
                 <label>
-                  <span>{"\u7814\u7a76\u5907\u6ce8"}</span>
+                  <span>{"研究备注"}</span>
                   <textarea
                     className="field area-field"
                     onChange={(event) =>
@@ -792,7 +703,7 @@ export function ModelsPage() {
         confirmLabel={I18N.action.confirmDelete}
         message={I18N.model.deleteTemplateMessage}
         onCancel={() => setTemplateDeleteId(null)}
-        onConfirm={handleTemplateDeleteConfirm}
+        onConfirm={() => void handleTemplateDeleteConfirm()}
         open={Boolean(templateDeleteId)}
         title={I18N.action.delete}
         tone="danger"
@@ -808,35 +719,5 @@ export function ModelsPage() {
         tone="danger"
       />
     </div>
-  );
-}
-
-function FormField({
-  label,
-  value,
-  onChange,
-  step,
-  glossaryKey,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  step?: string;
-  glossaryKey?: GlossaryKey;
-}) {
-  return (
-    <label>
-      <span className="form-label-row">
-        <span>{label}</span>
-        {glossaryKey ? <GlossaryHint hintKey={glossaryKey} iconOnly /> : null}
-      </span>
-      <input
-        className="field"
-        onChange={(event) => onChange(event.target.value)}
-        step={step}
-        type="number"
-        value={value}
-      />
-    </label>
   );
 }

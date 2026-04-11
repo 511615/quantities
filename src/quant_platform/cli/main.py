@@ -24,6 +24,8 @@ from quant_platform.training.contracts.training import (
     TrackingContext,
     TrainerConfig,
 )
+from quant_platform.webapi.repositories.artifacts import ArtifactRepository
+from quant_platform.webapi.services.model_cleanup import ModelCleanupService
 from quant_platform.workflows.contracts.requests import (
     BacktestWorkflowRequest,
     PredictWorkflowRequest,
@@ -172,6 +174,21 @@ def predict_smoke() -> None:
 def benchmark_baselines() -> None:
     facade = _build_facade()
     _echo_json(facade.run_baseline_benchmark())
+
+
+@train_app.command("normalize-artifacts")
+def normalize_artifacts(
+    delete_irreparable: bool = typer.Option(
+        True,
+        help="Hard delete runs that cannot be repaired into the new artifact format.",
+    ),
+) -> None:
+    facade = _build_facade()
+    service = ModelCleanupService(
+        repository=ArtifactRepository(facade.artifact_root),
+        facade=facade,
+    )
+    _echo_json(service.normalize_repository(delete_irreparable=delete_irreparable))
 
 
 @backtest_app.command("smoke")

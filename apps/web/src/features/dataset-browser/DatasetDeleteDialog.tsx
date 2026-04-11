@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useDatasetDependencies, useDeleteDatasetMutation } from "../../shared/api/hooks";
@@ -16,18 +16,18 @@ type DatasetDeleteDialogProps = {
 function dependencyKindLabel(kind: string) {
   const normalized = kind.trim().toLowerCase();
   if (normalized === "run") {
-    return "训练运行";
+    return "Training run";
   }
   if (normalized === "backtest") {
-    return "回测结果";
+    return "Backtest";
   }
   if (normalized === "dataset") {
-    return "派生数据集";
+    return "Derived dataset";
   }
   if (normalized === "data_asset") {
-    return "上游数据资产";
+    return "Upstream asset";
   }
-  return kind || "依赖项";
+  return kind || "Dependency";
 }
 
 function dependencyText(item: DatasetDependencyView) {
@@ -59,10 +59,6 @@ export function DatasetDeleteDialog({
     return dependenciesQuery.data?.blocking_items ?? [];
   }, [dependenciesQuery.data?.blocking_items, serverResult?.blocking_items]);
 
-  const canDelete =
-    !dependenciesQuery.isLoading &&
-    (dependenciesQuery.data?.can_delete ?? blockingItems.length === 0);
-
   const handleConfirm = async () => {
     if (!datasetId) {
       return;
@@ -77,68 +73,64 @@ export function DatasetDeleteDialog({
 
   const message =
     serverResult?.message ??
-    `你将从数据目录、本地产物和缓存中永久删除“${datasetLabel}”。删除后不能恢复。`;
+    `This permanently deletes ${datasetLabel} from the registry and local artifacts. Existing runs, backtests, and downstream datasets will keep their ids and surface missing dataset references instead of blocking deletion.`;
 
   return (
     <ConfirmDialog
-      cancelLabel="取消"
-      confirmDisabled={!datasetId || !canDelete || deleteMutation.isPending}
-      confirmLabel={deleteMutation.isPending ? "删除中..." : "确认永久删除"}
+      cancelLabel="Cancel"
+      confirmDisabled={!datasetId || deleteMutation.isPending}
+      confirmLabel={deleteMutation.isPending ? "Deleting..." : "Hard delete dataset"}
       message={message}
       onCancel={onClose}
       onConfirm={handleConfirm}
       open={open}
-      title="删除数据集"
+      title="Delete dataset"
       tone="danger"
     >
       <div className="dialog-section-list">
         <div className="dialog-section">
-          <strong>删除范围</strong>
-          <p>会移除数据集注册信息、该数据集的本地产物，以及由它直接拥有的缓存文件。</p>
+          <strong>Deletion scope</strong>
+          <p>
+            Registry entry, dataset artifacts, manifest, samples, and feature-view side files are removed.
+            Dependency records are kept only as informational context in the response shown before deletion.
+          </p>
         </div>
 
         {dependenciesQuery.isLoading ? (
           <div className="dialog-section">
-            <strong>正在检查依赖关系</strong>
-            <p>系统正在确认是否仍有训练运行、回测结果或派生数据集引用这份数据。</p>
+            <strong>Scanning dependency graph</strong>
+            <p>Checking runs, backtests, and downstream datasets that still reference this dataset id.</p>
           </div>
         ) : null}
 
         {dependenciesQuery.isError ? (
           <div className="dialog-section">
-            <strong>依赖检查失败</strong>
+            <strong>Dependency scan failed</strong>
             <p>{(dependenciesQuery.error as Error).message}</p>
           </div>
         ) : null}
 
         <div className="dialog-section">
-          <strong>{blockingItems.length > 0 ? "当前不允许删除" : "当前允许删除"}</strong>
+          <strong>Hard delete is enabled</strong>
           <p>
             {blockingItems.length > 0
-              ? "下游仍有对象引用这份数据集，必须先清理这些引用，才能执行物理删除。"
-              : "当前没有发现阻塞删除的下游引用，可以执行永久删除。"}
+              ? `${blockingItems.length} downstream references still exist, but they no longer block deletion.`
+              : "No downstream references are currently blocking or warning this action."}
           </p>
         </div>
 
         {blockingItems.length > 0 ? (
           <div className="dialog-section">
-            <strong>阻塞删除的依赖</strong>
+            <strong>Existing downstream references</strong>
             <div className="dialog-dependency-list">
               {blockingItems.map((item) =>
                 item.href ? (
-                  <Link
-                    className="artifact-row"
-                    key={`${item.dependency_kind}-${item.dependency_id}`}
-                    to={item.href}
-                  >
+                  <Link className="artifact-row" key={`${item.dependency_kind}-${item.dependency_id}`} to={item.href}>
                     {dependencyKindLabel(item.dependency_kind)}
                     <span>{dependencyText(item)}</span>
                   </Link>
                 ) : (
-                  <div
-                    className="stack-item align-start"
-                    key={`${item.dependency_kind}-${item.dependency_id}`}
-                  >
+                  <div className="stack-item align-start" key={`${item.dependency_kind}-${item.dependency_id}`}>
                     <strong>{dependencyKindLabel(item.dependency_kind)}</strong>
                     <span>{dependencyText(item)}</span>
                   </div>
@@ -150,23 +142,16 @@ export function DatasetDeleteDialog({
 
         {dependencyItems.length > 0 ? (
           <div className="dialog-section">
-            <strong>依赖概览</strong>
+            <strong>All known dependencies</strong>
             <div className="dialog-dependency-list">
               {dependencyItems.map((item) =>
                 item.href ? (
-                  <Link
-                    className="artifact-row"
-                    key={`${item.dependency_kind}-${item.dependency_id}-all`}
-                    to={item.href}
-                  >
+                  <Link className="artifact-row" key={`${item.dependency_kind}-${item.dependency_id}-all`} to={item.href}>
                     {dependencyKindLabel(item.dependency_kind)}
                     <span>{dependencyText(item)}</span>
                   </Link>
                 ) : (
-                  <div
-                    className="stack-item align-start"
-                    key={`${item.dependency_kind}-${item.dependency_id}-all`}
-                  >
+                  <div className="stack-item align-start" key={`${item.dependency_kind}-${item.dependency_id}-all`}>
                     <strong>{dependencyKindLabel(item.dependency_kind)}</strong>
                     <span>{dependencyText(item)}</span>
                   </div>

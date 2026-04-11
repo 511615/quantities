@@ -10,6 +10,7 @@ from quant_platform.common.io.files import LocalArtifactStore
 from quant_platform.common.enums.core import ModelFamily
 from quant_platform.datasets.manifests.dataset_manifest import DatasetBuildManifest
 from quant_platform.experiment.manifests.run_manifest import RunManifest
+from quant_platform.models.adapters.defaults import StandardPredictionAdapter
 from quant_platform.models.contracts.registration import AdvancedModelKind, ModelRegistration
 from quant_platform.training.contracts.training import FitRequest, TrackingContext, TrainerConfig
 from quant_platform.training.runners.local import LocalTrainingRunner
@@ -27,6 +28,10 @@ def test_local_runner_executes_expected_wiring_order(
     plugin = MagicMock()
     plugin.fit.return_value = {"mae": 0.1, "sample_count": float(len(samples))}
     plugin.feature_importance.return_value = {}
+    plugin.predict.side_effect = lambda bundle: SimpleNamespace(
+        predictions=[0.1 for _ in bundle.source_samples],
+        confidences=[0.5 for _ in bundle.source_samples],
+    )
     artifact_path = artifact_root / "models" / "runner-order" / "metadata.json"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text("{}", encoding="utf-8")
@@ -44,8 +49,15 @@ def test_local_runner_executes_expected_wiring_order(
         model_cls=model_cls,
         input_adapter=SimpleNamespace(
             build_train_input=MagicMock(return_value=samples),
-            build_predict_input=MagicMock(return_value=samples[:1]),
+            build_predict_input=MagicMock(
+                side_effect=lambda scoped_samples, dataset_ref, spec, registration: SimpleNamespace(
+                    source_samples=scoped_samples,
+                    dataset_ref=dataset_ref,
+                    model_spec=spec,
+                )
+            ),
         ),
+        prediction_adapter=StandardPredictionAdapter(),
         artifact_adapter=SimpleNamespace(
             save_model=MagicMock(return_value=SimpleNamespace(artifact_uri=str(artifact_path)))
         ),
@@ -90,6 +102,8 @@ def test_local_runner_executes_expected_wiring_order(
     runtime.artifact_adapter.save_model.assert_called_once()
     assert Path(result.model_artifact_uri).exists()
     assert Path(result.train_manifest_uri).exists()
+    assert (artifact_root / "models" / "runner-order" / "evaluation_summary.json").exists()
+    assert (artifact_root / "predictions" / "runner-order" / "full.json").exists()
     assert (artifact_root / "tracking" / "runner-order.json").exists()
 
 
@@ -147,6 +161,10 @@ def test_local_runner_persists_dataset_readiness_context_in_manifest(
     plugin = MagicMock()
     plugin.fit.return_value = {"mae": 0.1}
     plugin.feature_importance.return_value = {}
+    plugin.predict.side_effect = lambda bundle: SimpleNamespace(
+        predictions=[0.1 for _ in bundle.source_samples],
+        confidences=[0.5 for _ in bundle.source_samples],
+    )
     artifact_path = artifact_root / "models" / "runner-warning" / "metadata.json"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text("{}", encoding="utf-8")
@@ -163,8 +181,15 @@ def test_local_runner_persists_dataset_readiness_context_in_manifest(
         model_cls=MagicMock(return_value=plugin),
         input_adapter=SimpleNamespace(
             build_train_input=MagicMock(return_value=samples),
-            build_predict_input=MagicMock(return_value=samples[:1]),
+            build_predict_input=MagicMock(
+                side_effect=lambda scoped_samples, dataset_ref, spec, registration: SimpleNamespace(
+                    source_samples=scoped_samples,
+                    dataset_ref=dataset_ref,
+                    model_spec=spec,
+                )
+            ),
         ),
+        prediction_adapter=StandardPredictionAdapter(),
         artifact_adapter=SimpleNamespace(
             save_model=MagicMock(return_value=SimpleNamespace(artifact_uri=str(artifact_path)))
         ),
@@ -191,6 +216,9 @@ def test_local_runner_persists_dataset_readiness_context_in_manifest(
         result.train_manifest_uri,
         RunManifest,
     )
+    evaluation_summary = LocalArtifactStore(artifact_root).read_json(
+        str(artifact_root / "models" / "runner-warning" / "evaluation_summary.json")
+    )
     assert train_manifest.dataset_manifest_uri == manifest_artifact.uri
     assert train_manifest.snapshot_version == "snapshot-v1"
     assert train_manifest.dataset_type == "fusion_training_panel"
@@ -201,3 +229,6 @@ def test_local_runner_persists_dataset_readiness_context_in_manifest(
     assert train_manifest.fusion_domains == ["market", "macro", "on_chain"]
     assert "dataset_readiness_warning" in train_manifest.dataset_readiness_warnings
     assert "dataset_freshness:warning" in train_manifest.dataset_readiness_warnings
+    assert evaluation_summary["task_type"] == "regression"
+    assert evaluation_summary["selected_scope"] in {"test", "valid", "full", "train"}
+    assert "regression_metrics" in evaluation_summary

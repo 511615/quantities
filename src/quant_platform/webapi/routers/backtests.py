@@ -3,7 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from quant_platform.webapi.app import ServicesDep
-from quant_platform.webapi.schemas.views import BacktestReportView, BacktestsResponse
+from quant_platform.webapi.schemas.views import (
+    BacktestDeleteResponse,
+    BacktestReportView,
+    BacktestsResponse,
+)
 
 router = APIRouter(prefix="/api/backtests", tags=["backtests"])
 
@@ -33,3 +37,14 @@ def get_backtest_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="Backtest report not found.")
     return detail
+
+
+@router.delete("/{backtest_id}", response_model=BacktestDeleteResponse)
+def delete_backtest(
+    services: ServicesDep,
+    backtest_id: str,
+) -> BacktestDeleteResponse:
+    result = services.workbench.delete_backtest(backtest_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Backtest report not found.")
+    return result

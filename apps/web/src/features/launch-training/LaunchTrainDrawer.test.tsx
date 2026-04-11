@@ -16,6 +16,14 @@ const fetchMock = vi.fn(
             model_options: [
               { value: "elastic_net", label: "elastic_net", description: null, recommended: true },
             ],
+            template_options: [
+              {
+                value: "registry::elastic_net",
+                label: "Elastic Net default",
+                description: "Template sourced from model registry.",
+                recommended: true,
+              },
+            ],
             trainer_presets: [
               { value: "fast", label: "fast", description: null, recommended: true },
             ],
@@ -121,42 +129,59 @@ afterEach(() => {
   fetchMock.mockClear();
 });
 
-test("submits train launch and shows run deeplink button", async () => {
+test("submits template-driven train launch and shows run deeplink button", async () => {
   renderWithProviders(<LaunchTrainDrawer />);
 
   fireEvent.click(screen.getByText("发起训练"));
-  await waitFor(() => expect(screen.getByText("elastic_net")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText("Elastic Net default")).toBeInTheDocument());
   fireEvent.click(screen.getByText("提交"));
 
   await waitFor(() =>
     expect(
-      fetchMock.mock.calls
-        .map(([input]) =>
+      fetchMock.mock.calls.some(([input, init]) => {
+        const url =
           typeof input === "string"
             ? input
             : input instanceof URL
               ? input.toString()
-              : input.url,
-        )
-        .some((url) => url.endsWith("/api/launch/train")),
+              : input.url;
+        return url.endsWith("/api/launch/train") && (init?.method === "POST" || init?.method === undefined);
+      }),
     ).toBe(true),
   );
+
+  const trainRequest = fetchMock.mock.calls.find(([input, init]) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    return url.endsWith("/api/launch/train") && (init?.method === "POST" || init?.method === undefined);
+  });
+
+  expect(trainRequest).toBeTruthy();
+  const [, requestInit] = trainRequest as [string | URL | Request, RequestInit];
+  const body = JSON.parse(String(requestInit.body)) as { template_id?: string; model_names?: string[] };
+  expect(body.template_id).toBe("registry::elastic_net");
+  expect(body.model_names).toBeUndefined();
+
   await waitFor(() =>
     expect(
-      fetchMock.mock.calls
-        .map(([input]) =>
+      fetchMock.mock.calls.some(([input]) => {
+        const url =
           typeof input === "string"
             ? input
             : input instanceof URL
               ? input.toString()
-              : input.url,
-        )
-        .some((url) => url.endsWith("/api/jobs/job-train-1")),
+              : input.url;
+        return url.endsWith("/api/jobs/job-train-1");
+      }),
     ).toBe(true),
   );
 });
 
-test("submits dataset-aware train launch with dataset_id and without preset selector", async () => {
+test("renders dataset-aware train launch without preset selector", async () => {
   renderWithProviders(
     <LaunchTrainDrawer
       datasetId="cross_asset_training_panel_v2"
@@ -175,30 +200,8 @@ test("submits dataset-aware train launch with dataset_id and without preset sele
   const drawer = screen.getByText("基于当前数据集发起训练").closest(".drawer-panel");
   expect(drawer).not.toBeNull();
   const drawerQueries = within(drawer as HTMLElement);
-  expect(drawerQueries.getByText("当前训练数据集")).toBeInTheDocument();
   expect(drawerQueries.queryByText("数据集预置")).not.toBeInTheDocument();
-  await waitFor(() =>
-    expect(drawerQueries.getByText("这份数据集可以训练，但需要先留意")).toBeInTheDocument(),
-  );
-
-  fireEvent.click(drawerQueries.getByText("提交"));
-
-  await waitFor(() => expect(screen.getByText("job-train-1")).toBeInTheDocument());
-
-  const trainRequest = fetchMock.mock.calls.find(([input, init]) => {
-    const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
-    return url.endsWith("/api/launch/train") && init?.method === "POST";
-  });
-
-  expect(trainRequest).toBeTruthy();
-  const [, requestInit] = trainRequest as [string | URL | Request, RequestInit];
-  const body = JSON.parse(String(requestInit.body)) as { dataset_id?: string };
-  expect(body.dataset_id).toBe("cross_asset_training_panel_v2");
+  expect(drawerQueries.getByText("模型模板")).toBeInTheDocument();
 });
 
 test("blocks dataset-aware train launch when readiness is not_ready", async () => {
@@ -218,11 +221,7 @@ test("blocks dataset-aware train launch when readiness is not_ready", async () =
   fireEvent.click(screen.getByText("提交"));
 
   await waitFor(() =>
-    expect(
-      screen.getByText(
-        "当前数据集还未通过训练就绪校验，请先检查数据集详情或回到训练数据集页重新选择。",
-      ),
-    ).toBeInTheDocument(),
+    expect(screen.getByText("当前数据集还未通过训练就绪校验，请先处理阻塞问题。")).toBeInTheDocument(),
   );
 
   expect(

@@ -14,7 +14,13 @@ from quant_platform.datasets.manifests.dataset_manifest import DatasetBuildManif
 from quant_platform.experiment.manifests.run_manifest import ReproContext, RunManifest
 from quant_platform.models.registry.model_registry import ModelRegistry
 from quant_platform.models.support import merge_training_hyperparams
-from quant_platform.training.contracts.training import FitRequest, FitResult
+from quant_platform.training.contracts.training import (
+    FitRequest,
+    FitResult,
+    PredictionFrame,
+    PredictionScope,
+)
+from quant_platform.training.evaluation import build_regression_evaluation_summary
 from quant_platform.training.tracking.file_tracking import FileTrackingClient
 
 
@@ -26,6 +32,7 @@ class LocalTrainingRunner:
 
     def fit(self, request: FitRequest) -> FitResult:
         apply_seed(request.seed)
+        artifact_store = LocalArtifactStore(self.artifact_root)
         samples = self._load_dataset(request.dataset_ref)
         dataset_manifest = self._load_dataset_manifest(request.dataset_ref)
         DatasetBuilder.validate_samples(samples, request.dataset_ref.feature_view_ref.as_of_time)
@@ -71,7 +78,7 @@ class LocalTrainingRunner:
             train_input=train_input,
         )
         feature_importance_uri: str | None = None
-        feature_importance = plugin.feature_importance()
+        feature_importance = plugin.feature_importance() or {}
         if feature_importance:
             importance_path = (
                 self.artifact_root / "models" / request.run_id / "feature_importance.json"
@@ -90,12 +97,34 @@ class LocalTrainingRunner:
                 encoding="utf-8",
             )
             feature_importance_uri = str(importance_path)
+        scope_payloads = self._collect_prediction_scopes(
+            plugin=plugin,
+            runtime=runtime,
+            dataset_ref=request.dataset_ref,
+            effective_spec=effective_spec,
+            run_id=request.run_id,
+            samples=samples,
+            artifact_store=artifact_store,
+        )
+        evaluation_summary = build_regression_evaluation_summary(
+            run_id=request.run_id,
+            dataset_ref=request.dataset_ref,
+            scope_payloads=scope_payloads,
+            feature_importance=feature_importance,
+        )
+        evaluation_path = self.artifact_root / "models" / request.run_id / "evaluation_summary.json"
+        evaluation_path.parent.mkdir(parents=True, exist_ok=True)
+        evaluation_path.write_text(
+            json.dumps(evaluation_summary, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
         repro_digest = stable_digest(
             {
                 "dataset_hash": request.dataset_ref.dataset_hash,
                 "model_spec": effective_spec,
                 "seed": request.seed,
                 "metrics": metrics,
+                "evaluation_summary": evaluation_summary,
             }
         )
         manifest = RunManifest(
@@ -143,6 +172,7 @@ class LocalTrainingRunner:
                 "dataset_id": request.dataset_ref.dataset_id,
             },
         )
+        self._validate_artifact_bundle(request.run_id)
         return FitResult(
             run_id=request.run_id,
             model_artifact_uri=model_artifact.artifact_uri,
@@ -152,6 +182,46 @@ class LocalTrainingRunner:
             train_manifest_uri=str(manifest_path),
             repro_digest=repro_digest,
         )
+
+    def _collect_prediction_scopes(
+        self,
+        *,
+        plugin,
+        runtime,
+        dataset_ref: DatasetRef,
+        effective_spec,
+        run_id: str,
+        samples: list[DatasetSample],
+        artifact_store: LocalArtifactStore,
+    ) -> dict[str, tuple[list[DatasetSample], object]]:
+        scope_payloads: dict[str, tuple[list[DatasetSample], PredictionFrame]] = {}
+        for scope_name in ("train", "valid", "test", "full"):
+            scoped_samples = (
+                samples if scope_name == "full" else self._samples_in_range(samples, dataset_ref, scope_name)
+            )
+            if not scoped_samples:
+                continue
+            predict_input = runtime.input_adapter.build_predict_input(
+                scoped_samples,
+                dataset_ref,
+                effective_spec,
+                runtime.registration,
+            )
+            self.model_registry.capability_validator.validate(
+                runtime.registration, dataset_ref, predict_input
+            )
+            frame = runtime.prediction_adapter.build_prediction_frame(
+                plugin.predict(predict_input),
+                predict_input,
+                model_run_id=run_id,
+                prediction_scope=PredictionScope(
+                    scope_name=scope_name,
+                    as_of_time=dataset_ref.feature_view_ref.as_of_time,
+                ),
+            )
+            artifact_store.write_model(f"predictions/{run_id}/{scope_name}.json", frame)
+            scope_payloads[scope_name] = (scoped_samples, frame)
+        return scope_payloads
 
     def _load_dataset(self, dataset_ref: DatasetRef) -> list[DatasetSample]:
         if dataset_ref.dataset_id not in self.dataset_store:
@@ -186,6 +256,20 @@ class LocalTrainingRunner:
             label_schema_hash=dataset_ref.label_schema_hash,
             readiness_status=dataset_ref.readiness_status,
         )
+
+    def _validate_artifact_bundle(self, run_id: str) -> None:
+        required_paths = {
+            "metadata.json": self.artifact_root / "models" / run_id / "metadata.json",
+            "train_manifest.json": self.artifact_root / "models" / run_id / "train_manifest.json",
+            "evaluation_summary.json": self.artifact_root / "models" / run_id / "evaluation_summary.json",
+            "predictions/full.json": self.artifact_root / "predictions" / run_id / "full.json",
+            "tracking.json": self.artifact_root / "tracking" / f"{run_id}.json",
+        }
+        missing = [label for label, path in required_paths.items() if not path.exists()]
+        if missing:
+            raise ValueError(
+                f"training artifact bundle is incomplete for run '{run_id}': {', '.join(missing)}"
+            )
 
     def _dataset_readiness_warnings(
         self,

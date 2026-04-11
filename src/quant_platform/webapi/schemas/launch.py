@@ -11,12 +11,12 @@ class LaunchApiModel(BaseModel):
 
 
 class LaunchTrainRequest(LaunchApiModel):
-    dataset_preset: Literal["smoke", "real_benchmark"] = "smoke"
+    dataset_preset: Literal["smoke", "real_benchmark"] | None = None
     dataset_id: str | None = None
     template_id: str | None = None
     template_overrides: dict[str, Any] = Field(default_factory=dict)
     model_names: list[str] = Field(default_factory=list)
-    trainer_preset: Literal["fast"] = "fast"
+    trainer_preset: Literal["fast"] | None = None
     seed: int = 7
     experiment_name: str = "workbench-train"
     run_id_prefix: str | None = None

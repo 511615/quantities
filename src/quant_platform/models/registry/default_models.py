@@ -7,6 +7,7 @@ from quant_platform.models.advanced.temporal_fusion import TemporalFusionModel
 from quant_platform.models.advanced.transformer_sequence import TransformerSequenceModel
 from quant_platform.models.baselines.elastic_net import ElasticNetModel
 from quant_platform.models.baselines.gru import GRUSequenceModel
+from quant_platform.models.baselines.lstm import LSTMSequenceModel
 from quant_platform.models.baselines.lightgbm import LightGBMModel
 from quant_platform.models.baselines.mean_baseline import MeanBaselineModel
 from quant_platform.models.baselines.mlp import MLPModel
@@ -43,6 +44,11 @@ def register_default_models(
         require_config=True,
     )
     registry.register_model_class(
+        "quant_platform.models.baselines.lstm.LSTMSequenceModel",
+        LSTMSequenceModel,
+        require_config=True,
+    )
+    registry.register_model_class(
         "quant_platform.models.advanced.transformer_sequence.TransformerSequenceModel",
         TransformerSequenceModel,
         require_config=True,
@@ -62,7 +68,7 @@ def register_default_models(
         MultimodalFusionModel,
         require_config=True,
     )
-    registry.load_model_config(model_config or _default_model_config())
+    registry.load_model_config(_merge_default_model_config(model_config))
 
 
 def _default_model_config() -> ModelConfig:
@@ -120,6 +126,18 @@ def _default_model_config() -> ModelConfig:
                     "artifact_adapter_key": "json_manifest",
                     "capabilities": ["sequence_input"],
                     "default_hyperparams": {"lookback": 2},
+                    "benchmark_eligible": True,
+                    "default_eligible": True,
+                },
+                "lstm": {
+                    "family": "sequence",
+                    "advanced_kind": "baseline",
+                    "entrypoint": "quant_platform.models.baselines.lstm.LSTMSequenceModel",
+                    "input_adapter_key": "sequence_market",
+                    "prediction_adapter_key": "standard_prediction",
+                    "artifact_adapter_key": "json_manifest",
+                    "capabilities": ["sequence_input"],
+                    "default_hyperparams": {"lookback": 3},
                     "benchmark_eligible": True,
                     "default_eligible": True,
                 },
@@ -194,3 +212,15 @@ def _default_model_config() -> ModelConfig:
             },
         }
     )
+
+
+def _merge_default_model_config(model_config: ModelConfig | None) -> ModelConfig:
+    default_config = _default_model_config()
+    if model_config is None:
+        return default_config
+    payload = model_config.model_dump(mode="json")
+    payload.setdefault("models", {})
+    for model_name, entry in default_config.model_dump(mode="json")["models"].items():
+        payload["models"].setdefault(model_name, entry)
+    payload.setdefault("default_model", default_config.default_model)
+    return ModelConfig.model_validate(payload)

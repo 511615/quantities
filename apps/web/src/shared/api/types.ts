@@ -77,6 +77,9 @@ export type RunDetailView = {
   run_id: string;
   model_name: string;
   dataset_id: string | null;
+  task_type?: string | null;
+  artifact_format_status?: string;
+  missing_artifacts?: string[];
   family: string | null;
   backend: string | null;
   status: string;
@@ -85,6 +88,11 @@ export type RunDetailView = {
   tracking_params: Record<string, string>;
   manifest_metrics: Record<string, number>;
   repro_context: Record<string, unknown>;
+  dataset_summary?: Record<string, unknown>;
+  evaluation_summary?: Record<string, unknown>;
+  evaluation_artifacts?: ArtifactView[];
+  prediction_summary?: Record<string, unknown>;
+  time_range?: Record<string, unknown>;
   feature_importance: Record<string, number>;
   predictions: PredictionArtifactView[];
   related_backtests: RelatedBacktestView[];
@@ -193,6 +201,13 @@ export type BacktestReportView = {
   glossary_hints: GlossaryHintView[];
 };
 
+export type BacktestDeleteResponse = {
+  backtest_id: string;
+  status: string;
+  message: string;
+  deleted_files: string[];
+};
+
 export type BenchmarkSelection = {
   benchmark_name: string;
   model_names: string[];
@@ -246,13 +261,52 @@ export type JobResultView = {
   pipeline_summary?: Record<string, unknown> | null;
 };
 
+export type ModelTemplateView = {
+  template_id: string;
+  name: string;
+  model_name: string;
+  description: string | null;
+  source: string;
+  hyperparams: Record<string, unknown>;
+  trainer_preset: string;
+  dataset_preset: string;
+  read_only: boolean;
+  model_registered: boolean;
+  deleted_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type ModelTemplateListResponse = {
+  items: ModelTemplateView[];
+  total: number;
+  model_options_source: string;
+};
+
+export type ModelTemplateCreateRequest = {
+  name: string;
+  model_name: string;
+  description?: string | null;
+  hyperparams?: Record<string, unknown>;
+  trainer_preset?: string;
+  dataset_preset?: string;
+};
+
+export type ModelTemplateUpdateRequest = {
+  name?: string;
+  description?: string | null;
+  hyperparams?: Record<string, unknown>;
+  trainer_preset?: string;
+  dataset_preset?: string;
+};
+
 export type LaunchTrainRequest = {
-  dataset_preset: "smoke" | "real_benchmark";
+  dataset_preset?: "smoke" | "real_benchmark";
   dataset_id?: string;
   template_id?: string;
   template_overrides?: Record<string, unknown>;
   model_names?: string[];
-  trainer_preset: "fast";
+  trainer_preset?: "fast";
   seed: number;
   experiment_name: string;
   run_id_prefix?: string;
@@ -446,10 +500,17 @@ export type DatasetOptionValueView = {
 
 export type DatasetDomainCapabilityView = {
   source_vendors: DatasetOptionValueView[];
+  supported_vendors?: string[];
   exchanges?: DatasetOptionValueView[];
+  supported_exchanges?: string[];
   frequencies: DatasetOptionValueView[];
+  supported_frequencies?: string[];
   symbol_types?: DatasetOptionValueView[];
+  supported_symbol_types?: string[];
   selection_modes?: DatasetOptionValueView[];
+  supported_selection_modes?: string[];
+  supported_dataset_types?: string[];
+  supports_real_ingestion?: boolean;
 };
 
 export type DatasetSymbolSelectorView = {
@@ -497,7 +558,7 @@ export type DatasetAcquisitionRequest = {
     start_time: string | null;
     end_time: string | null;
   };
-  symbol_selector: {
+  symbol_selector?: {
     symbol_type: string;
     selection_mode: string;
     symbols: string[];
@@ -636,8 +697,36 @@ export type DatasetDeleteResponse = {
   dataset_id: string;
   status: string;
   message: string;
-  blocking_items: DatasetDependencyView[];
+  blocking_items?: DatasetDependencyView[];
   deleted_files: string[];
+};
+
+export type DatasetNlpInspectionView = {
+  dataset_id: string;
+  contains_nlp: boolean;
+  coverage_summary?: string | null;
+  requested_start_time?: string | null;
+  requested_end_time?: string | null;
+  actual_start_time?: string | null;
+  actual_end_time?: string | null;
+  source_vendors?: string[];
+  keyword_summary?: Array<{ term: string; score?: number | null; count?: number | null; weight?: number | null }>;
+  word_cloud_terms?: Array<{ term: string; score?: number | null; count?: number | null; weight?: number | null }>;
+  source_breakdown?: Array<{ source: string; count: number; share: number }>;
+  event_timeline?: Array<{ label: string; event_count: number; avg_sentiment: number | null }>;
+  sentiment_distribution?: Array<{ label: string; value: number }>;
+  recent_event_previews?: Array<{
+    event_id: string;
+    title: string;
+    snippet: string;
+    source: string;
+    symbol: string | null;
+    event_time: string;
+    available_time: string | null;
+    sentiment_score: number | null;
+    url?: string | null;
+  }>;
+  sample_feature_preview?: Record<string, number | null>;
 };
 
 export type TrainingDatasetSummaryView = {

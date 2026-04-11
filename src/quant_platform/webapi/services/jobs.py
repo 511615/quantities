@@ -20,6 +20,7 @@ from quant_platform.backtest.contracts.backtest import (
     PortfolioConfig,
     StrategyConfig,
 )
+from quant_platform.backtest.contracts.scenario import ScenarioSpec
 from quant_platform.common.types.core import SchemaField
 from quant_platform.datasets.contracts.dataset import DatasetRef, DatasetSample
 from quant_platform.models.contracts.model_spec import ModelSpec
@@ -50,6 +51,7 @@ from quant_platform.webapi.schemas.views import (
     JobResultView,
     JobStageView,
     JobStatusView,
+    ModelTemplateView,
     PipelineStageView,
     PipelineSummaryView,
     StableSummaryView,
@@ -174,9 +176,8 @@ class JobService:
         )
 
     def get_train_options(self) -> TrainLaunchOptionsView:
-        baseline_specs = self.facade.benchmark_workflow.build_baseline_model_specs()
-        model_names = sorted({spec.model_name for spec in baseline_specs})
         template_response = self.workbench.list_model_templates()
+        model_names = sorted({item.model_name for item in template_response.items if item.deleted_at is None})
         return TrainLaunchOptionsView(
             dataset_presets=[
                 PresetOptionView(
@@ -221,7 +222,11 @@ class JobService:
             default_seed=7,
             constraints={
                 "max_models_per_launch": 5,
-                "required_fields": ["template_id", "trainer_preset"],
+                "selection_mode": "template_preferred",
+                "mutually_exclusive_fields": [["template_id", "model_names"]],
+                "default_template_id": "registry::elastic_net",
+                "default_dataset_preset": "smoke",
+                "default_trainer_preset": "fast",
                 "dataset_selector": {
                     "accepted_fields": ["dataset_id", "dataset_preset"],
                     "priority": "dataset_id_gt_dataset_preset",
@@ -331,12 +336,14 @@ class JobService:
             self._update_status(job_id, status="failed", error_message=str(exc))
 
     def _run_train_job(self, context: JobContext, request: LaunchTrainRequest) -> JobResultView:
+        template = self._resolve_template_for_request(request)
         if request.dataset_id:
             context.start_stage("prepare", f"Loading dataset '{request.dataset_id}'")
             dataset_ref = self._load_dataset_from_artifacts(request.dataset_id)
             context.finish_stage("prepare", f"Loaded dataset '{request.dataset_id}'")
         else:
-            prepare_request, dataset_name = self._prepare_request_for_dataset(request.dataset_preset)
+            dataset_preset = request.dataset_preset or (template.dataset_preset if template else "smoke")
+            prepare_request, dataset_name = self._prepare_request_for_dataset(dataset_preset)
             context.start_stage("prepare", f"Preparing dataset preset: {dataset_name}")
             prepare_result = self.facade.prepare_workflow.prepare(prepare_request)
             dataset_ref = prepare_result.dataset_ref
@@ -684,11 +691,60 @@ class JobService:
         context.finish_stage(acquire_stage, f"Resolved request from {request_summary}")
 
         if len(normalized_sources) == 1:
-            prepare_request = self.facade.prepare_workflow.build_prepare_request_from_dataset_request(
-                workflow_request
+            single_source = normalized_sources[0]
+            if single_source.data_domain == "market":
+                prepare_request = self.facade.prepare_workflow.build_prepare_request_from_dataset_request(
+                    workflow_request
+                )
+                context.start_stage(
+                    prepare_stage, f"Preparing dataset '{prepare_request.dataset_id}'"
+                )
+                prepare_result = self.facade.prepare_workflow.prepare(prepare_request)
+            elif single_source.data_domain == "sentiment_events":
+                api_source = DatasetAcquisitionSourceRequest.model_validate(
+                    single_source.model_dump(mode="json")
+                )
+                context.start_stage(
+                    prepare_stage,
+                    f"Preparing sentiment dataset '{request.request_name}'",
+                )
+                final_dataset_id = self.workbench.build_sentiment_dataset_from_request(
+                    request,
+                    api_source,
+                )
+                prepare_result = DatasetMaterializationResult(
+                    dataset_ref=self._load_dataset_from_artifacts(final_dataset_id),
+                    dataset_manifest_uri=str(
+                        self.artifact_root
+                        / "datasets"
+                        / f"{final_dataset_id}_dataset_manifest.json"
+                    ),
+                    quality_report_uri=None,
+                )
+            else:
+                raise JobExecutionError(
+                    "Single-domain dataset requests currently support market and sentiment_events."
+                )
+        elif all(source.data_domain == "sentiment_events" for source in normalized_sources):
+            api_sources = [
+                DatasetAcquisitionSourceRequest.model_validate(source.model_dump(mode="json"))
+                for source in normalized_sources
+            ]
+            context.start_stage(
+                prepare_stage,
+                f"Preparing sentiment dataset '{request.request_name}' from {len(api_sources)} sources",
             )
-            context.start_stage(prepare_stage, f"Preparing dataset '{prepare_request.dataset_id}'")
-            prepare_result = self.facade.prepare_workflow.prepare(prepare_request)
+            final_dataset_id = self.workbench.build_sentiment_dataset_from_sources(
+                request,
+                api_sources,
+            )
+            prepare_result = DatasetMaterializationResult(
+                dataset_ref=self._load_dataset_from_artifacts(final_dataset_id),
+                dataset_manifest_uri=str(
+                    self.artifact_root / "datasets" / f"{final_dataset_id}_dataset_manifest.json"
+                ),
+                quality_report_uri=None,
+            )
         else:
             context.start_stage(prepare_stage, "Preparing market anchor and merged dataset")
             final_dataset_id = self._execute_multi_domain_dataset_request(workflow_request)
@@ -724,9 +780,12 @@ class JobService:
         stage_name: str,
     ) -> tuple[list[str], list[str], object]:
         context.start_stage(stage_name, "Starting training workflow")
+        template = self._resolve_template_for_request(request)
+        self._validate_train_selection(request=request, template=template)
         model_specs = self._resolve_model_specs_for_request(
             request=request,
             feature_schema=dataset_ref.feature_view_ref.feature_schema,
+            template=template,
         )
         if not model_specs:
             raise JobExecutionError("No supported models selected for training.")
@@ -753,7 +812,9 @@ class JobService:
             TrainWorkflowRequest(
                 dataset_ref=dataset_ref,
                 model_specs=model_specs,
-                trainer_config=self._trainer_config(request.trainer_preset),
+                trainer_config=self._trainer_config(
+                    request.trainer_preset or (template.trainer_preset if template else "fast")
+                ),
                 tracking_context=TrackingContext(
                     backend="file",
                     experiment_name=request.experiment_name,
@@ -810,10 +871,11 @@ class JobService:
             raise JobExecutionError(
                 "Multi-domain trainable requests require the same frequency across all sources."
             )
-        merge_policy_name = request.merge_policy_name or "strict_timestamp_inner"
-        if merge_policy_name != "strict_timestamp_inner":
+        merge_policy_name = request.merge_policy_name or "available_time_safe_asof"
+        if merge_policy_name not in {"strict_timestamp_inner", "available_time_safe_asof"}:
             raise JobExecutionError(
-                f"Unsupported merge policy '{merge_policy_name}'. Only strict_timestamp_inner is allowed."
+                f"Unsupported merge policy '{merge_policy_name}'. "
+                "Only strict_timestamp_inner and available_time_safe_asof are allowed."
             )
 
         market_source = market_sources[0]
@@ -1001,9 +1063,20 @@ class JobService:
             if not samples_path.exists():
                 raise JobExecutionError(f"Dataset samples for '{dataset_id}' are missing.")
             payload = self.facade.store.read_json(str(samples_path))
-            self.facade.dataset_store[dataset_id] = [
-                DatasetSample.model_validate(item) for item in payload.get("samples", [])
-            ]
+            feature_order = [field.name for field in dataset_ref.feature_view_ref.feature_schema]
+            samples = [DatasetSample.model_validate(item) for item in payload.get("samples", [])]
+            if feature_order:
+                normalized_samples: list[DatasetSample] = []
+                for sample in samples:
+                    normalized_features = {
+                        name: float(sample.features.get(name, 0.0))
+                        for name in feature_order
+                    }
+                    normalized_samples.append(
+                        sample.model_copy(update={"features": normalized_features})
+                    )
+                samples = normalized_samples
+            self.facade.dataset_store[dataset_id] = samples
         readiness = self.workbench.get_dataset_readiness(dataset_id)
         if readiness is None:
             return dataset_ref
@@ -1037,6 +1110,14 @@ class JobService:
             cost_model=CostModel(fee_bps=5.0, slippage_bps=2.0),
             benchmark_spec=BenchmarkSpec(name="buy_and_hold", symbol=benchmark_symbol),
             calendar_spec=CalendarSpec(timezone="UTC", frequency="1h"),
+            # Keep workbench launches interactive: run baseline research/simulation first
+            # instead of the full stress matrix used in offline protocol batches.
+            scenario_specs=[
+                ScenarioSpec(
+                    name="BASELINE",
+                    description="default backtest configuration",
+                )
+            ],
         )
 
     def _update_stage(
@@ -1424,14 +1505,10 @@ class JobService:
         *,
         request: LaunchTrainRequest,
         feature_schema: list[SchemaField],
+        template: ModelTemplateView | None = None,
     ) -> list[ModelSpec]:
         selected: list[tuple[str, dict[str, object]]] = []
-        if request.template_id:
-            template = self.workbench.get_model_template(request.template_id)
-            if template is None:
-                raise JobExecutionError(f"Template '{request.template_id}' does not exist.")
-            if template.deleted_at is not None:
-                raise JobExecutionError(f"Template '{request.template_id}' has been deleted.")
+        if template is not None:
             merged = {**template.hyperparams, **request.template_overrides}
             selected.append((template.model_name, merged))
         elif request.model_names:
@@ -1465,6 +1542,34 @@ class JobService:
                 )
             )
         return model_specs
+
+    def _resolve_template_for_request(
+        self,
+        request: LaunchTrainRequest,
+    ) -> ModelTemplateView | None:
+        if not request.template_id:
+            return None
+        template = self.workbench.get_model_template(request.template_id)
+        if template is None:
+            raise JobExecutionError(f"Template '{request.template_id}' does not exist.")
+        if template.deleted_at is not None:
+            raise JobExecutionError(f"Template '{request.template_id}' has been deleted.")
+        return template
+
+    def _validate_train_selection(
+        self,
+        *,
+        request: LaunchTrainRequest,
+        template: ModelTemplateView | None,
+    ) -> None:
+        if template is not None and request.model_names:
+            raise JobExecutionError(
+                "template_id and model_names cannot be supplied together."
+            )
+        if len(request.model_names) > 5:
+            raise JobExecutionError(
+                "No more than 5 model_names can be launched in a single request."
+            )
 
     def _deeplink_map(self, links: list[DeepLinkView]) -> dict[str, str | None]:
         values: dict[str, str | None] = {

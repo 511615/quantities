@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { ModelsPage } from "./ModelsPage";
-import { experimentsFixture } from "../test/fixtures";
+import { experimentsFixture, modelTemplatesFixture, trainOptionsFixture } from "../test/fixtures";
 import { createFetchMock, jsonResponse } from "../test/mockApi";
 import { renderWithProviders } from "../test/renderWithProviders";
 
@@ -10,20 +10,12 @@ const fetchMock = vi.fn(
   createFetchMock([
     (url) => (url.includes("/api/runs?") ? jsonResponse(experimentsFixture) : undefined),
     (url) =>
+      url.endsWith("/api/models/templates")
+        ? jsonResponse(modelTemplatesFixture)
+        : undefined,
+    (url) =>
       url.endsWith("/api/launch/train/options")
-        ? jsonResponse({
-            dataset_presets: [
-              { value: "smoke", label: "Smoke", description: null, recommended: true },
-            ],
-            model_options: [
-              { value: "elastic_net", label: "elastic_net", description: null, recommended: true },
-            ],
-            trainer_presets: [
-              { value: "fast", label: "fast", description: null, recommended: true },
-            ],
-            default_seed: 7,
-            constraints: {},
-          })
+        ? jsonResponse(trainOptionsFixture)
         : undefined,
     (url) =>
       url.endsWith("/api/datasets/cross_asset_training_panel_v2")
@@ -152,20 +144,22 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-test("renders model templates and trained model tabs", async () => {
+test("renders backend model templates and trained model tabs", async () => {
   renderWithProviders(<ModelsPage />, "/models");
 
   await waitFor(() =>
     expect(screen.getByRole("heading", { name: "模型模板" })).toBeInTheDocument(),
   );
-  expect(screen.getByText("Elastic Net 模板")).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("Elastic Net default")).toBeInTheDocument());
+  expect(screen.getByText("Custom Elastic Net")).toBeInTheDocument();
+  expect(screen.getAllByText("使用此模板训练").length).toBeGreaterThan(0);
 
   fireEvent.click(screen.getByText("已训练模型"));
   await waitFor(() => expect(screen.getByText("smoke-train-run")).toBeInTheDocument());
   expect(screen.getAllByText("发起回测").length).toBeGreaterThan(0);
 });
 
-test("auto opens dataset-aware train drawer from query params", async () => {
+test("opens dataset-aware train drawer from query params", async () => {
   renderWithProviders(
     <ModelsPage />,
     "/models?launchTrain=1&datasetId=cross_asset_training_panel_v2",
@@ -182,17 +176,10 @@ test("auto opens dataset-aware train drawer from query params", async () => {
     ),
   ).toBeInTheDocument();
 
-  const drawer = screen
-    .getByText("基于当前数据集发起训练")
-    .closest(".drawer-panel");
+  const drawer = screen.getByText("基于当前数据集发起训练").closest(".drawer-panel");
   expect(drawer).not.toBeNull();
 
   const drawerQueries = within(drawer as HTMLElement);
   expect(drawerQueries.queryByText("数据集预置")).not.toBeInTheDocument();
-  expect(
-    drawerQueries.getByText(
-      (content) =>
-        content === "正在读取训练就绪度" || content === "这份数据集可以训练，但需要先留意",
-    ),
-  ).toBeInTheDocument();
+  expect(drawerQueries.getByText("模型模板")).toBeInTheDocument();
 });

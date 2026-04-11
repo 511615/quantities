@@ -1,9 +1,11 @@
 import { useState } from "react";
+import type { EChartsOption } from "echarts";
 import { Link, useParams } from "react-router-dom";
 
 import { LaunchBacktestDrawer } from "../features/launch-backtest/LaunchBacktestDrawer";
 import { useArtifactPreview, useRunDetail } from "../shared/api/hooks";
-import { formatDate, formatNumber } from "../shared/lib/format";
+import type { ArtifactView, RunDetailView } from "../shared/api/types";
+import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
 import { I18N } from "../shared/lib/i18n";
 import { formatArtifactLabel } from "../shared/lib/labels";
 import { mapRunDetail } from "../shared/view-model/mappers";
@@ -12,6 +14,244 @@ import { MetricGrid } from "../shared/ui/MetricGrid";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 import { StatusPill } from "../shared/ui/StatusPill";
+import { WorkbenchChart } from "../shared/ui/WorkbenchChart";
+
+type NumericMap = Record<string, number>;
+type GenericRecord = Record<string, unknown>;
+type TimeSeriesPoint = { timestamp?: string; prediction?: number; target?: number; residual?: number };
+type ScatterPoint = { prediction?: number; target?: number; timestamp?: string };
+type HistogramPoint = { label?: string; count?: number; center?: number };
+
+const PERCENT_METRIC_KEYS = new Set(["sign_hit_rate", "mape", "smape"]);
+
+function asRecord(value: unknown): GenericRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as GenericRecord)
+    : {};
+}
+
+function asNumericMap(value: unknown): NumericMap {
+  const record = asRecord(value);
+  return Object.fromEntries(
+    Object.entries(record).filter(([, item]) => typeof item === "number"),
+  ) as NumericMap;
+}
+
+function asTimeSeries(value: unknown): TimeSeriesPoint[] {
+  return Array.isArray(value) ? (value as TimeSeriesPoint[]) : [];
+}
+
+function asScatterSeries(value: unknown): ScatterPoint[] {
+  return Array.isArray(value) ? (value as ScatterPoint[]) : [];
+}
+
+function asHistogram(value: unknown): HistogramPoint[] {
+  return Array.isArray(value) ? (value as HistogramPoint[]) : [];
+}
+
+function asArtifacts(value: unknown): ArtifactView[] {
+  return Array.isArray(value) ? (value as ArtifactView[]) : [];
+}
+
+function metricLabel(key: string): string {
+  const labels: Record<string, string> = {
+    mae: "MAE",
+    rmse: "RMSE",
+    r2: "R2",
+    bias: "Bias",
+    sign_hit_rate: "方向命中率",
+    valid_mae: "验证集 MAE",
+    mean_prediction: "预测均值",
+    mean_target: "真实均值",
+    sample_count: "样本数",
+    mape: "MAPE",
+    smape: "SMAPE",
+  };
+  return labels[key] ?? key;
+}
+
+function formatMetricValue(key: string, value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "--";
+  }
+  if (PERCENT_METRIC_KEYS.has(key)) {
+    return formatPercent(value);
+  }
+  if (key === "sample_count") {
+    return Math.round(value).toString();
+  }
+  return formatNumber(value);
+}
+
+function stringValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "--";
+  }
+  if (Array.isArray(value)) {
+    return value.join(", ") || "--";
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function combineArtifacts(detail: RunDetailView): ArtifactView[] {
+  const seen = new Set<string>();
+  const merged: ArtifactView[] = [];
+  for (const artifact of [...detail.artifacts, ...asArtifacts(detail.evaluation_artifacts)]) {
+    if (!seen.has(artifact.uri)) {
+      seen.add(artifact.uri);
+      merged.push(artifact);
+    }
+  }
+  return merged;
+}
+
+function lineChartOption(
+  points: TimeSeriesPoint[],
+  seriesKey: "prediction" | "target" | "residual",
+  title: string,
+): EChartsOption {
+  return {
+    tooltip: { trigger: "axis" },
+    legend: { textStyle: { color: "#d5cfc1" } },
+    grid: { left: 42, right: 20, top: 36, bottom: 36 },
+    xAxis: {
+      type: "category",
+      data: points.map((point) => formatDate(point.timestamp ?? null)),
+      axisLabel: { color: "#b8b09e", hideOverlap: true },
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { color: "#b8b09e" },
+      splitLine: { lineStyle: { color: "rgba(213, 207, 193, 0.08)" } },
+    },
+    series: [
+      {
+        name: title,
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        areaStyle: seriesKey === "residual" ? undefined : { opacity: 0.12 },
+        lineStyle: { color: seriesKey === "residual" ? "#ffb479" : "#c7ff73" },
+        data: points.map((point) => {
+          if (seriesKey === "residual") {
+            return point.residual ?? 0;
+          }
+          return point[seriesKey] ?? 0;
+        }),
+      },
+    ],
+  } as EChartsOption;
+}
+
+function compareChartOption(points: TimeSeriesPoint[]): EChartsOption {
+  return {
+    tooltip: { trigger: "axis" },
+    legend: { textStyle: { color: "#d5cfc1" } },
+    grid: { left: 42, right: 20, top: 36, bottom: 36 },
+    xAxis: {
+      type: "category",
+      data: points.map((point) => formatDate(point.timestamp ?? null)),
+      axisLabel: { color: "#b8b09e", hideOverlap: true },
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { color: "#b8b09e" },
+      splitLine: { lineStyle: { color: "rgba(213, 207, 193, 0.08)" } },
+    },
+    series: [
+      {
+        name: "预测值",
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { color: "#c7ff73" },
+        areaStyle: { opacity: 0.12 },
+        data: points.map((point) => point.prediction ?? 0),
+      },
+      {
+        name: "真实值",
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { color: "#8ad4ff" },
+        data: points.map((point) => point.target ?? 0),
+      },
+    ],
+  } as EChartsOption;
+}
+
+function scatterChartOption(points: ScatterPoint[]): EChartsOption {
+  return {
+    tooltip: { trigger: "item" },
+    grid: { left: 42, right: 20, top: 24, bottom: 36 },
+    xAxis: {
+      type: "value",
+      name: "预测值",
+      nameTextStyle: { color: "#b8b09e" },
+      axisLabel: { color: "#b8b09e" },
+      splitLine: { lineStyle: { color: "rgba(213, 207, 193, 0.08)" } },
+    },
+    yAxis: {
+      type: "value",
+      name: "真实值",
+      nameTextStyle: { color: "#b8b09e" },
+      axisLabel: { color: "#b8b09e" },
+      splitLine: { lineStyle: { color: "rgba(213, 207, 193, 0.08)" } },
+    },
+    series: [
+      {
+        type: "scatter",
+        symbolSize: 9,
+        itemStyle: { color: "#ffb479" },
+        data: points.map((point) => [point.prediction ?? 0, point.target ?? 0]),
+      },
+    ],
+  } as EChartsOption;
+}
+
+function histogramChartOption(points: HistogramPoint[]): EChartsOption {
+  return {
+    tooltip: { trigger: "axis" },
+    grid: { left: 42, right: 20, top: 24, bottom: 56 },
+    xAxis: {
+      type: "category",
+      data: points.map((point) => point.label ?? ""),
+      axisLabel: { color: "#b8b09e", interval: "auto", rotate: 24 },
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { color: "#b8b09e" },
+      splitLine: { lineStyle: { color: "rgba(213, 207, 193, 0.08)" } },
+    },
+    series: [
+      {
+        type: "bar",
+        itemStyle: { color: "#8ad4ff" },
+        data: points.map((point) => point.count ?? 0),
+      },
+    ],
+  } as EChartsOption;
+}
+
+function SummaryList({
+  items,
+}: {
+  items: Array<{ label: string; value: string }>;
+}) {
+  return (
+    <div className="stack-list">
+      {items.map((item) => (
+        <div className="stack-item align-start" key={item.label}>
+          <strong>{item.label}</strong>
+          <span>{item.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function RunDetailPage() {
   const { runId = "" } = useParams();
@@ -26,10 +266,54 @@ export function RunDetailPage() {
     return <ErrorState message={(runQuery.error as Error).message} />;
   }
   if (!runQuery.data) {
-    return <EmptyState body={"\u6ca1\u6709\u627e\u5230\u5bf9\u5e94 run \u8be6\u60c5\u3002"} title={I18N.state.empty} />;
+    return <EmptyState body="没有找到对应的训练运行。" title={I18N.state.empty} />;
   }
 
   const detail = mapRunDetail(runQuery.data);
+  const evaluation = asRecord(detail.evaluation_summary);
+  const regressionMetrics = asNumericMap(evaluation.regression_metrics);
+  const datasetSummary = asRecord(detail.dataset_summary);
+  const timeRange = asRecord(detail.time_range);
+  const series = asRecord(evaluation.series);
+  const predictionVsTarget = asTimeSeries(series.prediction_vs_target_timeseries);
+  const residualSeries = asTimeSeries(series.residual_timeseries);
+  const scatterSeries = asScatterSeries(series.prediction_vs_target_scatter);
+  const histogramSeries = asHistogram(series.residual_histogram);
+  const evaluationArtifacts = asArtifacts(detail.evaluation_artifacts);
+  const artifacts = combineArtifacts(detail);
+  const contextItems = [
+    { label: "任务类型", value: stringValue(detail.task_type) },
+    { label: "数据集类型", value: stringValue(datasetSummary.dataset_type) },
+    { label: "数据域", value: stringValue(datasetSummary.data_domains ?? datasetSummary.data_domain) },
+    { label: "实体范围", value: stringValue(datasetSummary.entity_scope) },
+    { label: "Feature Schema", value: stringValue(datasetSummary.feature_schema_hash) },
+    { label: "Snapshot", value: stringValue(datasetSummary.snapshot_version) },
+    { label: "训练参数", value: stringValue(detail.tracking_params) },
+    { label: "复现实验上下文", value: stringValue(detail.repro_context) },
+  ];
+  const summaryMetrics = [
+    { label: "模型", value: detail.model_name },
+    { label: "模型家族", value: detail.family ?? "--" },
+    { label: "数据集", value: detail.dataset_id ?? "--" },
+    {
+      label: "时间范围",
+      value: `${stringValue(timeRange.start_time)} 至 ${stringValue(timeRange.end_time)}`,
+    },
+    { label: "创建时间", value: formatDate(detail.created_at) },
+    { label: "训练后端", value: detail.backend ?? "--" },
+    { label: "产物格式", value: detail.artifact_format_status ?? "--" },
+  ];
+  const coreMetrics = [
+    { label: "MAE", value: formatMetricValue("mae", regressionMetrics.mae) },
+    { label: "RMSE", value: formatMetricValue("rmse", regressionMetrics.rmse) },
+    { label: "R2", value: formatMetricValue("r2", regressionMetrics.r2) },
+    { label: "Bias", value: formatMetricValue("bias", regressionMetrics.bias) },
+    {
+      label: "方向命中率",
+      value: formatMetricValue("sign_hit_rate", regressionMetrics.sign_hit_rate),
+    },
+    { label: "验证集 MAE", value: formatMetricValue("valid_mae", regressionMetrics.valid_mae) },
+  ];
 
   return (
     <div className="page-stack">
@@ -37,9 +321,7 @@ export function RunDetailPage() {
         <PanelHeader
           eyebrow={I18N.nav.trainedModels}
           title={detail.run_id}
-          description={
-            "\u628a Run Detail \u6536\u8fdb\u5df2\u8bad\u7ec3\u6a21\u578b\u89c6\u56fe\uff0c\u7edf\u4e00\u67e5\u770b\u8bad\u7ec3\u6307\u6807\u3001\u4ea7\u7269\u3001\u5173\u8054\u56de\u6d4b\u548c\u8bf4\u660e\u5907\u6ce8\u3002"
-          }
+          description="这里汇总训练完成后的核心评估、回归曲线、训练上下文、产物预览和回测入口，确保新产物格式的模型能直接被研究页面消费。"
           action={
             <div className="table-actions">
               <Link className="link-button" to="/models?tab=trained">
@@ -50,151 +332,168 @@ export function RunDetailPage() {
             </div>
           }
         />
-        <MetricGrid
-          items={[
-            { label: "\u6a21\u578b", value: detail.model_name },
-            { label: "\u7b97\u6cd5\u7c7b\u578b", value: detail.family ?? "--" },
-            { label: "\u6570\u636e\u96c6", value: detail.dataset_id ?? "--" },
-            { label: "\u521b\u5efa\u65f6\u95f4", value: formatDate(detail.created_at) },
-            { label: "\u540e\u7aef", value: detail.backend ?? "--" },
-            { label: "MAE", value: formatNumber(detail.metrics.mae) },
-          ]}
+        <MetricGrid items={summaryMetrics} />
+      </section>
+
+      <section className="panel">
+        <PanelHeader
+          eyebrow="核心评估"
+          title="回归指标总览"
+          description={`主展示范围：${stringValue(evaluation.selected_scope)}。若这是旧 run，图表和评估快照可能不完整。`}
         />
+        <MetricGrid items={coreMetrics} />
       </section>
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
-          <PanelHeader
-            eyebrow={"\u8bad\u7ec3\u6307\u6807"}
-            title={"\u6307\u6807\u8be6\u60c5"}
-            description={"\u7edf\u4e00\u5c55\u793a manifest \u548c tracking \u91cc\u7684\u53ef\u7528\u6307\u6807\u3002"}
-          />
-          <table className="data-table compact-table">
-            <thead>
-              <tr>
-                <th>{"\u6307\u6807"}</th>
-                <th>{"\u503c"}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(detail.metrics).map(([key, value]) => (
-                <tr key={key}>
-                  <td>{key === "mae" ? <GlossaryHint hintKey="mae" /> : key}</td>
-                  <td>{formatNumber(value)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <PanelHeader eyebrow="回归曲线" title="预测 vs 真实" />
+          {predictionVsTarget.length > 0 ? (
+            <WorkbenchChart option={compareChartOption(predictionVsTarget)} style={{ height: 320 }} />
+          ) : (
+            <EmptyState
+              title="暂无评估曲线"
+              body="该 run 生成于评估快照增强前，暂时没有预测值与真实值时间序列。"
+            />
+          )}
         </section>
 
         <section className="panel">
-          <PanelHeader eyebrow={"\u914d\u7f6e\u7ebf\u7d22"} title={"\u8bad\u7ec3\u53c2\u6570\u7ebf\u7d22"} />
-          <div className="stack-list">
-            <div className="stack-item align-start">
-              <strong>
-                <GlossaryHint hintKey="epochs" />
-              </strong>
-              <span>
-                {detail.tracking_params.epochs ??
-                  detail.tracking_params.trainer_epochs ??
-                  "--"}
-              </span>
-            </div>
-            <div className="stack-item align-start">
-              <strong>
-                <GlossaryHint hintKey="learning_rate" />
-              </strong>
-              <span>{detail.tracking_params.learning_rate ?? "--"}</span>
-            </div>
-            <div className="stack-item align-start">
-              <strong>
-                <GlossaryHint hintKey="regularization" />
-              </strong>
-              <span>
-                {detail.tracking_params.regularization ??
-                  detail.tracking_params.l2 ??
-                  detail.tracking_params.alpha ??
-                  "--"}
-              </span>
-            </div>
-            <div className="stack-item align-start">
-              <strong>
-                <GlossaryHint hintKey="prediction_scope" />
-              </strong>
-              <span>{detail.predictions.map((item) => item.scope).join(", ") || "--"}</span>
-            </div>
-            <div className="stack-item align-start">
-              <strong>{"\u91cd\u73b0\u4e0a\u4e0b\u6587"}</strong>
-              <span>{JSON.stringify(detail.repro_context)}</span>
-            </div>
-          </div>
+          <PanelHeader eyebrow="误差分布" title="残差直方图" />
+          {histogramSeries.length > 0 ? (
+            <WorkbenchChart option={histogramChartOption(histogramSeries)} style={{ height: 320 }} />
+          ) : (
+            <EmptyState title="暂无残差分布" body="当前没有可供展示的残差统计。" />
+          )}
         </section>
       </div>
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
-          <PanelHeader eyebrow={"\u7279\u5f81"} title={"\u7279\u5f81\u91cd\u8981\u6027"} />
-          {Object.keys(detail.feature_importance).length > 0 ? (
-            <div className="stack-list">
-              {Object.entries(detail.feature_importance).map(([name, value]) => (
-                <div className="stack-item" key={name}>
-                  <strong>{name}</strong>
-                  <span>{formatNumber(value)}</span>
-                </div>
-              ))}
-            </div>
+          <PanelHeader eyebrow="回归诊断" title="预测散点图" />
+          {scatterSeries.length > 0 ? (
+            <WorkbenchChart option={scatterChartOption(scatterSeries)} style={{ height: 320 }} />
           ) : (
-            <EmptyState body={"\u5f53\u524d run \u6ca1\u6709 feature importance \u5de5\u4ef6\u3002"} title={I18N.state.empty} />
+            <EmptyState title="暂无散点图" body="当前没有预测值与真实值散点样本。" />
           )}
         </section>
 
         <section className="panel">
-          <PanelHeader eyebrow={I18N.nav.backtests} title={I18N.nav.backtests} />
+          <PanelHeader eyebrow="误差序列" title="残差时间线" />
+          {residualSeries.length > 0 ? (
+            <WorkbenchChart
+              option={lineChartOption(residualSeries, "residual", "残差")}
+              style={{ height: 320 }}
+            />
+          ) : (
+            <EmptyState title="暂无残差时间线" body="当前没有可供展示的残差时间序列。" />
+          )}
+        </section>
+      </div>
+
+      <div className="detail-grid wide-secondary">
+        <section className="panel">
+          <PanelHeader eyebrow="训练上下文" title="数据与配置线索" />
+          <SummaryList items={contextItems} />
+        </section>
+
+        <section className="panel">
+          <PanelHeader eyebrow="特征解释" title="特征重要性" />
+          {Object.keys(detail.feature_importance).length > 0 ? (
+            <div className="stack-list">
+              {Object.entries(detail.feature_importance)
+                .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+                .map(([name, value]) => (
+                  <div className="stack-item" key={name}>
+                    <strong>{name}</strong>
+                    <span>{formatNumber(value)}</span>
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <EmptyState title="暂无特征解释" body="当前模型没有输出特征重要性摘要。" />
+          )}
+          {evaluationArtifacts.length > 0 ? (
+            <p className="drawer-copy">评估摘要和特征解释工件已经落盘，可在下方工件区继续预览。</p>
+          ) : null}
+        </section>
+      </div>
+
+      <div className="detail-grid wide-secondary">
+        <section className="panel">
+          <PanelHeader eyebrow="预测产物" title="可用预测产物" />
+          {detail.predictions.length > 0 ? (
+            <div className="stack-list">
+              {detail.predictions.map((prediction) => (
+                <div className="stack-item align-start" key={prediction.uri}>
+                  <div>
+                    <strong>{prediction.scope}</strong>
+                    <div>{`${prediction.sample_count} 条样本`}</div>
+                  </div>
+                  <button className="link-button" onClick={() => setPreviewUri(prediction.uri)} type="button">
+                    {I18N.action.preview}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="暂无预测产物" body="当前 run 还没有生成预测产物。" />
+          )}
+        </section>
+
+        <section className="panel">
+          <PanelHeader eyebrow={I18N.nav.backtests} title="关联回测" />
           {detail.related_backtests.length > 0 ? (
             <div className="stack-list">
               {detail.related_backtests.map((backtest) => (
                 <div className="stack-item align-start" key={backtest.backtest_id}>
-                  <div className="split-line">
-                    <Link to={`/backtests/${backtest.backtest_id}`}>{backtest.backtest_id}</Link>
-                    <StatusPill status={backtest.passed_consistency_checks === false ? "failed" : "success"} />
+                  <div>
+                    <strong>
+                      <Link to={`/backtests/${backtest.backtest_id}`}>{backtest.backtest_id}</Link>
+                    </strong>
+                    <div>{`年化收益 ${formatPercent(backtest.annual_return)}`}</div>
+                    <div>
+                      <GlossaryHint hintKey="max_drawdown" /> {formatPercent(backtest.max_drawdown)}
+                    </div>
                   </div>
-                  <span>
-                    <GlossaryHint hintKey="max_drawdown" /> {formatNumber(backtest.max_drawdown)}
-                  </span>
-                  <span>{`\u5e74\u5316\u6536\u76ca ${formatNumber(backtest.annual_return)}`}</span>
+                  <StatusPill status={backtest.passed_consistency_checks === false ? "failed" : "success"} />
                 </div>
               ))}
             </div>
           ) : (
-            <EmptyState body={"\u5f53\u524d run \u8fd8\u6ca1\u6709\u5173\u8054 backtest\u3002"} title={I18N.state.empty} />
+            <EmptyState title="暂无关联回测" body="可以直接从当前 run 发起回测。" />
           )}
         </section>
       </div>
 
       <section className="panel">
-        <PanelHeader eyebrow={"\u9884\u6d4b\u4ea7\u7269"} title={"\u9884\u6d4b\u4ea7\u7269"} />
-        {detail.predictions.length > 0 ? (
-          <div className="stack-list">
-            {detail.predictions.map((prediction) => (
-              <div className="stack-item" key={prediction.uri}>
-                <strong>{prediction.scope}</strong>
-                <span>{`${prediction.sample_count} \u6761\u6837\u672c`}</span>
-                <button className="link-button" onClick={() => setPreviewUri(prediction.uri)} type="button">
-                  {I18N.action.preview}
-                </button>
-              </div>
-            ))}
-          </div>
+        <PanelHeader eyebrow="详细指标" title="评估指标明细" />
+        {Object.keys(regressionMetrics).length > 0 ? (
+          <table className="data-table compact-table">
+            <thead>
+              <tr>
+                <th>指标</th>
+                <th>值</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(regressionMetrics).map(([key, value]) => (
+                <tr key={key}>
+                  <td>{key === "mae" ? <GlossaryHint hintKey="mae" /> : metricLabel(key)}</td>
+                  <td>{formatMetricValue(key, value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ) : (
-          <EmptyState body={"\u5f53\u524d run \u8fd8\u6ca1\u6709\u9884\u6d4b\u7ed3\u679c\u3002"} title={I18N.state.empty} />
+          <EmptyState title="暂无指标明细" body="当前 run 还没有完整的回归评估指标。" />
         )}
       </section>
 
       <section className="panel">
-        <PanelHeader eyebrow={"\u5de5\u4ef6\u6d4f\u89c8"} title={"\u5de5\u4ef6\u6d4f\u89c8"} />
+        <PanelHeader eyebrow="工件浏览" title="训练与评估工件" />
         <div className="artifact-grid">
           <div className="artifact-list">
-            {detail.artifacts.map((artifact) => (
+            {artifacts.map((artifact) => (
               <button
                 className="artifact-row"
                 key={artifact.uri}
@@ -213,20 +512,25 @@ export function RunDetailPage() {
               previewQuery.data ? (
                 <pre>{JSON.stringify(previewQuery.data.content, null, 2)}</pre>
               ) : (
-                <EmptyState body={"\u5de6\u4fa7\u70b9\u51fb\u5de5\u4ef6\u8fdb\u884c\u9884\u89c8\u3002"} title={I18N.state.selectArtifact} />
+                <EmptyState body="点击左侧工件即可预览内容。" title={I18N.state.selectArtifact} />
               )
             ) : null}
           </div>
         </div>
       </section>
 
-      {detail.notes.length > 0 ? (
+      {detail.notes.length > 0 || (detail.missing_artifacts?.length ?? 0) > 0 ? (
         <section className="panel">
-          <PanelHeader eyebrow={"\u6570\u636e\u63d0\u793a"} title={"\u90e8\u5206\u6570\u636e\u8bf4\u660e"} />
+          <PanelHeader eyebrow="说明" title="运行备注" />
           <div className="stack-list">
             {detail.notes.map((note) => (
               <div className="stack-item align-start" key={note}>
                 <strong>{note}</strong>
+              </div>
+            ))}
+            {(detail.missing_artifacts ?? []).map((item) => (
+              <div className="stack-item align-start" key={item}>
+                <strong>{`缺失工件：${item}`}</strong>
               </div>
             ))}
           </div>

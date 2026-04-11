@@ -25,6 +25,18 @@ python -m quant_platform.cli.main info
 python -m pytest
 ```
 
+## Local Web Workbench
+
+For the live multi-domain flow `request -> merged dataset -> train -> backtest`:
+
+1. Copy `.env.example` to `.env`.
+2. Set `FRED_API_KEY` in `.env` if you want real `macro/fred` ingestion.
+3. Restart the backend after changing `.env`.
+4. Start the API with `python -m quant_platform.webapi.main`.
+5. Start the web app from `apps/web` with `npm install` and `npm run dev`.
+
+Without `FRED_API_KEY`, the backend will explicitly fail the macro stage instead of silently falling back.
+
 或使用脚本入口：
 
 ```bash

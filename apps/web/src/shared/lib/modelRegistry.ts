@@ -1,290 +1,198 @@
-import type { ExperimentListItem } from "../api/types";
-
-export type AlgorithmKey =
-  | "elastic_net"
-  | "lightgbm"
-  | "xgboost"
-  | "decision_tree"
-  | "random_forest"
-  | "mlp"
-  | "gru"
-  | "transformer";
+import type { ExperimentListItem, ModelTemplateView } from "../api/types";
 
 export type ParameterField = {
   key: string;
   label: string;
-  glossaryKey?: "epochs" | "learning_rate" | "tree_depth" | "regularization" | "batch_size";
+  glossaryKey?: "learning_rate" | "tree_depth" | "regularization";
   defaultValue: number | string;
   step?: string;
   advanced?: boolean;
 };
 
-export type AlgorithmDefinition = {
-  key: AlgorithmKey;
+type ModelDefinition = {
   label: string;
   category: string;
   suitableData: string;
-  defaultDataset: string;
-  defaultTargetColumn: string;
-  commonDefaults: {
-    seed: number;
-    batchSize: number;
-    epochs: number;
-    validationStrategy: string;
-  };
   parameterFields: ParameterField[];
+  defaultHyperparams: Record<string, number | string>;
 };
 
-export type ModelTemplate = {
-  id: string;
+export type TemplateDraft = {
+  template_id?: string;
   name: string;
-  algorithm: AlgorithmKey;
-  datasetId: string;
-  targetColumn: string;
-  trainingNote: string;
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-  commonParams: {
-    seed: number;
-    batchSize: number;
-    epochs: number;
-    validationStrategy: string;
-  };
-  algorithmParams: Record<string, number | string>;
+  description: string;
+  model_name: string;
+  hyperparams: Record<string, number | string>;
+  trainer_preset: string;
+  dataset_preset: string;
+  read_only: boolean;
 };
 
-export type TrainedModelMeta = {
-  runId: string;
-  displayName: string;
-  note: string;
-  hidden?: boolean;
-};
-
-export const MODEL_TEMPLATES_STORAGE_KEY = "quant-workbench:model-templates";
-export const TRAINED_MODELS_STORAGE_KEY = "quant-workbench:trained-models";
-
-export const ALGORITHM_DEFINITIONS: AlgorithmDefinition[] = [
-  {
-    key: "elastic_net",
+const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
+  elastic_net: {
     label: "Elastic Net",
-    category: "\u7ebf\u6027\u6a21\u578b",
-    suitableData: "\u4e2d\u4f4e\u7ef4\u5ea6\u8fde\u7eed\u578b\u7279\u5f81",
-    defaultDataset: "smoke_dataset",
-    defaultTargetColumn: "forward_return_1h",
-    commonDefaults: { seed: 7, batchSize: 64, epochs: 40, validationStrategy: "\u65f6\u95f4\u5207\u5206" },
+    category: "线性模型",
+    suitableData: "中低维度连续型特征",
+    defaultHyperparams: { alpha: 0.001, l1_ratio: 0.5 },
     parameterFields: [
-      { key: "learning_rate", label: "\u5b66\u4e60\u7387", defaultValue: 0.03, step: "0.001", advanced: true, glossaryKey: "learning_rate" },
-      { key: "l1", label: "L1", defaultValue: 0.15, step: "0.01", glossaryKey: "regularization" },
-      { key: "l2", label: "L2", defaultValue: 0.2, step: "0.01", glossaryKey: "regularization" },
+      { key: "alpha", label: "Alpha", defaultValue: 0.001, step: "0.0001", glossaryKey: "regularization" },
+      { key: "l1_ratio", label: "L1 Ratio", defaultValue: 0.5, step: "0.01", glossaryKey: "regularization" },
     ],
   },
-  {
-    key: "lightgbm",
+  lightgbm: {
     label: "LightGBM",
-    category: "\u68af\u5ea6\u63d0\u5347\u6811",
-    suitableData: "\u622a\u9762 + \u65f6\u5e8f\u6df7\u5408\u7279\u5f81",
-    defaultDataset: "real_benchmark",
-    defaultTargetColumn: "forward_return_4h",
-    commonDefaults: { seed: 7, batchSize: 256, epochs: 160, validationStrategy: "\u6eda\u52a8\u65f6\u95f4\u7a97" },
+    category: "梯度提升树",
+    suitableData: "截面 + 时序混合特征",
+    defaultHyperparams: { learning_rate: 0.05, max_depth: 6, n_estimators: 300 },
     parameterFields: [
-      { key: "learning_rate", label: "\u5b66\u4e60\u7387", defaultValue: 0.05, step: "0.005", glossaryKey: "learning_rate" },
-      { key: "max_depth", label: "\u6811\u6df1\u5ea6", defaultValue: 6, step: "1", glossaryKey: "tree_depth" },
-      { key: "n_estimators", label: "\u6811\u6570", defaultValue: 300, step: "10" },
-      { key: "subsample", label: "Subsample", defaultValue: 0.85, step: "0.01", advanced: true },
-      { key: "l2", label: "L2", defaultValue: 0.15, step: "0.01", advanced: true, glossaryKey: "regularization" },
+      { key: "learning_rate", label: "学习率", defaultValue: 0.05, step: "0.005", glossaryKey: "learning_rate" },
+      { key: "max_depth", label: "树深度", defaultValue: 6, step: "1", glossaryKey: "tree_depth" },
+      { key: "n_estimators", label: "树数", defaultValue: 300, step: "10" },
     ],
   },
-  {
-    key: "xgboost",
-    label: "XGBoost",
-    category: "\u68af\u5ea6\u63d0\u5347\u6811",
-    suitableData: "\u5f3a\u975e\u7ebf\u6027\u7279\u5f81\u7ec4\u5408",
-    defaultDataset: "real_benchmark",
-    defaultTargetColumn: "forward_return_4h",
-    commonDefaults: { seed: 11, batchSize: 256, epochs: 180, validationStrategy: "\u6eda\u52a8\u65f6\u95f4\u7a97" },
-    parameterFields: [
-      { key: "learning_rate", label: "\u5b66\u4e60\u7387", defaultValue: 0.04, step: "0.005", glossaryKey: "learning_rate" },
-      { key: "max_depth", label: "\u6811\u6df1\u5ea6", defaultValue: 5, step: "1", glossaryKey: "tree_depth" },
-      { key: "n_estimators", label: "\u6811\u6570", defaultValue: 260, step: "10" },
-      { key: "subsample", label: "Subsample", defaultValue: 0.82, step: "0.01", advanced: true },
-      { key: "reg_lambda", label: "Lambda", defaultValue: 0.3, step: "0.01", advanced: true, glossaryKey: "regularization" },
-    ],
-  },
-  {
-    key: "decision_tree",
-    label: "Decision Tree",
-    category: "\u5355\u6811\u6a21\u578b",
-    suitableData: "\u7279\u5f81\u89c4\u5219\u8f83\u6e05\u6670\u7684\u5feb\u901f\u57fa\u51c6",
-    defaultDataset: "smoke_dataset",
-    defaultTargetColumn: "forward_return_1h",
-    commonDefaults: { seed: 5, batchSize: 512, epochs: 1, validationStrategy: "\u65f6\u95f4\u5207\u5206" },
-    parameterFields: [
-      { key: "max_depth", label: "\u6811\u6df1\u5ea6", defaultValue: 4, step: "1", glossaryKey: "tree_depth" },
-      { key: "min_samples_leaf", label: "\u53f6\u5b50\u8282\u70b9\u6700\u5c0f\u6837\u672c", defaultValue: 16, step: "1", advanced: true },
-    ],
-  },
-  {
-    key: "random_forest",
-    label: "Random Forest",
-    category: "\u96c6\u6210\u6811\u6a21\u578b",
-    suitableData: "\u5bf9\u566a\u58f0\u76f8\u5bf9\u7a33\u5065\u7684\u622a\u9762\u7279\u5f81",
-    defaultDataset: "real_benchmark",
-    defaultTargetColumn: "forward_return_4h",
-    commonDefaults: { seed: 13, batchSize: 256, epochs: 1, validationStrategy: "\u6eda\u52a8\u65f6\u95f4\u7a97" },
-    parameterFields: [
-      { key: "max_depth", label: "\u6811\u6df1\u5ea6", defaultValue: 8, step: "1", glossaryKey: "tree_depth" },
-      { key: "n_estimators", label: "\u6811\u6570", defaultValue: 240, step: "10" },
-      { key: "max_features", label: "\u7279\u5f81\u91c7\u6837\u6bd4\u4f8b", defaultValue: 0.7, step: "0.01", advanced: true },
-    ],
-  },
-  {
-    key: "mlp",
-    label: "MLP",
-    category: "\u795e\u7ecf\u7f51\u7edc",
-    suitableData: "\u4e2d\u7b49\u7ef4\u5ea6\u7a20\u5bc6\u7279\u5f81",
-    defaultDataset: "real_benchmark",
-    defaultTargetColumn: "forward_return_4h",
-    commonDefaults: { seed: 19, batchSize: 128, epochs: 60, validationStrategy: "\u6eda\u52a8\u65f6\u95f4\u7a97" },
-    parameterFields: [
-      { key: "learning_rate", label: "\u5b66\u4e60\u7387", defaultValue: 0.001, step: "0.0001", glossaryKey: "learning_rate" },
-      { key: "hidden_size", label: "\u9690\u85cf\u7ef4\u5ea6", defaultValue: 128, step: "8" },
-      { key: "dropout", label: "Dropout", defaultValue: 0.2, step: "0.01", advanced: true },
-      { key: "l2", label: "L2", defaultValue: 0.0001, step: "0.0001", advanced: true, glossaryKey: "regularization" },
-    ],
-  },
-  {
-    key: "gru",
+  gru: {
     label: "GRU",
-    category: "\u65f6\u5e8f\u795e\u7ecf\u7f51\u7edc",
-    suitableData: "\u9700\u8981\u65f6\u5e8f\u4f9d\u8d56\u7684\u5e8f\u5217\u7279\u5f81",
-    defaultDataset: "real_benchmark",
-    defaultTargetColumn: "forward_return_4h",
-    commonDefaults: { seed: 23, batchSize: 96, epochs: 70, validationStrategy: "\u6eda\u52a8\u65f6\u95f4\u7a97" },
-    parameterFields: [
-      { key: "learning_rate", label: "\u5b66\u4e60\u7387", defaultValue: 0.0008, step: "0.0001", glossaryKey: "learning_rate" },
-      { key: "hidden_size", label: "\u9690\u85cf\u7ef4\u5ea6", defaultValue: 96, step: "8" },
-      { key: "dropout", label: "Dropout", defaultValue: 0.15, step: "0.01", advanced: true },
-      { key: "num_layers", label: "\u5c42\u6570", defaultValue: 2, step: "1", advanced: true },
-    ],
+    category: "时序神经网络",
+    suitableData: "需要 lookback 的时序特征",
+    defaultHyperparams: { lookback: 2 },
+    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 2, step: "1" }],
   },
-  {
-    key: "transformer",
-    label: "Transformer",
-    category: "\u65f6\u5e8f\u53d8\u6362\u5668",
-    suitableData: "\u591a\u56e0\u5b50\u3001\u957f\u65f6\u95f4\u8303\u56f4\u7279\u5f81",
-    defaultDataset: "real_benchmark",
-    defaultTargetColumn: "forward_return_12h",
-    commonDefaults: { seed: 29, batchSize: 64, epochs: 90, validationStrategy: "\u6eda\u52a8\u65f6\u95f4\u7a97" },
-    parameterFields: [
-      { key: "learning_rate", label: "\u5b66\u4e60\u7387", defaultValue: 0.0005, step: "0.0001", glossaryKey: "learning_rate" },
-      { key: "hidden_size", label: "\u9690\u85cf\u7ef4\u5ea6", defaultValue: 160, step: "8" },
-      { key: "dropout", label: "Dropout", defaultValue: 0.1, step: "0.01", advanced: true },
-      { key: "num_heads", label: "\u6ce8\u610f\u529b\u5934\u6570", defaultValue: 4, step: "1", advanced: true },
-    ],
+  lstm: {
+    label: "LSTM",
+    category: "时序神经网络",
+    suitableData: "需要更长上下文的时序特征",
+    defaultHyperparams: { lookback: 3 },
+    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 3, step: "1" }],
   },
-];
-
-export function getAlgorithmDefinition(algorithm: AlgorithmKey): AlgorithmDefinition {
-  return (
-    ALGORITHM_DEFINITIONS.find((item) => item.key === algorithm) ?? ALGORITHM_DEFINITIONS[0]
-  );
-}
-
-export function buildTemplate(algorithm: AlgorithmKey, seedOffset = 0): ModelTemplate {
-  const definition = getAlgorithmDefinition(algorithm);
-  const now = new Date().toISOString();
-
-  return {
-    id: `${algorithm}-${now}`,
-    name: `${definition.label} \u6a21\u677f`,
-    algorithm,
-    datasetId: definition.defaultDataset,
-    targetColumn: definition.defaultTargetColumn,
-    trainingNote: "\u9762\u5411\u7814\u7a76\u5de5\u4f5c\u53f0\u7684\u63a7\u5236\u542f\u52a8\u914d\u7f6e\u3002",
-    enabled: true,
-    createdAt: now,
-    updatedAt: now,
-    commonParams: {
-      seed: definition.commonDefaults.seed + seedOffset,
-      batchSize: definition.commonDefaults.batchSize,
-      epochs: definition.commonDefaults.epochs,
-      validationStrategy: definition.commonDefaults.validationStrategy,
+  mean_baseline: {
+    label: "Mean Baseline",
+    category: "基线模型",
+    suitableData: "快速 smoke / 基线对照",
+    defaultHyperparams: {},
+    parameterFields: [],
+  },
+  mlp: {
+    label: "MLP",
+    category: "神经网络",
+    suitableData: "中等维度稠密特征",
+    defaultHyperparams: {},
+    parameterFields: [],
+  },
+  multimodal_reference: {
+    label: "Multimodal Reference",
+    category: "多模态参考模型",
+    suitableData: "市场 + 文本特征的参考组合",
+    defaultHyperparams: {
+      lookback: 3,
+      text_feature_prefixes: "text_,sentiment_,news_",
+      text_weight: 0.5,
     },
-    algorithmParams: Object.fromEntries(
-      definition.parameterFields.map((field) => [field.key, field.defaultValue]),
-    ),
-  };
+    parameterFields: [
+      { key: "lookback", label: "Lookback", defaultValue: 3, step: "1" },
+      { key: "text_weight", label: "Text Weight", defaultValue: 0.5, step: "0.1" },
+      { key: "text_feature_prefixes", label: "Text Prefixes", defaultValue: "text_,sentiment_,news_", advanced: true },
+    ],
+  },
+  patch_mixer_reference: {
+    label: "Patch Mixer Reference",
+    category: "时序参考模型",
+    suitableData: "序列 patch 化后的参考建模",
+    defaultHyperparams: { lookback: 4, patch_size: 2 },
+    parameterFields: [
+      { key: "lookback", label: "Lookback", defaultValue: 4, step: "1" },
+      { key: "patch_size", label: "Patch Size", defaultValue: 2, step: "1" },
+    ],
+  },
+  temporal_fusion_reference: {
+    label: "Temporal Fusion Reference",
+    category: "时序参考模型",
+    suitableData: "多变量时序融合参考",
+    defaultHyperparams: { lookback: 3 },
+    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 3, step: "1" }],
+  },
+  transformer_reference: {
+    label: "Transformer Reference",
+    category: "时序参考模型",
+    suitableData: "长上下文时序参考",
+    defaultHyperparams: { lookback: 3 },
+    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 3, step: "1" }],
+  },
+};
+
+function normalizeModelName(modelName: string): string {
+  return modelName.trim().toLowerCase();
 }
 
-export function defaultTemplates(): ModelTemplate[] {
-  return ["elastic_net", "lightgbm", "xgboost", "mlp"].map((key, index) =>
-    buildTemplate(key as AlgorithmKey, index),
-  );
+export function getModelDefinition(modelName: string): ModelDefinition | null {
+  return MODEL_DEFINITIONS[normalizeModelName(modelName)] ?? null;
 }
 
-export function summarizeTemplateParameters(template: ModelTemplate): string {
-  const definition = getAlgorithmDefinition(template.algorithm);
-  const firstFields = definition.parameterFields
-    .slice(0, 3)
-    .map((field) => `${field.label}=${template.algorithmParams[field.key] ?? field.defaultValue}`);
-  return firstFields.join(" / ");
+export function modelLabel(modelName: string): string {
+  return getModelDefinition(modelName)?.label ?? modelName;
 }
 
-export function summarizeRunMetrics(run: ExperimentListItem): string {
-  const primary = run.primary_metric_name && run.primary_metric_value !== null
-    ? `${run.primary_metric_name.toUpperCase()}=${run.primary_metric_value.toFixed(4)}`
-    : "MAE=--";
-  return `${primary} / backtests=${run.backtest_count}`;
+export function modelCategory(modelName: string): string {
+  return getModelDefinition(modelName)?.category ?? "已注册模型";
 }
 
-export function deriveTemplateFromRun(run: ExperimentListItem): ModelTemplate {
-  const normalized = normalizeAlgorithm(run.model_name);
-  const template = buildTemplate(normalized);
+export function modelSuitableData(modelName: string): string {
+  return getModelDefinition(modelName)?.suitableData ?? "以后端模型注册能力为准";
+}
+
+export function summarizeTemplateParameters(
+  template: Pick<ModelTemplateView, "model_name" | "hyperparams"> | Pick<TemplateDraft, "model_name" | "hyperparams">,
+): string {
+  const definition = getModelDefinition(template.model_name);
+  if (definition && definition.parameterFields.length > 0) {
+    const summary = definition.parameterFields
+      .slice(0, 3)
+      .map((field) => `${field.label}=${template.hyperparams[field.key] ?? field.defaultValue}`);
+    return summary.join(" / ");
+  }
+  const pairs = Object.entries(template.hyperparams).slice(0, 3);
+  if (pairs.length === 0) {
+    return "使用模型默认超参数";
+  }
+  return pairs.map(([key, value]) => `${key}=${String(value)}`).join(" / ");
+}
+
+export function buildTemplateDraft(modelName: string): TemplateDraft {
+  const definition = getModelDefinition(modelName);
   return {
-    ...template,
-    id: `${run.run_id}-template`,
-    name: `${algorithmLabel(run.model_name)} \u590d\u7528\u6a21\u677f`,
-    datasetId: run.dataset_id ?? template.datasetId,
-    targetColumn: template.targetColumn,
-    trainingNote: `\u57fa\u4e8e ${run.run_id} \u590d\u5236\u751f\u6210\u3002`,
+    name: `${modelLabel(modelName)} 模板`,
+    description: "面向研究工作台的训练模板。",
+    model_name: modelName,
+    hyperparams: definition ? { ...definition.defaultHyperparams } : {},
+    trainer_preset: "fast",
+    dataset_preset: "smoke",
+    read_only: false,
   };
 }
 
-export function algorithmLabel(modelName: string): string {
-  return getAlgorithmDefinition(normalizeAlgorithm(modelName)).label;
+export function templateDraftFromView(template: ModelTemplateView): TemplateDraft {
+  const hyperparams = Object.fromEntries(
+    Object.entries(template.hyperparams).filter(
+      ([, value]) => typeof value === "number" || typeof value === "string",
+    ),
+  ) as Record<string, number | string>;
+  return {
+    template_id: template.template_id,
+    name: template.name,
+    description: template.description ?? "",
+    model_name: template.model_name,
+    hyperparams,
+    trainer_preset: template.trainer_preset,
+    dataset_preset: template.dataset_preset,
+    read_only: template.read_only,
+  };
 }
 
-export function algorithmCategory(modelName: string): string {
-  return getAlgorithmDefinition(normalizeAlgorithm(modelName)).category;
-}
-
-export function algorithmSuitableData(modelName: string): string {
-  return getAlgorithmDefinition(normalizeAlgorithm(modelName)).suitableData;
-}
-
-export function normalizeAlgorithm(modelName: string): AlgorithmKey {
-  const normalized = modelName.toLowerCase();
-  if (normalized.includes("lightgbm")) {
-    return "lightgbm";
-  }
-  if (normalized.includes("xgboost")) {
-    return "xgboost";
-  }
-  if (normalized.includes("decision")) {
-    return "decision_tree";
-  }
-  if (normalized.includes("random")) {
-    return "random_forest";
-  }
-  if (normalized.includes("mlp")) {
-    return "mlp";
-  }
-  if (normalized.includes("gru")) {
-    return "gru";
-  }
-  if (normalized.includes("transformer")) {
-    return "transformer";
-  }
-  return "elastic_net";
+export function templateDraftFromRun(run: ExperimentListItem): TemplateDraft {
+  const draft = buildTemplateDraft(run.model_name);
+  return {
+    ...draft,
+    name: `${modelLabel(run.model_name)} 复用模板`,
+    description: `基于 ${run.run_id} 创建的训练模板。`,
+    dataset_preset: run.dataset_id?.toLowerCase().includes("smoke") ? "smoke" : "real_benchmark",
+  };
 }

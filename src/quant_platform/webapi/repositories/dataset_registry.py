@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,130 +73,146 @@ class DatasetRegistryRepository:
         self.registry_root = self.artifact_root / "webapi" / "registry"
         self.registry_root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.registry_root / "datasets.sqlite3"
+        self._lock = threading.RLock()
         self._init_db()
 
     def list_entries(self) -> list[DatasetRegistryEntry]:
-        self.bootstrap_from_artifacts()
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT dataset_id, ref_uri, manifest_uri, samples_uri, feature_view_uri, data_domain,
-                       dataset_type, source_vendor, exchange, frequency, entity_scope, entity_count,
-                       snapshot_version, build_status, readiness_status, quality_status, as_of_time,
-                       data_start_time, data_end_time, raw_row_count, usable_row_count, feature_count,
-                       label_count, request_origin, payload_json, manifest_json, updated_at
-                FROM datasets
-                ORDER BY COALESCE(as_of_time, updated_at) DESC, dataset_id ASC
-                """
-            ).fetchall()
+        with self._lock:
+            self.bootstrap_from_artifacts()
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT dataset_id, ref_uri, manifest_uri, samples_uri, feature_view_uri, data_domain,
+                           dataset_type, source_vendor, exchange, frequency, entity_scope, entity_count,
+                           snapshot_version, build_status, readiness_status, quality_status, as_of_time,
+                           data_start_time, data_end_time, raw_row_count, usable_row_count, feature_count,
+                           label_count, request_origin, payload_json, manifest_json, updated_at
+                    FROM datasets
+                    ORDER BY COALESCE(as_of_time, updated_at) DESC, dataset_id ASC
+                    """
+                ).fetchall()
         return [DatasetRegistryEntry(*row) for row in rows]
 
     def get_entry(self, dataset_id: str) -> DatasetRegistryEntry | None:
-        self.bootstrap_from_artifacts()
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT dataset_id, ref_uri, manifest_uri, samples_uri, feature_view_uri, data_domain,
-                       dataset_type, source_vendor, exchange, frequency, entity_scope, entity_count,
-                       snapshot_version, build_status, readiness_status, quality_status, as_of_time,
-                       data_start_time, data_end_time, raw_row_count, usable_row_count, feature_count,
-                       label_count, request_origin, payload_json, manifest_json, updated_at
-                FROM datasets
-                WHERE dataset_id = ?
-                """,
-                (dataset_id,),
-            ).fetchone()
+        with self._lock:
+            self.bootstrap_from_artifacts()
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT dataset_id, ref_uri, manifest_uri, samples_uri, feature_view_uri, data_domain,
+                           dataset_type, source_vendor, exchange, frequency, entity_scope, entity_count,
+                           snapshot_version, build_status, readiness_status, quality_status, as_of_time,
+                           data_start_time, data_end_time, raw_row_count, usable_row_count, feature_count,
+                           label_count, request_origin, payload_json, manifest_json, updated_at
+                    FROM datasets
+                    WHERE dataset_id = ?
+                    """,
+                    (dataset_id,),
+                ).fetchone()
         return DatasetRegistryEntry(*row) if row else None
 
     def list_dependencies(self, dataset_id: str) -> list[DatasetDependencyEntry]:
-        self.bootstrap_from_artifacts()
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT dataset_id, dependency_kind, dependency_id, dependency_label, target_dataset_id, payload_json
-                FROM dataset_dependencies
-                WHERE dataset_id = ?
-                ORDER BY dependency_kind ASC, dependency_id ASC
-                """,
-                (dataset_id,),
-            ).fetchall()
+        with self._lock:
+            self.bootstrap_from_artifacts()
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT dataset_id, dependency_kind, dependency_id, dependency_label, target_dataset_id, payload_json
+                    FROM dataset_dependencies
+                    WHERE dataset_id = ?
+                    ORDER BY dependency_kind ASC, dependency_id ASC
+                    """,
+                    (dataset_id,),
+                ).fetchall()
         return [DatasetDependencyEntry(*row) for row in rows]
 
     def remove_dataset(self, dataset_id: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM dataset_dependencies WHERE dataset_id = ?", (dataset_id,))
-            conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (dataset_id,))
-            conn.commit()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM dataset_dependencies WHERE dataset_id = ?", (dataset_id,))
+                conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (dataset_id,))
+                conn.commit()
 
     def bootstrap_from_artifacts(self) -> None:
-        ref_paths = sorted(self.artifact_root.glob("datasets/*_dataset_ref.json"))
-        with self._connect() as conn:
-            for ref_path in ref_paths:
-                payload = self._safe_load(ref_path)
-                dataset_id = str(payload.get("dataset_id", "")).strip()
-                if not dataset_id:
-                    continue
-                manifest_path = self._manifest_path_for_payload(dataset_id, payload)
-                manifest = self._safe_load(manifest_path) if manifest_path else {}
-                record = self._build_dataset_record(ref_path, payload, manifest_path, manifest)
-                conn.execute(
-                    """
-                    INSERT INTO datasets (
-                        dataset_id, ref_uri, manifest_uri, samples_uri, feature_view_uri, data_domain,
-                        dataset_type, source_vendor, exchange, frequency, entity_scope, entity_count,
-                        snapshot_version, build_status, readiness_status, quality_status, as_of_time,
-                        data_start_time, data_end_time, raw_row_count, usable_row_count, feature_count,
-                        label_count, request_origin, payload_json, manifest_json, updated_at
-                    ) VALUES (
-                        :dataset_id, :ref_uri, :manifest_uri, :samples_uri, :feature_view_uri, :data_domain,
-                        :dataset_type, :source_vendor, :exchange, :frequency, :entity_scope, :entity_count,
-                        :snapshot_version, :build_status, :readiness_status, :quality_status, :as_of_time,
-                        :data_start_time, :data_end_time, :raw_row_count, :usable_row_count, :feature_count,
-                        :label_count, :request_origin, :payload_json, :manifest_json, :updated_at
-                    )
-                    ON CONFLICT(dataset_id) DO UPDATE SET
-                        ref_uri=excluded.ref_uri,
-                        manifest_uri=excluded.manifest_uri,
-                        samples_uri=excluded.samples_uri,
-                        feature_view_uri=excluded.feature_view_uri,
-                        data_domain=excluded.data_domain,
-                        dataset_type=excluded.dataset_type,
-                        source_vendor=excluded.source_vendor,
-                        exchange=excluded.exchange,
-                        frequency=excluded.frequency,
-                        entity_scope=excluded.entity_scope,
-                        entity_count=excluded.entity_count,
-                        snapshot_version=excluded.snapshot_version,
-                        build_status=excluded.build_status,
-                        readiness_status=excluded.readiness_status,
-                        quality_status=excluded.quality_status,
-                        as_of_time=excluded.as_of_time,
-                        data_start_time=excluded.data_start_time,
-                        data_end_time=excluded.data_end_time,
-                        raw_row_count=excluded.raw_row_count,
-                        usable_row_count=excluded.usable_row_count,
-                        feature_count=excluded.feature_count,
-                        label_count=excluded.label_count,
-                        request_origin=excluded.request_origin,
-                        payload_json=excluded.payload_json,
-                        manifest_json=excluded.manifest_json,
-                        updated_at=excluded.updated_at
-                    """,
-                    record,
-                )
-                conn.execute("DELETE FROM dataset_dependencies WHERE dataset_id = ?", (dataset_id,))
-                for dependency in self._build_dependency_rows(payload, manifest):
+        with self._lock:
+            ref_paths = sorted(self.artifact_root.glob("datasets/*_dataset_ref.json"))
+            live_dataset_ids: set[str] = set()
+            with self._connect() as conn:
+                for ref_path in ref_paths:
+                    payload = self._safe_load(ref_path)
+                    dataset_id = str(payload.get("dataset_id", "")).strip()
+                    if not dataset_id:
+                        continue
+                    live_dataset_ids.add(dataset_id)
+                    manifest_path = self._manifest_path_for_payload(dataset_id, payload)
+                    manifest = self._safe_load(manifest_path) if manifest_path else {}
+                    record = self._build_dataset_record(ref_path, payload, manifest_path, manifest)
                     conn.execute(
                         """
-                        INSERT INTO dataset_dependencies (
-                            dataset_id, dependency_kind, dependency_id, dependency_label, target_dataset_id, payload_json
+                        INSERT INTO datasets (
+                            dataset_id, ref_uri, manifest_uri, samples_uri, feature_view_uri, data_domain,
+                            dataset_type, source_vendor, exchange, frequency, entity_scope, entity_count,
+                            snapshot_version, build_status, readiness_status, quality_status, as_of_time,
+                            data_start_time, data_end_time, raw_row_count, usable_row_count, feature_count,
+                            label_count, request_origin, payload_json, manifest_json, updated_at
                         ) VALUES (
-                            :dataset_id, :dependency_kind, :dependency_id, :dependency_label, :target_dataset_id, :payload_json
+                            :dataset_id, :ref_uri, :manifest_uri, :samples_uri, :feature_view_uri, :data_domain,
+                            :dataset_type, :source_vendor, :exchange, :frequency, :entity_scope, :entity_count,
+                            :snapshot_version, :build_status, :readiness_status, :quality_status, :as_of_time,
+                            :data_start_time, :data_end_time, :raw_row_count, :usable_row_count, :feature_count,
+                            :label_count, :request_origin, :payload_json, :manifest_json, :updated_at
                         )
+                        ON CONFLICT(dataset_id) DO UPDATE SET
+                            ref_uri=excluded.ref_uri,
+                            manifest_uri=excluded.manifest_uri,
+                            samples_uri=excluded.samples_uri,
+                            feature_view_uri=excluded.feature_view_uri,
+                            data_domain=excluded.data_domain,
+                            dataset_type=excluded.dataset_type,
+                            source_vendor=excluded.source_vendor,
+                            exchange=excluded.exchange,
+                            frequency=excluded.frequency,
+                            entity_scope=excluded.entity_scope,
+                            entity_count=excluded.entity_count,
+                            snapshot_version=excluded.snapshot_version,
+                            build_status=excluded.build_status,
+                            readiness_status=excluded.readiness_status,
+                            quality_status=excluded.quality_status,
+                            as_of_time=excluded.as_of_time,
+                            data_start_time=excluded.data_start_time,
+                            data_end_time=excluded.data_end_time,
+                            raw_row_count=excluded.raw_row_count,
+                            usable_row_count=excluded.usable_row_count,
+                            feature_count=excluded.feature_count,
+                            label_count=excluded.label_count,
+                            request_origin=excluded.request_origin,
+                            payload_json=excluded.payload_json,
+                            manifest_json=excluded.manifest_json,
+                            updated_at=excluded.updated_at
                         """,
-                        dependency,
+                        record,
                     )
-            conn.commit()
+                    conn.execute("DELETE FROM dataset_dependencies WHERE dataset_id = ?", (dataset_id,))
+                    for dependency in self._build_dependency_rows(payload, manifest):
+                        conn.execute(
+                            """
+                            INSERT INTO dataset_dependencies (
+                                dataset_id, dependency_kind, dependency_id, dependency_label, target_dataset_id, payload_json
+                            ) VALUES (
+                                :dataset_id, :dependency_kind, :dependency_id, :dependency_label, :target_dataset_id, :payload_json
+                            )
+                            """,
+                            dependency,
+                        )
+                existing_ids = {
+                    str(row[0])
+                    for row in conn.execute("SELECT dataset_id FROM datasets").fetchall()
+                }
+                stale_ids = existing_ids - live_dataset_ids
+                for stale_id in stale_ids:
+                    conn.execute("DELETE FROM dataset_dependencies WHERE dataset_id = ?", (stale_id,))
+                    conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (stale_id,))
+                conn.commit()
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -248,8 +265,10 @@ class DatasetRegistryRepository:
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
     def _manifest_path_for_payload(self, dataset_id: str, payload: dict[str, Any]) -> Path | None:
@@ -300,6 +319,13 @@ class DatasetRegistryRepository:
         }:
             dataset_type = "training_panel" if recommended_use == "training_panel" else "display_slice"
         frequency = self._first_str([acquisition_profile.get("frequency"), *(item.get("frequency") for item in input_refs if isinstance(item, dict))])
+        timestamp_paths = [ref_path]
+        if manifest_path is not None and manifest_path.exists():
+            timestamp_paths.append(manifest_path)
+        updated_at = datetime.fromtimestamp(
+            max(path.stat().st_mtime for path in timestamp_paths),
+            tz=UTC,
+        ).isoformat()
         return {
             "dataset_id": dataset_id,
             "ref_uri": str(ref_path.resolve()),
@@ -340,7 +366,7 @@ class DatasetRegistryRepository:
             "request_origin": self._as_str(acquisition_profile.get("request_origin")),
             "payload_json": json.dumps(payload, sort_keys=True, default=str),
             "manifest_json": json.dumps(manifest, sort_keys=True, default=str) if manifest else None,
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": updated_at,
         }
 
     def _build_dependency_rows(

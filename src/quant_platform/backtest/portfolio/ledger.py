@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime, timedelta
 
 from quant_platform.backtest.adapters.market_adapter import MarketEvent
 from quant_platform.backtest.contracts.portfolio import (
@@ -29,6 +30,7 @@ class PortfolioLedger:
         self.last_prices: dict[str, float] = {}
         self.peak_nav = initial_cash
         self.turnover_window: deque[tuple[object, float]] = deque()
+        self.turnover_window_total = 0.0
 
     def mark(self, event: MarketEvent) -> None:
         self.last_prices[event.instrument] = event.close
@@ -54,9 +56,11 @@ class PortfolioLedger:
         self.fees_paid += fee
         self.slippage_cost += slippage_cost
         self.turnover_window.append((fill_time, abs(signed_quantity * price)))
+        self.turnover_window_total += abs(signed_quantity * price)
         return realized
 
     def snapshot(self, timestamp: object) -> PortfolioSnapshot:
+        self._prune_turnover_window(timestamp)
         positions: list[PositionSnapshot] = []
         gross_exposure = 0.0
         net_exposure = 0.0
@@ -101,7 +105,7 @@ class PortfolioLedger:
         self.peak_nav = max(self.peak_nav, nav)
         margin_used = sum(position.initial_margin for position in positions)
         maintenance_margin = sum(position.maintenance_margin for position in positions)
-        turnover_1d = sum(value for _, value in self.turnover_window)
+        turnover_1d = self.turnover_window_total
         return PortfolioSnapshot(
             timestamp=timestamp,
             nav=nav,
@@ -127,3 +131,14 @@ class PortfolioLedger:
             drawdown=(self.peak_nav - nav) / self.peak_nav if self.peak_nav > 0 else 0.0,
             positions=positions,
         )
+
+    def _prune_turnover_window(self, timestamp: object) -> None:
+        if not isinstance(timestamp, datetime):
+            return
+        cutoff = timestamp - timedelta(days=1)
+        while self.turnover_window:
+            fill_time, notional = self.turnover_window[0]
+            if not isinstance(fill_time, datetime) or fill_time >= cutoff:
+                break
+            self.turnover_window.popleft()
+            self.turnover_window_total = max(0.0, self.turnover_window_total - notional)

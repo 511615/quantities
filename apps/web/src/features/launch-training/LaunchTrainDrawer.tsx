@@ -10,62 +10,98 @@ import { StatusPill } from "../../shared/ui/StatusPill";
 
 type LaunchTrainDrawerProps = {
   defaultOpen?: boolean;
+  showTrigger?: boolean;
   datasetId?: string;
   datasetLabel?: string;
   triggerLabel?: string;
   title?: string;
   description?: string;
+  initialTemplateId?: string | null;
+  onJobCreated?: (jobId: string) => void;
 };
 
 export function LaunchTrainDrawer({
   defaultOpen = false,
+  showTrigger = true,
   datasetId,
   datasetLabel,
   triggerLabel,
   title,
   description,
+  initialTemplateId = null,
+  onJobCreated,
 }: LaunchTrainDrawerProps = {}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const optionsQuery = useTrainOptions();
   const readinessQuery = useDatasetReadiness(datasetId ?? null, Boolean(datasetId));
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(defaultOpen || !showTrigger);
   const [jobId, setJobId] = useState<string | null>(null);
-  const [datasetPreset, setDatasetPreset] = useState<"smoke" | "real_benchmark">("smoke");
+  const [datasetPreset, setDatasetPreset] = useState<"" | "smoke" | "real_benchmark">("");
   const [experimentName, setExperimentName] = useState("workbench-train");
-  const [modelName, setModelName] = useState("elastic_net");
+  const [templateId, setTemplateId] = useState(initialTemplateId ?? "");
   const [seed, setSeed] = useState("7");
   const [formError, setFormError] = useState<string | null>(null);
 
   const jobQuery = useJobStatus(jobId);
-  const modelOptions = useMemo(
-    () => optionsQuery.data?.model_options ?? [],
-    [optionsQuery.data?.model_options],
+  const templateOptions = useMemo(
+    () => optionsQuery.data?.template_options ?? [],
+    [optionsQuery.data?.template_options],
   );
   const runDetailLink = jobQuery.data?.result.deeplinks.run_detail ?? null;
   const isDatasetAware = Boolean(datasetId);
   const readinessStatus = readinessQuery.data?.readiness_status ?? null;
   const datasetDetailPath = datasetId ? `/datasets/${encodeURIComponent(datasetId)}` : null;
+  const selectedTemplate = useMemo(
+    () => templateOptions.find((option) => option.value === templateId) ?? null,
+    [templateId, templateOptions],
+  );
 
   useEffect(() => {
-    if (defaultOpen) {
+    if (defaultOpen || !showTrigger) {
       setOpen(true);
     }
-  }, [defaultOpen, datasetId]);
+  }, [defaultOpen, showTrigger]);
+
+  useEffect(() => {
+    if (initialTemplateId) {
+      setTemplateId(initialTemplateId);
+      return;
+    }
+    if (templateOptions.length === 0) {
+      return;
+    }
+    setTemplateId((current) => {
+      if (current && templateOptions.some((option) => option.value === current)) {
+        return current;
+      }
+      return (
+        templateOptions.find((option) => option.recommended)?.value ?? templateOptions[0]?.value ?? ""
+      );
+    });
+  }, [initialTemplateId, templateOptions]);
+
+  useEffect(() => {
+    const defaultSeed = optionsQuery.data?.default_seed;
+    if (defaultSeed === undefined) {
+      return;
+    }
+    setSeed((current) => (current === "" || current === "7" ? String(defaultSeed) : current));
+  }, [optionsQuery.data?.default_seed]);
 
   const mutation = useMutation({
     mutationFn: () =>
       api.launchTrain({
-        dataset_preset: datasetPreset,
-        dataset_id: datasetId,
-        model_names: [modelName],
-        trainer_preset: "fast",
+        ...(datasetPreset ? { dataset_preset: datasetPreset } : {}),
+        ...(datasetId ? { dataset_id: datasetId } : {}),
+        template_id: templateId,
         seed: Number(seed),
         experiment_name: experimentName,
       }),
     onSuccess: (result) => {
       setJobId(result.job_id);
       setFormError(null);
+      onJobCreated?.(result.job_id);
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
       void queryClient.invalidateQueries({ queryKey: ["experiments"] });
@@ -74,34 +110,28 @@ export function LaunchTrainDrawer({
   });
 
   function handleSubmit() {
-    if (!modelName) {
-      setFormError("\u8bf7\u9009\u62e9\u6a21\u578b\u3002");
+    if (!templateId) {
+      setFormError("请选择模型模板。");
       return;
     }
     if (!experimentName.trim()) {
-      setFormError("\u8bf7\u8f93\u5165\u5b9e\u9a8c\u540d\u79f0\u3002");
+      setFormError("请输入实验名称。");
       return;
     }
     if (!seed.trim() || Number.isNaN(Number(seed))) {
-      setFormError("\u8bf7\u8f93\u5165\u6709\u6548\u7684 seed\u3002");
+      setFormError("请输入有效的 seed。");
       return;
     }
     if (isDatasetAware && readinessQuery.isLoading) {
-      setFormError(
-        "\u6b63\u5728\u8bfb\u53d6\u8fd9\u4efd\u6570\u636e\u96c6\u7684\u8bad\u7ec3\u5c31\u7eea\u5ea6\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002",
-      );
+      setFormError("正在读取这份数据集的训练就绪度，请稍后再试。");
       return;
     }
     if (isDatasetAware && readinessQuery.isError) {
-      setFormError(
-        "\u65e0\u6cd5\u8bfb\u53d6\u6570\u636e\u96c6\u7684\u8bad\u7ec3\u5c31\u7eea\u5ea6\uff0c\u8bf7\u5148\u56de\u5230\u6570\u636e\u96c6\u8be6\u60c5\u9875\u786e\u8ba4\u72b6\u6001\u3002",
-      );
+      setFormError("无法读取数据集的训练就绪度，请先到数据集详情页确认状态。");
       return;
     }
     if (isDatasetAware && readinessStatus === "not_ready") {
-      setFormError(
-        "\u5f53\u524d\u6570\u636e\u96c6\u8fd8\u672a\u901a\u8fc7\u8bad\u7ec3\u5c31\u7eea\u6821\u9a8c\uff0c\u8bf7\u5148\u68c0\u67e5\u6570\u636e\u96c6\u8be6\u60c5\u6216\u56de\u5230\u8bad\u7ec3\u6570\u636e\u96c6\u9875\u91cd\u65b0\u9009\u62e9\u3002",
-      );
+      setFormError("当前数据集还未通过训练就绪校验，请先处理阻塞问题。");
       return;
     }
 
@@ -111,9 +141,11 @@ export function LaunchTrainDrawer({
 
   return (
     <div className="drawer-wrap">
-      <button className="action-button" onClick={() => setOpen((value) => !value)} type="button">
-        {triggerLabel ?? I18N.action.launchTrain}
-      </button>
+      {showTrigger ? (
+        <button className="action-button" onClick={() => setOpen((value) => !value)} type="button">
+          {triggerLabel ?? I18N.action.launchTrain}
+        </button>
+      ) : null}
       {open ? (
         <div className="drawer-panel">
           <h3>{title ?? triggerLabel ?? I18N.action.launchTrain}</h3>
@@ -122,55 +154,56 @@ export function LaunchTrainDrawer({
           {isDatasetAware ? (
             <div className="page-stack compact-gap">
               <div className="dataset-callout">
-                <strong>{"\u5f53\u524d\u8bad\u7ec3\u6570\u636e\u96c6"}</strong>
+                <strong>{"当前训练数据集"}</strong>
                 <span>{datasetLabel ?? datasetId}</span>
               </div>
               <div className="dataset-callout">
                 <strong>
                   {readinessQuery.isLoading
-                    ? "\u6b63\u5728\u8bfb\u53d6\u8bad\u7ec3\u5c31\u7eea\u5ea6"
+                    ? "正在读取训练就绪度"
                     : readinessQuery.isError
-                      ? "\u5c31\u7eea\u5ea6\u8bfb\u53d6\u5931\u8d25"
+                      ? "就绪度读取失败"
                       : readinessStatus === "not_ready"
-                        ? "\u8fd9\u4efd\u6570\u636e\u96c6\u6682\u4e0d\u53ef\u8bad\u7ec3"
+                        ? "这份数据集暂不可训练"
                         : readinessStatus === "warning"
-                          ? "\u8fd9\u4efd\u6570\u636e\u96c6\u53ef\u4ee5\u8bad\u7ec3\uff0c\u4f46\u9700\u8981\u5148\u7559\u610f"
-                          : "\u8fd9\u4efd\u6570\u636e\u96c6\u53ef\u4ee5\u76f4\u63a5\u53d1\u8d77\u8bad\u7ec3"}
+                          ? "这份数据集可以训练，但需要先留意"
+                          : "这份数据集可以直接发起训练"}
                 </strong>
                 <span>
                   {readinessQuery.isLoading
-                    ? "\u62bd\u5c49\u4f1a\u5148\u7b49\u540e\u7aef\u7684 readiness \u7ed3\u679c\uff0c\u907f\u514d\u672a\u6821\u9a8c\u7684 dataset_id \u76f4\u63a5\u8fdb\u5165\u8bad\u7ec3\u3002"
+                    ? "抽屉会先等待后端 readiness 结果，避免未校验的数据集直接进入训练。"
                     : readinessQuery.isError
-                      ? "\u8bf7\u5148\u53bb\u6570\u636e\u96c6\u8be6\u60c5\u9875\u6216\u8bad\u7ec3\u6570\u636e\u96c6\u9875\u786e\u8ba4 readiness \u72b6\u6001\u3002"
+                      ? "请先到数据集详情页或训练数据集页确认 readiness 状态。"
                       : readinessStatus === "not_ready"
-                        ? "\u8fd9\u4e2a\u5165\u53e3\u4e0d\u4f1a\u9759\u9ed8\u56de\u9000\u5230 preset \u6a21\u5f0f\uff0c\u4f60\u9700\u8981\u5148\u5904\u7406\u963b\u585e\u539f\u56e0\u3002"
+                        ? "这个入口不会静默回退到 preset 模式，你需要先处理阻塞原因。"
                         : readinessStatus === "warning"
-                          ? "\u540e\u7aef\u5141\u8bb8\u7ee7\u7eed\u8bad\u7ec3\uff0c\u4f46\u8fd9\u4efd\u6570\u636e\u96c6\u8fd8\u5e26\u6709\u544a\u8b66\uff0c\u5efa\u8bae\u5148\u68c0\u67e5\u8be6\u60c5\u9875\u91cc\u7684 readiness \u8bf4\u660e\u3002"
-                          : "\u672c\u6b21\u8bad\u7ec3\u4f1a\u4ee5 dataset_id \u4f5c\u4e3a\u552f\u4e00\u6570\u636e\u96c6\u6765\u6e90\uff0c\u4e0d\u4f1a\u56de\u9000\u5230 preset \u9009\u62e9\u3002"}
+                          ? "后端允许继续训练，但这份数据集还带有告警，建议先检查详情页里的说明。"
+                          : "本次训练会直接以 dataset_id 作为唯一数据集来源，不会回退到 preset 选择。"}
                 </span>
               </div>
               {!readinessQuery.isLoading && (readinessQuery.isError || readinessStatus === "not_ready") ? (
                 <div className="table-actions">
                   {datasetDetailPath ? (
                     <Link className="link-button" to={datasetDetailPath}>
-                      {"\u6253\u5f00\u6570\u636e\u96c6\u8be6\u60c5"}
+                      {"打开数据集详情"}
                     </Link>
                   ) : null}
                   <Link className="link-button" to="/datasets/training">
-                    {"\u56de\u5230\u8bad\u7ec3\u6570\u636e\u96c6\u9875"}
+                    {"回到训练数据集页"}
                   </Link>
                 </div>
               ) : null}
             </div>
           ) : (
             <label>
-              <span>{"\u6570\u636e\u96c6\u9884\u7f6e"}</span>
+              <span>{"数据集预置"}</span>
               <select
                 onChange={(event) =>
-                  setDatasetPreset(event.target.value as "smoke" | "real_benchmark")
+                  setDatasetPreset(event.target.value as "" | "smoke" | "real_benchmark")
                 }
                 value={datasetPreset}
               >
+                <option value="">使用模板默认数据集</option>
                 {(optionsQuery.data?.dataset_presets ?? []).map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -181,17 +214,20 @@ export function LaunchTrainDrawer({
           )}
 
           <label>
-            <span>{"\u6a21\u578b"}</span>
-            <select onChange={(event) => setModelName(event.target.value)} value={modelName}>
-              {modelOptions.map((option) => (
+            <span>{"模型模板"}</span>
+            <select onChange={(event) => setTemplateId(event.target.value)} value={templateId}>
+              {templateOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
             </select>
           </label>
+          {selectedTemplate?.description ? (
+            <p className="drawer-copy">{selectedTemplate.description}</p>
+          ) : null}
           <label>
-            <span>{"\u5b9e\u9a8c\u540d\u79f0"}</span>
+            <span>{"实验名称"}</span>
             <input onChange={(event) => setExperimentName(event.target.value)} value={experimentName} />
           </label>
           <label>
@@ -204,11 +240,11 @@ export function LaunchTrainDrawer({
           ) : null}
           <button
             className="action-button"
-            disabled={mutation.isPending || optionsQuery.isLoading}
+            disabled={mutation.isPending || optionsQuery.isLoading || templateOptions.length === 0}
             onClick={handleSubmit}
             type="button"
           >
-            {mutation.isPending ? "\u63d0\u4ea4\u4e2d..." : I18N.action.submit}
+            {mutation.isPending ? "提交中..." : I18N.action.submit}
           </button>
           {jobQuery.data ? (
             <div className="job-box">
@@ -231,7 +267,7 @@ export function LaunchTrainDrawer({
                   onClick={() => navigate(runDetailLink)}
                   type="button"
                 >
-                  {"\u8df3\u8f6c\u5230\u8fd0\u884c\u8be6\u60c5"}
+                  {"跳转到运行详情"}
                 </button>
               ) : null}
             </div>

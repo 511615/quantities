@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
 
@@ -181,24 +182,31 @@ def benchmark_returns(events: list[MarketEvent], benchmark_symbol: str) -> list[
 
 
 def realized_signal_returns(signal_frame: SignalFrame, events: list[MarketEvent]) -> list[float]:
+    events_by_instrument: dict[str, list[MarketEvent]] = defaultdict(list)
+    for event in events:
+        events_by_instrument[event.instrument].append(event)
     realized: list[float] = []
+    signal_offsets: dict[str, int] = defaultdict(int)
+    tradable_offsets: dict[str, int] = defaultdict(int)
     for row in signal_frame.rows:
-        current = next(
-            (
-                event
-                for event in events
-                if event.instrument == row.instrument and event.event_time > row.signal_time
-            ),
-            None,
-        )
-        future = next(
-            (
-                event
-                for event in events
-                if event.instrument == row.instrument and event.event_time > row.tradable_from
-            ),
-            None,
-        )
+        instrument_events = events_by_instrument.get(row.instrument, [])
+        current_index = signal_offsets[row.instrument]
+        while (
+            current_index < len(instrument_events)
+            and instrument_events[current_index].event_time <= row.signal_time
+        ):
+            current_index += 1
+        signal_offsets[row.instrument] = current_index
+        current = instrument_events[current_index] if current_index < len(instrument_events) else None
+
+        future_index = max(tradable_offsets[row.instrument], current_index)
+        while (
+            future_index < len(instrument_events)
+            and instrument_events[future_index].event_time <= row.tradable_from
+        ):
+            future_index += 1
+        tradable_offsets[row.instrument] = future_index
+        future = instrument_events[future_index] if future_index < len(instrument_events) else None
         if current is None or future is None or abs(current.close) <= 1e-9:
             realized.append(0.0)
             continue

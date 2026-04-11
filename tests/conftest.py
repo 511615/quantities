@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+import os
 
 import pytest
 
@@ -18,10 +19,20 @@ from quant_platform.models.contracts.model_spec import ModelSpec
 from quant_platform.workflows.runtime import WorkflowRuntime
 from quant_platform.workflows.services import WorkflowPipelineService
 
+from quant_platform.webapi.app import ENV_TEST_ARTIFACT_ROOT
+
 
 @pytest.fixture
 def artifact_root(tmp_path: Path) -> Path:
     return tmp_path / "artifacts"
+
+
+@pytest.fixture(autouse=True)
+def isolate_artifacts(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    os.environ[ENV_TEST_ARTIFACT_ROOT] = str(artifact_root)
+    yield
+    os.environ.pop(ENV_TEST_ARTIFACT_ROOT, None)
 
 
 @pytest.fixture

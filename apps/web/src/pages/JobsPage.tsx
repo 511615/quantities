@@ -2,12 +2,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { LaunchTrainDrawer } from "../features/launch-training/LaunchTrainDrawer";
 import { api } from "../shared/api/client";
 import {
   useBacktestOptions,
   useJobStatus,
   useJobs,
-  useTrainOptions,
 } from "../shared/api/hooks";
 import { formatDate } from "../shared/lib/format";
 import { formatJobTypeLabel, formatStageNameLabel } from "../shared/lib/labels";
@@ -56,15 +56,8 @@ const COPY = {
 export function JobsPage() {
   const queryClient = useQueryClient();
   const jobsQuery = useJobs();
-  const trainOptionsQuery = useTrainOptions();
   const backtestOptionsQuery = useBacktestOptions();
   const [trackedJobId, setTrackedJobId] = useState<string | null>(null);
-  const [trainDatasetPreset, setTrainDatasetPreset] = useState<"smoke" | "real_benchmark">("smoke");
-  const [trainTrainerPreset, setTrainTrainerPreset] = useState<"fast">("fast");
-  const [trainSeed, setTrainSeed] = useState("7");
-  const [experimentName, setExperimentName] = useState("workbench-train");
-  const [modelNamesInput, setModelNamesInput] = useState("elastic_net");
-  const [trainFormError, setTrainFormError] = useState<string | null>(null);
   const [runId, setRunId] = useState("");
   const [backtestDatasetPreset, setBacktestDatasetPreset] = useState<"smoke" | "real_benchmark">("smoke");
   const [predictionScope, setPredictionScope] = useState<"full" | "test">("full");
@@ -87,28 +80,6 @@ export function JobsPage() {
       setBenchmarkSymbol(defaultSymbol);
     }
   }, [backtestOptionsQuery.data?.default_benchmark_symbol]);
-
-  const trainMutation = useMutation({
-    mutationFn: () =>
-      api.launchTrain({
-        dataset_preset: trainDatasetPreset,
-        model_names: modelNamesInput
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        trainer_preset: trainTrainerPreset,
-        seed: Number(trainSeed),
-        experiment_name: experimentName,
-      }),
-    onSuccess: (result) => {
-      setTrackedJobId(result.job_id);
-      setTrainFormError(null);
-      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      void queryClient.invalidateQueries({ queryKey: ["runs"] });
-      void queryClient.invalidateQueries({ queryKey: ["experiments"] });
-      void queryClient.invalidateQueries({ queryKey: ["workbench-overview"] });
-    },
-  });
 
   const backtestMutation = useMutation({
     mutationFn: () =>
@@ -134,28 +105,6 @@ export function JobsPage() {
     () => jobsQuery.data?.items.filter((job) => job.error_message) ?? [],
     [jobsQuery.data?.items],
   );
-
-  function handleTrainSubmit() {
-    const modelNames = modelNamesInput
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-    if (modelNames.length === 0) {
-      setTrainFormError(COPY.modelNamesHint);
-      return;
-    }
-    if (!experimentName.trim()) {
-      setTrainFormError("\u8bf7\u8f93\u5165\u5b9e\u9a8c\u540d\u79f0\u3002");
-      return;
-    }
-    if (!trainSeed.trim() || Number.isNaN(Number(trainSeed))) {
-      setTrainFormError("\u8bf7\u8f93\u5165\u6709\u6548\u7684 seed\u3002");
-      return;
-    }
-    setUnsupportedMessage(null);
-    setTrainFormError(null);
-    trainMutation.mutate();
-  }
 
   function handleBacktestSubmit() {
     if (!runId.trim()) {
@@ -208,79 +157,15 @@ export function JobsPage() {
             <PanelHeader
               eyebrow={COPY.trainTitle}
               title={COPY.trainTitle}
-              description={I18N.model.templateSection}
+              description={"统一复用模板驱动训练入口，避免任务中心与模型页出现不同的训练参数语义。"}
             />
-            <div className="form-section-grid">
-              <label>
-                <span>{COPY.datasetPreset}</span>
-                <select
-                  className="field"
-                  onChange={(event) =>
-                    setTrainDatasetPreset(event.target.value as "smoke" | "real_benchmark")
-                  }
-                  value={trainDatasetPreset}
-                >
-                  {(trainOptionsQuery.data?.dataset_presets ?? []).map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>{COPY.trainerPreset}</span>
-                <select
-                  className="field"
-                  onChange={(event) => setTrainTrainerPreset(event.target.value as "fast")}
-                  value={trainTrainerPreset}
-                >
-                  {(trainOptionsQuery.data?.trainer_presets ?? []).map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>{COPY.seed}</span>
-                <input
-                  className="field"
-                  inputMode="numeric"
-                  onChange={(event) => setTrainSeed(event.target.value)}
-                  value={trainSeed}
-                />
-              </label>
-              <label>
-                <span>{COPY.experimentName}</span>
-                <input
-                  className="field"
-                  onChange={(event) => setExperimentName(event.target.value)}
-                  value={experimentName}
-                />
-              </label>
-            </div>
-            <label>
-              <span>{COPY.modelNames}</span>
-              <input
-                className="field"
-                onChange={(event) => setModelNamesInput(event.target.value)}
-                value={modelNamesInput}
-              />
-            </label>
-            {trainFormError ? <p className="form-error">{trainFormError}</p> : null}
-            {trainMutation.isError ? (
-              <p className="form-error">{(trainMutation.error as Error).message}</p>
-            ) : null}
-            <div className="toolbar">
-              <button
-                className="action-button"
-                disabled={trainMutation.isPending || trainOptionsQuery.isLoading}
-                onClick={handleTrainSubmit}
-                type="button"
-              >
-                {trainMutation.isPending ? "\u63d0\u4ea4\u4e2d..." : I18N.action.launchTrain}
-              </button>
-            </div>
+            <LaunchTrainDrawer
+              defaultOpen
+              showTrigger={false}
+              title={COPY.trainTitle}
+              description={I18N.model.templateSection}
+              onJobCreated={setTrackedJobId}
+            />
           </section>
 
           <section className="panel">

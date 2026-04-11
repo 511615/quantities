@@ -10,6 +10,7 @@ const datasetRequestOptions = {
     { value: "market", label: "Market", recommended: true },
     { value: "macro", label: "Macro" },
     { value: "on_chain", label: "On-chain" },
+    { value: "sentiment_events", label: "Sentiment Events" },
   ],
   asset_modes: [
     { value: "single_asset", label: "single_asset", recommended: true },
@@ -24,6 +25,7 @@ const datasetRequestOptions = {
     { value: "binance", label: "Binance", recommended: true },
     { value: "fred", label: "FRED" },
     { value: "defillama", label: "DeFiLlama" },
+    { value: "news_archive", label: "News Archive" },
   ],
   exchanges: [
     { value: "binance", label: "Binance", recommended: true },
@@ -39,16 +41,33 @@ const datasetRequestOptions = {
     },
   ],
   label_horizons: [{ value: "1", label: "1 Bar", recommended: true }],
-  split_strategies: [
-    { value: "time_series", label: "time_series", recommended: true },
-  ],
+  split_strategies: [{ value: "time_series", label: "time_series", recommended: true }],
   sample_policies: [{ value: "balanced", label: "balanced", recommended: true }],
   alignment_policies: [
     { value: "entity_timestamp", label: "entity_timestamp", recommended: true },
   ],
-  missing_feature_policies: [
-    { value: "fail", label: "fail", recommended: true },
-  ],
+  missing_feature_policies: [{ value: "fail", label: "fail", recommended: true }],
+  domain_capabilities: {
+    market: {
+      supported_vendors: ["binance"],
+      supported_frequencies: ["1h", "1d"],
+      supported_exchanges: ["binance"],
+      supported_symbol_types: ["spot"],
+      supported_selection_modes: ["manual_list"],
+    },
+    macro: {
+      supported_vendors: ["fred"],
+      supported_frequencies: ["1d"],
+    },
+    on_chain: {
+      supported_vendors: ["defillama"],
+      supported_frequencies: ["1d"],
+    },
+    sentiment_events: {
+      supported_vendors: ["news_archive"],
+      supported_frequencies: ["1h"],
+    },
+  },
   constraints: {},
 };
 
@@ -60,7 +79,13 @@ const jobStatusById: Record<string, object> = {
     created_at: "2026-04-09T00:00:00Z",
     updated_at: "2026-04-09T00:00:10Z",
     stages: [
-      { name: "readiness", status: "success", summary: "ready", started_at: null, finished_at: null },
+      {
+        name: "readiness",
+        status: "success",
+        summary: "ready",
+        started_at: null,
+        finished_at: null,
+      },
     ],
     result: {
       dataset_id: "frontend-multi-dataset",
@@ -111,36 +136,38 @@ const jobStatusById: Record<string, object> = {
   },
 };
 
-const fetchMock = vi.fn(
-  createFetchMock([
-    (url) =>
-      url.endsWith("/api/datasets/request-options")
-        ? jsonResponse(datasetRequestOptions)
-        : undefined,
-    (url, init) => {
-      if (!(url.endsWith("/api/datasets/requests") && init?.method === "POST")) {
-        return undefined;
-      }
-      const body = JSON.parse(String(init.body)) as { sources?: { data_domain: string }[] };
-      const isMultiDomain = (body.sources?.length ?? 0) > 1;
-      const jobId = isMultiDomain ? "job-dataset-multi" : "job-dataset-single";
-      return jsonResponse({
-        job_id: jobId,
-        status: "queued",
-        job_api_path: `/api/jobs/${jobId}`,
-        tracking_token: jobId,
-        submitted_at: "2026-04-09T00:00:00Z",
-      });
-    },
-    (url) => {
-      const match = url.match(/\/api\/jobs\/(job-dataset-(?:multi|single))/);
-      if (!match) {
-        return undefined;
-      }
-      return jsonResponse(jobStatusById[match[1]]);
-    },
-  ]),
-);
+const defaultFetchMock = createFetchMock([
+  (url) =>
+    url.endsWith("/api/datasets/request-options")
+      ? jsonResponse(datasetRequestOptions)
+      : undefined,
+  (url, init) => {
+    if (!(url.endsWith("/api/datasets/requests") && init?.method === "POST")) {
+      return undefined;
+    }
+    const body = JSON.parse(String(init.body)) as {
+      sources?: { data_domain: string; source_vendor: string; frequency: string }[];
+    };
+    const isMultiDomain = (body.sources?.length ?? 0) > 1;
+    const jobId = isMultiDomain ? "job-dataset-multi" : "job-dataset-single";
+    return jsonResponse({
+      job_id: jobId,
+      status: "queued",
+      job_api_path: `/api/jobs/${jobId}`,
+      tracking_token: jobId,
+      submitted_at: "2026-04-09T00:00:00Z",
+    });
+  },
+  (url) => {
+    const match = url.match(/\/api\/jobs\/(job-dataset-(?:multi|single))/);
+    if (!match) {
+      return undefined;
+    }
+    return jsonResponse(jobStatusById[match[1]]);
+  },
+]);
+
+const fetchMock = vi.fn(defaultFetchMock);
 
 beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
@@ -149,7 +176,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  fetchMock.mockClear();
+  fetchMock.mockReset();
+  fetchMock.mockImplementation(defaultFetchMock);
 });
 
 test("submits multi-domain request and surfaces dataset/run deeplinks", async () => {
@@ -158,7 +186,6 @@ test("submits multi-domain request and surfaces dataset/run deeplinks", async ()
   fireEvent.click(screen.getByText("申请新数据集"));
 
   await waitFor(() => screen.getByRole("button", { name: /add-domain/i }));
-
   fireEvent.click(screen.getByRole("button", { name: /add-domain/i }));
 
   const dateInputs = container.querySelectorAll('input[type="date"]');
@@ -179,21 +206,34 @@ test("submits multi-domain request and surfaces dataset/run deeplinks", async ()
         if (!(url.endsWith("/api/datasets/requests") && init?.method === "POST")) {
           return false;
         }
-        const body = JSON.parse(String(init.body));
+        const body = JSON.parse(String(init.body)) as {
+          sources: { data_domain: string; source_vendor: string; frequency: string }[];
+          merge_policy_name?: string;
+        };
         return (
           Array.isArray(body.sources) &&
-          body.sources.some((source: { data_domain: string }) => source.data_domain === "market") &&
-          body.sources.some((source: { data_domain: string }) => source.data_domain === "macro") &&
-          body.merge_policy_name === "strict_timestamp_inner"
+          body.sources.some(
+            (source) =>
+              source.data_domain === "market" &&
+              source.source_vendor === "binance" &&
+              source.frequency === "1d",
+          ) &&
+          body.sources.some(
+            (source) =>
+              source.data_domain === "macro" &&
+              source.source_vendor === "fred" &&
+              source.frequency === "1d",
+          ) &&
+          body.merge_policy_name === "available_time_safe_asof"
         );
       }),
     ).toBe(true),
   );
 
-  const runLink = await screen.findByRole("link", { name: /查看运行详情/ });
+  const runLink = await screen.findByRole("link", { name: "查看运行详情" });
   expect(runLink).toHaveAttribute("href", "/runs/frontend-multi-run");
 
-  const datasetLink = screen.getByRole("link", { name: /查看数据集详情/ });
+  const datasetLink = screen.getByRole("link", { name: "查看数据集详情" });
   expect(datasetLink).toHaveAttribute("href", "/datasets/frontend-multi-dataset");
 });
 
@@ -203,7 +243,6 @@ test("shows train CTA after single-domain request succeeds", async () => {
   fireEvent.click(screen.getByText("申请新数据集"));
 
   await waitFor(() => screen.getByText("提交数据请求"));
-
   fireEvent.click(screen.getByText("提交数据请求"));
 
   await waitFor(() =>
@@ -235,8 +274,111 @@ test("shows train CTA after single-domain request succeeds", async () => {
   );
 
   const trainLink = await screen.findByRole("link", { name: "继续这份数据集训练" });
-  expect(trainLink).toHaveAttribute("href", "/models?launchTrain=1&datasetId=frontend-single-dataset");
+  expect(trainLink).toHaveAttribute(
+    "href",
+    "/models?launchTrain=1&datasetId=frontend-single-dataset",
+  );
 
-  const datasetLink = screen.getByRole("link", { name: /查看数据集详情/ });
+  const datasetLink = screen.getByRole("link", { name: "查看数据集详情" });
   expect(datasetLink).toHaveAttribute("href", "/datasets/frontend-single-dataset");
+});
+
+test("submits sentiment-only request without forcing a market anchor", async () => {
+  renderWithProviders(
+    <DatasetRequestDrawer
+      initialValues={{
+        dataDomain: "sentiment_events",
+        sourceVendor: "news_archive",
+        frequency: "1h",
+      }}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "申请新数据集" }));
+
+  const identifierInput = await screen.findByDisplayValue("btc_news");
+  fireEvent.change(identifierInput, { target: { value: "btc_news" } });
+  fireEvent.click(screen.getByRole("button", { name: "提交数据请求" }));
+
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (!(url.endsWith("/api/datasets/requests") && init?.method === "POST")) {
+          return false;
+        }
+        const body = JSON.parse(String(init.body)) as {
+          data_domain?: string;
+          selection_mode?: string;
+          symbol_selector?: unknown;
+          source_vendor?: string;
+          frequency?: string;
+          sources?: Array<{
+            data_domain: string;
+            source_vendor: string;
+            frequency: string;
+            identifier?: string | null;
+            symbol_selector?: unknown;
+          }>;
+        };
+        return (
+          body.data_domain === "sentiment_events" &&
+          body.selection_mode === "explicit" &&
+          body.symbol_selector === undefined &&
+          body.source_vendor === "news_archive" &&
+          body.frequency === "1h" &&
+          Array.isArray(body.sources) &&
+          body.sources.length === 1 &&
+          body.sources[0]?.data_domain === "sentiment_events" &&
+          body.sources[0]?.source_vendor === "news_archive" &&
+          body.sources[0]?.frequency === "1h" &&
+          body.sources[0]?.identifier === "btc_news" &&
+          body.sources[0]?.symbol_selector === undefined
+        );
+      }),
+    ).toBe(true),
+  );
+});
+
+test("shows readable validation details when backend returns 422", async () => {
+  fetchMock.mockImplementation(
+    createFetchMock([
+      (url) =>
+        url.endsWith("/api/datasets/request-options")
+          ? jsonResponse(datasetRequestOptions)
+          : undefined,
+      (url, init) =>
+        url.endsWith("/api/datasets/requests") && init?.method === "POST"
+          ? jsonResponse(
+              {
+                detail: [
+                  {
+                    loc: ["body", "sources", 1, "source_vendor"],
+                    msg: "Field required",
+                    type: "missing",
+                  },
+                ],
+              },
+              { status: 422 },
+            )
+          : undefined,
+    ]),
+  );
+
+  renderWithProviders(<DatasetRequestDrawer />);
+
+  fireEvent.click(screen.getByText("申请新数据集"));
+  await waitFor(() => screen.getByRole("button", { name: /add-domain/i }));
+
+  fireEvent.click(screen.getByRole("button", { name: /add-domain/i }));
+  fireEvent.click(screen.getByText("提交数据请求"));
+
+  expect(
+    await screen.findByText("body.sources.1.source_vendor: Field required"),
+  ).toBeInTheDocument();
 });

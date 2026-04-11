@@ -98,6 +98,49 @@ def _market_dataset_request_payload(
     }
 
 
+def _sentiment_dataset_request_payload(
+    request_name: str,
+    *,
+    identifier: str = "btc_news",
+    dataset_type: str = "training_panel",
+) -> dict[str, object]:
+    return {
+        "request_name": request_name,
+        "data_domain": "sentiment_events",
+        "dataset_type": dataset_type,
+        "asset_mode": "single_asset",
+        "time_window": {
+            "start_time": "2026-04-09T00:00:00Z",
+            "end_time": "2026-04-09T12:00:00Z",
+        },
+        "selection_mode": "explicit",
+        "source_vendor": "news_archive",
+        "frequency": "1h",
+        "filters": {},
+        "sources": [
+            {
+                "data_domain": "sentiment_events",
+                "source_vendor": "news_archive",
+                "frequency": "1h",
+                "identifier": identifier,
+                "filters": {},
+            }
+        ],
+        "build_config": {
+            "feature_set_id": "baseline_market_features",
+            "label_horizon": 1,
+            "label_kind": "regression",
+            "split_strategy": "time_series",
+            "sample_policy_name": "training_panel_strict",
+            "alignment_policy_name": "event_time_inner",
+            "missing_feature_policy_name": "drop_if_missing",
+            "sample_policy": {},
+            "alignment_policy": {},
+            "missing_feature_policy": {},
+        },
+    }
+
+
 def _isoformat_z(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
@@ -185,6 +228,7 @@ def _multi_domain_request_payload(
     start_time: datetime,
     end_time: datetime,
     dataset_type: str = "training_panel",
+    merge_policy_name: str = "available_time_safe_asof",
 ) -> dict[str, object]:
     payload = copy.deepcopy(
         _market_dataset_request_payload(request_name, dataset_type=dataset_type)
@@ -225,7 +269,7 @@ def _multi_domain_request_payload(
             "filters": {},
         },
     ]
-    payload["merge_policy_name"] = "strict_timestamp_inner"
+    payload["merge_policy_name"] = merge_policy_name
     for deprecated in ("data_domain", "source_vendor", "exchange", "frequency"):
         payload.pop(deprecated, None)
     return payload
@@ -521,16 +565,71 @@ def test_dataset_registry_endpoints_expose_facets_slices_series_and_dependencies
     assert isinstance(dependencies_payload["items"], list)
 
 
-def test_dataset_delete_is_blocked_when_run_or_backtest_references_exist() -> None:
-    client = TestClient(create_app())
+def test_dataset_delete_hard_deletes_even_when_run_or_backtest_references_exist() -> None:
+    app = create_app()
+    client = TestClient(app)
 
     response = client.delete("/api/datasets/smoke_dataset")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "blocked"
+    assert payload["status"] == "deleted"
     assert payload["blocking_items"]
     assert {item["dependency_kind"] for item in payload["blocking_items"]} >= {"run"}
+
+    app.state.services.workbench.facade.build_smoke_dataset()
+    app.state.services.workbench.dataset_registry.bootstrap_from_artifacts()
+
+
+def test_backtest_delete_removes_detail_and_list_entry_but_keeps_run() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    launch_response = client.post(
+        "/api/launch/backtest",
+        json={
+            "run_id": "smoke-train-run",
+            "dataset_preset": "smoke",
+            "prediction_scope": "test",
+            "strategy_preset": "sign",
+            "portfolio_preset": "research_default",
+            "cost_preset": "standard",
+            "benchmark_symbol": "BTCUSDT",
+        },
+    )
+    assert launch_response.status_code == 200
+    job_payload = _wait_for_job(client, launch_response.json()["job_id"])
+    assert job_payload["status"] == "success"
+
+    list_response = client.get("/api/backtests", params={"page": 1, "per_page": 50})
+    assert list_response.status_code == 200
+    items = list_response.json()["items"]
+    assert items
+
+    backtest_id = items[0]["backtest_id"]
+    detail_response = client.get(f"/api/backtests/{backtest_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    run_id = detail_payload.get("run_id")
+
+    delete_response = client.delete(f"/api/backtests/{backtest_id}")
+    assert delete_response.status_code == 200
+    delete_payload = delete_response.json()
+    assert delete_payload["status"] == "deleted"
+
+    missing_detail_response = client.get(f"/api/backtests/{backtest_id}")
+    assert missing_detail_response.status_code == 404
+
+    refreshed_list_response = client.get("/api/backtests", params={"page": 1, "per_page": 50})
+    assert refreshed_list_response.status_code == 200
+    listed_ids = {item["backtest_id"] for item in refreshed_list_response.json()["items"]}
+    assert backtest_id not in listed_ids
+
+    if run_id:
+        run_detail_response = client.get(f"/api/runs/{run_id}")
+        assert run_detail_response.status_code == 200
+        related_ids = {item["backtest_id"] for item in run_detail_response.json()["related_backtests"]}
+        assert backtest_id not in related_ids
 
 
 def test_dataset_delete_physically_removes_unreferenced_dataset_artifacts() -> None:
@@ -670,6 +769,74 @@ def test_dataset_request_uses_existing_job_system() -> None:
         item["dataset_id"] == "smoke_request_from_datasets_page"
         for item in training_payload["items"]
     )
+
+
+def test_sentiment_dataset_request_materializes_training_dataset_and_supports_train_launch() -> None:
+    client = TestClient(create_app())
+    suffix = str(int(time.time() * 1000))
+    dataset_id = f"btc_sentiment_smoke_{suffix}"
+
+    options_response = client.get("/api/datasets/request-options")
+    assert options_response.status_code == 200
+    sentiment_capability = options_response.json()["domain_capabilities"]["sentiment_events"]
+    assert sentiment_capability["supports_real_ingestion"] is True
+    assert {"gnews", "reddit_public", "news_archive"} <= set(
+        sentiment_capability["supported_vendors"]
+    )
+    assert sentiment_capability["supported_frequencies"] == ["1h"]
+
+    request_response = client.post(
+        "/api/datasets/requests",
+        json=_sentiment_dataset_request_payload(dataset_id),
+    )
+    assert request_response.status_code == 200
+
+    request_job_payload = _wait_for_job(client, request_response.json()["job_id"])
+    assert request_job_payload["status"] == "success"
+    assert request_job_payload["result"]["dataset_id"] == dataset_id
+
+    readiness_response = client.get(f"/api/datasets/{dataset_id}/readiness")
+    assert readiness_response.status_code == 200
+    readiness_payload = readiness_response.json()
+    assert readiness_payload["dataset_id"] == dataset_id
+    assert readiness_payload["readiness_status"] == "ready"
+    assert readiness_payload["blocking_issues"] == []
+
+    detail_response = client.get(f"/api/datasets/{dataset_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["dataset"]["data_domain"] == "sentiment_events"
+    assert detail_payload["dataset"]["source_vendor"] == "news_archive"
+    assert detail_payload["dataset"]["dataset_type"] == "training_panel"
+
+    browser_response = client.get(
+        "/api/datasets",
+        params={"data_domain": "sentiment_events", "page": 1, "per_page": 50},
+    )
+    assert browser_response.status_code == 200
+    assert any(item["dataset_id"] == dataset_id for item in browser_response.json()["items"])
+
+    training_response = client.get("/api/datasets/training")
+    assert training_response.status_code == 200
+    assert any(item["dataset_id"] == dataset_id for item in training_response.json()["items"])
+
+    train_response = client.post(
+        "/api/launch/train",
+        json={
+            "dataset_id": dataset_id,
+            "dataset_preset": "smoke",
+            "template_id": "registry::elastic_net",
+            "trainer_preset": "fast",
+            "seed": 7,
+            "experiment_name": f"sentiment-train-{suffix}",
+            "run_id_prefix": f"sentiment-train-{suffix}",
+        },
+    )
+    assert train_response.status_code == 200
+    train_job_payload = _wait_for_job(client, train_response.json()["job_id"])
+    assert train_job_payload["status"] == "success"
+    assert train_job_payload["result"]["dataset_id"] == dataset_id
+    assert train_job_payload["result"]["run_ids"]
 
 
 def test_dataset_fusion_builds_materialized_training_panel_and_blocks_base_delete() -> None:
@@ -839,7 +1006,7 @@ def test_dataset_fusion_builds_materialized_training_panel_and_blocks_base_delet
     delete_response = client.delete(f"/api/datasets/{base_dataset_id}")
     assert delete_response.status_code == 200
     delete_payload = delete_response.json()
-    assert delete_payload["status"] == "blocked"
+    assert delete_payload["status"] == "deleted"
     assert any(
         item["dependency_kind"] == "fusion_dataset"
         and item["dependency_id"] == fusion_dataset_id
@@ -863,6 +1030,7 @@ def test_multi_domain_dataset_request_materializes_merged_dataset() -> None:
             request_name,
             start_time=start_time,
             end_time=end_time,
+            merge_policy_name="strict_timestamp_inner",
         ),
     )
     assert request_response.status_code == 200
@@ -971,12 +1139,41 @@ def test_multi_domain_request_with_timestamp_mismatch_fails() -> None:
             request_name,
             start_time=start_time,
             end_time=end_time,
+            merge_policy_name="strict_timestamp_inner",
         ),
     )
     assert request_response.status_code == 200
     job_payload = _wait_for_job(client, request_response.json()["job_id"])
     assert job_payload["status"] == "failed"
     assert "timestamp" in (job_payload["error_message"] or "").lower()
+
+
+def test_multi_domain_request_with_asof_alignment_succeeds_on_timestamp_mismatch() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+    request_name = f"multi_domain_request_asof_{suffix}"
+    start_time = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    end_time = start_time + timedelta(hours=3)
+
+    _patch_multi_domain_ingestion(
+        app,
+        macro_offset=timedelta(minutes=-30),
+        on_chain_offset=timedelta(minutes=-30),
+    )
+    request_response = client.post(
+        "/api/datasets/requests",
+        json=_multi_domain_request_payload(
+            request_name,
+            start_time=start_time,
+            end_time=end_time,
+            merge_policy_name="available_time_safe_asof",
+        ),
+    )
+    assert request_response.status_code == 200
+    job_payload = _wait_for_job(client, request_response.json()["job_id"])
+    assert job_payload["status"] == "success"
+    assert job_payload["result"]["dataset_id"]
 
 
 def test_multi_domain_request_connector_error_fails() -> None:
@@ -1092,6 +1289,20 @@ def test_merged_dataset_can_be_trained_and_backtested() -> None:
     backtest_job = _wait_for_job(client, backtest_response.json()["job_id"])
     assert backtest_job["status"] == "success"
     assert backtest_job["result"]["dataset_id"] == dataset_id
+    backtest_id = backtest_job["result"]["backtest_ids"][0]
+
+    backtest_detail_response = client.get(f"/api/backtests/{backtest_id}")
+    assert backtest_detail_response.status_code == 200
+    backtest_detail = backtest_detail_response.json()
+    assert backtest_detail["run_id"] == run_id
+    assert backtest_detail["passed_consistency_checks"] is not None
+
+    backtests_response = client.get("/api/backtests", params={"page": 1, "per_page": 50})
+    assert backtests_response.status_code == 200
+    backtests_payload = backtests_response.json()
+    listed = next(item for item in backtests_payload["items"] if item["backtest_id"] == backtest_id)
+    assert listed["status"] == "success"
+    assert listed["passed_consistency_checks"] == backtest_detail["passed_consistency_checks"]
 
 
 def test_backtest_schema_mismatch_fails() -> None:
@@ -1146,6 +1357,130 @@ def test_backtest_schema_mismatch_fails() -> None:
     backtest_job = _wait_for_job(client, backtest_response.json()["job_id"])
     assert backtest_job["status"] == "failed"
     assert "schema" in (backtest_job["error_message"] or "").lower()
+
+
+def test_backtest_history_preserves_multiple_records_for_one_run() -> None:
+    client = TestClient(create_app())
+    suffix = str(int(time.time() * 1000))
+
+    train_response = client.post(
+        "/api/launch/train",
+        json={
+            "dataset_preset": "smoke",
+            "template_id": "registry::elastic_net",
+            "trainer_preset": "fast",
+            "experiment_name": f"multi-backtest-history-{suffix}",
+            "run_id_prefix": f"multi-backtest-history-{suffix}",
+        },
+    )
+    assert train_response.status_code == 200
+    train_job = _wait_for_job(client, train_response.json()["job_id"])
+    assert train_job["status"] == "success"
+    run_id = train_job["result"]["run_ids"][0]
+
+    backtest_ids: list[str] = []
+    for prediction_scope in ("full", "test"):
+        backtest_response = client.post(
+            "/api/launch/backtest",
+            json={
+                "run_id": run_id,
+                "prediction_scope": prediction_scope,
+                "strategy_preset": "sign",
+                "portfolio_preset": "research_default",
+                "cost_preset": "standard",
+            },
+        )
+        assert backtest_response.status_code == 200
+        backtest_job = _wait_for_job(client, backtest_response.json()["job_id"])
+        assert backtest_job["status"] == "success"
+        assert backtest_job["result"]["dataset_id"] == "smoke_dataset"
+        backtest_ids.append(backtest_job["result"]["backtest_ids"][0])
+
+    assert len(set(backtest_ids)) == 2
+
+    backtests_response = client.get(
+        "/api/backtests",
+        params={"page": 1, "per_page": 100},
+    )
+    assert backtests_response.status_code == 200
+    listed_ids = {
+        item["backtest_id"]
+        for item in backtests_response.json()["items"]
+        if item.get("run_id") == run_id
+    }
+    assert set(backtest_ids) <= listed_ids
+
+    for backtest_id in backtest_ids:
+        detail_response = client.get(f"/api/backtests/{backtest_id}")
+        assert detail_response.status_code == 200
+        detail_payload = detail_response.json()
+        assert detail_payload["run_id"] == run_id
+        assert detail_payload["research"] is not None
+        assert detail_payload["simulation"] is not None
+
+    run_detail_response = client.get(f"/api/runs/{run_id}")
+    assert run_detail_response.status_code == 200
+    related_ids = {
+        item["backtest_id"] for item in run_detail_response.json()["related_backtests"]
+    }
+    assert set(backtest_ids) <= related_ids
+
+    dependencies_response = client.get("/api/datasets/smoke_dataset/dependencies")
+    assert dependencies_response.status_code == 200
+    dependency_ids = {
+        item["dependency_id"]
+        for item in dependencies_response.json()["items"]
+        if item["dependency_kind"] == "backtest" and item["metadata"].get("run_id") == run_id
+    }
+    assert set(backtest_ids) <= dependency_ids
+
+
+def test_launch_backtest_dataset_preset_is_only_used_as_fallback() -> None:
+    client = TestClient(create_app())
+
+    options_response = client.get("/api/launch/backtest/options")
+    assert options_response.status_code == 200
+    options_payload = options_response.json()
+    assert {item["value"] for item in options_payload["dataset_presets"]} == {
+        "smoke",
+        "real_benchmark",
+    }
+    assert (
+        options_payload["constraints"]["dataset_selector"]["priority"]
+        == "dataset_id_gt_run_manifest_gt_dataset_preset"
+    )
+
+    suffix = str(int(time.time() * 1000))
+    train_response = client.post(
+        "/api/launch/train",
+        json={
+            "dataset_preset": "smoke",
+            "template_id": "registry::elastic_net",
+            "trainer_preset": "fast",
+            "experiment_name": f"backtest-preset-fallback-{suffix}",
+            "run_id_prefix": f"backtest-preset-fallback-{suffix}",
+        },
+    )
+    assert train_response.status_code == 200
+    train_job = _wait_for_job(client, train_response.json()["job_id"])
+    assert train_job["status"] == "success"
+    run_id = train_job["result"]["run_ids"][0]
+
+    backtest_response = client.post(
+        "/api/launch/backtest",
+        json={
+            "run_id": run_id,
+            "dataset_preset": "real_benchmark",
+            "prediction_scope": "full",
+            "strategy_preset": "sign",
+            "portfolio_preset": "research_default",
+            "cost_preset": "standard",
+        },
+    )
+    assert backtest_response.status_code == 200
+    backtest_job = _wait_for_job(client, backtest_response.json()["job_id"])
+    assert backtest_job["status"] == "success"
+    assert backtest_job["result"]["dataset_id"] == "smoke_dataset"
 
 
 def test_dataset_fusion_surfaces_connector_errors_as_explicit_400() -> None:

@@ -142,6 +142,9 @@ class ModelRegistry:
             artifact_adapter=self._artifact_adapters[registration.artifact_adapter_key],
         )
 
+    def registrations(self) -> dict[str, ModelRegistration]:
+        return dict(self._registrations)
+
     def load_from_artifact(
         self, artifact_uri: str | Path
     ) -> tuple[BaseModelPlugin, ModelArtifactMeta]:

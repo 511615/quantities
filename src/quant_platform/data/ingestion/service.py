@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,10 +11,16 @@ from typing import Any
 from quant_platform.common.hashing.digest import file_digest
 from quant_platform.data.connectors import (
     BinanceSpotKlinesConnector,
+    BitstampArchiveConnector,
     ContractOnlyConnector,
     DefiLlamaConnector,
     FredSeriesConnector,
+    GdeltSentimentConnector,
+    GNewsSentimentConnector,
     InternalSmokeMarketConnector,
+    NewsArchiveSentimentConnector,
+    RedditHistoryCsvSentimentConnector,
+    RedditPublicSentimentConnector,
 )
 from quant_platform.data.contracts.ingestion import (
     DataConnectorError,
@@ -23,6 +30,9 @@ from quant_platform.data.contracts.ingestion import (
 )
 from quant_platform.data.contracts.market import NormalizedMarketBar
 from quant_platform.data.contracts.series import NormalizedSeriesPoint
+
+_GNEWS_RSS_MAX_LOOKBACK_DAYS = 7
+_REDDIT_PUBLIC_MAX_LOOKBACK_DAYS = 31
 
 
 @dataclass(frozen=True)
@@ -114,6 +124,13 @@ class DomainIngestionCoordinator(DomainIngestionService):
         options: dict[str, Any],
         model_key: str,
     ) -> tuple[list[dict[str, Any]], str]:
+        self._enforce_vendor_window_policy(
+            data_domain=data_domain,
+            vendor=vendor,
+            identifier=identifier,
+            start_time=start_time,
+            end_time=end_time,
+        )
         connector = self.resolve(data_domain, vendor)
         if connector is None:
             raise DataConnectorError(
@@ -146,7 +163,24 @@ class DomainIngestionCoordinator(DomainIngestionService):
                 )
                 try:
                     result = connector.ingest(request)
-                except DataConnectorError:
+                except DataConnectorError as exc:
+                    if data_domain == "sentiment_events" and getattr(exc, "code", None) == "empty_result":
+                        self._persist_snapshot(
+                            data_domain=data_domain,
+                            vendor=vendor,
+                            identifier=identifier,
+                            frequency=frequency,
+                            start_time=gap_start,
+                            end_time=gap_end,
+                            raw_payload={
+                                "identifier": identifier,
+                                "frequency": frequency,
+                                "rows": [],
+                                "error_message": str(exc),
+                            },
+                            normalized_rows=[],
+                        )
+                        continue
                     raise
                 except Exception as exc:  # noqa: BLE001
                     raise DataConnectorError(
@@ -159,6 +193,18 @@ class DomainIngestionCoordinator(DomainIngestionService):
                     ) from exc
                 rows = result.metadata.get(model_key)
                 if not isinstance(rows, list) or not rows:
+                    if data_domain == "sentiment_events":
+                        self._persist_snapshot(
+                            data_domain=data_domain,
+                            vendor=vendor,
+                            identifier=identifier,
+                            frequency=frequency,
+                            start_time=gap_start,
+                            end_time=gap_end,
+                            raw_payload=result.metadata,
+                            normalized_rows=[],
+                        )
+                        continue
                     raise DataConnectorError(
                         data_domain=data_domain,  # type: ignore[arg-type]
                         vendor=vendor,
@@ -197,6 +243,45 @@ class DomainIngestionCoordinator(DomainIngestionService):
             )
         return rows, fetch_status
 
+    def _enforce_vendor_window_policy(
+        self,
+        *,
+        data_domain: str,
+        vendor: str,
+        identifier: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> None:
+        if data_domain != "sentiment_events":
+            return
+        span_days = (end_time - start_time).total_seconds() / 86400
+        if vendor == "gnews" and not os.getenv("GNEWS_API_KEY", "").strip():
+            if span_days > _GNEWS_RSS_MAX_LOOKBACK_DAYS:
+                raise DataConnectorError(
+                    data_domain=data_domain,
+                    vendor=vendor,
+                    identifier=identifier,
+                    message=(
+                        "Google News RSS fallback is near-real-time only and cannot satisfy historical "
+                        "ranges longer than 7 days. Existing cached snapshots from older runs are no longer "
+                        "accepted for this request. Configure GNEWS_API_KEY for historical coverage."
+                    ),
+                    retryable=False,
+                    code="historical_range_not_supported",
+                )
+        if vendor == "reddit_public" and span_days > _REDDIT_PUBLIC_MAX_LOOKBACK_DAYS:
+            raise DataConnectorError(
+                data_domain=data_domain,
+                vendor=vendor,
+                identifier=identifier,
+                message=(
+                    "reddit_public currently exposes only recent public search windows up to about 31 days. "
+                    "Existing cached snapshots from older runs are no longer accepted for this request."
+                ),
+                retryable=False,
+                code="historical_range_not_supported",
+            )
+
     def _persist_snapshot(
         self,
         *,
@@ -209,6 +294,8 @@ class DomainIngestionCoordinator(DomainIngestionService):
         raw_payload: dict[str, Any],
         normalized_rows: list[dict[str, Any]],
     ) -> None:
+        if data_domain == "sentiment_events" and not normalized_rows:
+            return
         slug = self._slugify(identifier)
         prefix = f"{data_domain}/{vendor}/{slug}/{frequency}_{start_time:%Y%m%d%H%M%S}_{end_time:%Y%m%d%H%M%S}"
         raw_path = self.cache_root / f"raw/{prefix}.json"
@@ -234,8 +321,8 @@ class DomainIngestionCoordinator(DomainIngestionService):
                     vendor,
                     identifier,
                     frequency,
-                    (actual_start.isoformat() if actual_start else start_time.isoformat()),
-                    (actual_end.isoformat() if actual_end else end_time.isoformat()),
+                    actual_start.isoformat() if actual_start else start_time.isoformat(),
+                    actual_end.isoformat() if actual_end else end_time.isoformat(),
                     str(raw_path.resolve()),
                     str(normalized_path.resolve()),
                     file_digest(normalized_path),
@@ -265,7 +352,8 @@ class DomainIngestionCoordinator(DomainIngestionService):
                 """,
                 (data_domain, vendor, identifier, frequency),
             ).fetchall()
-        return [CacheSnapshot(*row) for row in rows]
+        snapshots = [CacheSnapshot(*row) for row in rows]
+        return [snapshot for snapshot in snapshots if self._snapshot_is_usable(snapshot)]
 
     def _load_rows(
         self,
@@ -350,11 +438,19 @@ class DomainIngestionCoordinator(DomainIngestionService):
 
     def _register_defaults(self) -> None:
         self.register(BinanceSpotKlinesConnector())
+        self.register(BitstampArchiveConnector())
         self.register(InternalSmokeMarketConnector())
         self.register(FredSeriesConnector())
         self.register(DefiLlamaConnector())
+        self.register(GdeltSentimentConnector())
+        self.register(GNewsSentimentConnector())
+        self.register(NewsArchiveSentimentConnector())
+        self.register(RedditHistoryCsvSentimentConnector(self.artifact_root))
+        self.register(RedditPublicSentimentConnector())
         self.register(ContractOnlyConnector(data_domain="derivatives"))
-        self.register(ContractOnlyConnector(data_domain="sentiment_events"))
+        self.register(
+            ContractOnlyConnector(data_domain="sentiment_events", vendor="contract_only")
+        )
 
     def _snapshot_bounds(self, snapshot: CacheSnapshot) -> tuple[datetime | None, datetime | None]:
         payload = json.loads(Path(snapshot.normalized_uri).read_text(encoding="utf-8"))
@@ -365,6 +461,19 @@ class DomainIngestionCoordinator(DomainIngestionService):
         if bounds == (None, None):
             return self._parse_dt(snapshot.start_time), self._parse_dt(snapshot.end_time)
         return bounds
+
+    def _snapshot_is_usable(self, snapshot: CacheSnapshot) -> bool:
+        normalized_path = Path(snapshot.normalized_uri)
+        if not normalized_path.exists():
+            return False
+        if snapshot.data_domain == "sentiment_events" and snapshot.vendor == "gnews":
+            try:
+                text = normalized_path.read_text(encoding="utf-8")
+            except OSError:
+                return False
+            if "<a href=" in text or "&nbsp;" in text:
+                return False
+        return True
 
     def _rows_bounds(
         self,

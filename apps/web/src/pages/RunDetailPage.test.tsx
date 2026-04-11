@@ -5,6 +5,12 @@ import { App } from "../app/App";
 import { artifactPreviewFixture, runDetailFixture } from "../test/fixtures";
 import { createFetchMock, jsonResponse } from "../test/mockApi";
 
+vi.mock("../shared/ui/WorkbenchChart", () => ({
+  WorkbenchChart: ({ loadingLabel }: { loadingLabel?: string }) => (
+    <div data-testid="workbench-chart">{loadingLabel ?? "chart"}</div>
+  ),
+}));
+
 const fetchMock = vi.fn(
   createFetchMock([
     (url) =>
@@ -39,11 +45,17 @@ afterEach(() => {
 test("renders run detail and previews artifacts", async () => {
   render(<App />);
 
-  await waitFor(() => expect(screen.getByText("\u6307\u6807\u8be6\u60c5")).toBeInTheDocument());
-  expect(screen.getByText("\u7279\u5f81\u91cd\u8981\u6027")).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("回归指标总览")).toBeInTheDocument());
+  expect(screen.getByText("特征重要性")).toBeInTheDocument();
+  expect(screen.getByText("预测 vs 真实")).toBeInTheDocument();
+  expect(screen.getAllByTestId("workbench-chart").length).toBeGreaterThan(0);
   expect(screen.getAllByText("\u56de\u6d4b\u5206\u6790").length).toBeGreaterThan(0);
-  fireEvent.click(screen.getByText("\u8bad\u7ec3\u6e05\u5355"));
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: /评估摘要 .*evaluation_summary\.json/,
+    }),
+  );
   await waitFor(() =>
-    expect(screen.getByText(/"run_id": "smoke-train-run"/)).toBeInTheDocument(),
+    expect(screen.getByText(/"selected_scope": "test"/)).toBeInTheDocument(),
   );
 });

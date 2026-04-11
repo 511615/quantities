@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from quant_platform.api.facade import QuantPlatformFacade
 from quant_platform.common.config.loader import load_app_config
@@ -16,6 +18,7 @@ from quant_platform.webapi.repositories.artifacts import ArtifactRepository
 from quant_platform.webapi.repositories.dataset_registry import DatasetRegistryRepository
 from quant_platform.webapi.services.catalog import ResearchWorkbenchService
 from quant_platform.webapi.services.jobs import JobService
+from quant_platform.webapi.services.model_cleanup import ModelCleanupService
 
 
 @dataclass
@@ -31,7 +34,32 @@ def get_services(request: Request) -> AppServices:
 ServicesDep = Annotated[AppServices, Depends(get_services)]
 
 
-def create_app() -> FastAPI:
+ENV_TEST_ARTIFACT_ROOT = "QUANT_PLATFORM_TEST_ARTIFACT_ROOT"
+
+
+def _resolve_app_artifact_root(config, override: Path | None) -> Path:
+    if override is not None:
+        candidate = override
+    else:
+        env_override = os.getenv(ENV_TEST_ARTIFACT_ROOT)
+        candidate = Path(env_override) if env_override else Path(config.env.artifact_root)
+    candidate = candidate.resolve()
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+def _bootstrap_test_artifacts(facade: QuantPlatformFacade, artifact_root: Path) -> None:
+    if not os.getenv(ENV_TEST_ARTIFACT_ROOT):
+        return
+    smoke_dataset_path = artifact_root / "datasets" / "smoke_dataset_dataset_ref.json"
+    if not smoke_dataset_path.exists():
+        facade.build_smoke_dataset()
+    smoke_run_dir = artifact_root / "models" / "smoke-train-run"
+    if not smoke_run_dir.exists():
+        facade.train_smoke()
+
+
+def create_app(artifact_root_override: Path | None = None) -> FastAPI:
     from quant_platform.webapi.routers import (
         artifacts,
         backtests,
@@ -47,16 +75,21 @@ def create_app() -> FastAPI:
     )
 
     config = load_app_config()
-    artifact_root = Path(config.env.artifact_root)
+    artifact_root = _resolve_app_artifact_root(config, artifact_root_override)
     facade = QuantPlatformFacade(artifact_root)
+    _bootstrap_test_artifacts(facade, artifact_root)
     repository = ArtifactRepository(artifact_root)
+    ModelCleanupService(repository=repository, facade=facade).normalize_repository(
+        delete_irreparable=not bool(os.getenv(ENV_TEST_ARTIFACT_ROOT))
+    )
     dataset_registry = DatasetRegistryRepository(artifact_root, repository)
+    registry_entries = facade.model_registry.registrations()
     workbench_service = ResearchWorkbenchService(
         repository=repository,
         dataset_registry=dataset_registry,
         store=LocalArtifactStore(artifact_root),
-        model_families={name: entry.family.value for name, entry in config.model.models.items()},
-        model_registry_entries=config.model.models,
+        model_families={name: entry.family.value for name, entry in registry_entries.items()},
+        model_registry_entries=registry_entries,
         facade=facade,
     )
     app = FastAPI(title="Quant Platform Research Workbench", version="0.1.0")
@@ -100,6 +133,18 @@ def create_app() -> FastAPI:
     app.include_router(artifacts.router)
 
     dist_dir = repository.workspace_root / "apps" / "web" / "dist"
+    assets_dir = dist_dir / "assets"
+
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    favicon_path = dist_dir / "favicon.ico"
+
+    @app.get("/favicon.ico", response_model=None)
+    def favicon():
+        if favicon_path.exists():
+            return FileResponse(favicon_path)
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
 
     @app.get("/health")
     def healthcheck() -> dict[str, str]:

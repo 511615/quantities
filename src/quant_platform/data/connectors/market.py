@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 import json
+import os
 from datetime import UTC, datetime
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from quant_platform.data.contracts.ingestion import (
     DataConnectorError,
@@ -207,3 +209,150 @@ class InternalSmokeMarketConnector(DataConnector):
             )
             previous_close = close
         return rows
+
+
+class BitstampArchiveConnector(DataConnector):
+    DEFAULT_ARCHIVE_URL = "https://www.cryptodatadownload.com/cdd/Bitstamp_BTCUSD_1h.csv"
+    ENV_ARCHIVE_URL = "QUANT_PLATFORM_BITSTAMP_ARCHIVE_URL"
+
+    def __init__(self, archive_url: str | None = None) -> None:
+        self.archive_url = (
+            archive_url
+            or os.getenv(self.ENV_ARCHIVE_URL, "").strip()
+            or self.DEFAULT_ARCHIVE_URL
+        )
+        self.registration = ConnectorRegistration(
+            data_domain="market",
+            vendor="bitstamp_archive",
+            display_name="Bitstamp BTC/USD historical archive",
+            capabilities=["historical_ohlcv", "real_market_bars"],
+            status="active",
+        )
+
+    def ingest(self, request: IngestionRequest) -> IngestionResult:
+        symbol = self._require_identifier(request)
+        normalized_symbol = symbol.upper().replace("/", "")
+        if normalized_symbol not in {"BTCUSD", "BTCUSDT"}:
+            raise DataConnectorError(
+                data_domain="market",
+                vendor="bitstamp_archive",
+                identifier=symbol,
+                message="bitstamp_archive currently supports only BTCUSD/BTCUSDT.",
+                retryable=False,
+                code="unsupported_symbol",
+            )
+        frequency = (request.frequency or "1h").lower()
+        if frequency != "1h":
+            raise DataConnectorError(
+                data_domain="market",
+                vendor="bitstamp_archive",
+                identifier=symbol,
+                message="bitstamp_archive v1 currently supports only 1h frequency.",
+                retryable=False,
+                code="unsupported_frequency",
+            )
+        rows = self._fetch_archive_rows(
+            start_time=request.time_range.start,
+            end_time=request.time_range.end,
+        )
+        if not rows:
+            raise DataConnectorError(
+                data_domain="market",
+                vendor="bitstamp_archive",
+                identifier=symbol,
+                message="No Bitstamp archive bars matched the requested time range.",
+                retryable=False,
+                code="empty_result",
+            )
+        return IngestionResult(
+            request_id=request.request_id,
+            data_domain=request.data_domain,
+            vendor=request.vendor,
+            storage_uri=self.archive_url,
+            normalized_uri=self.archive_url,
+            coverage=IngestionCoverage(
+                start_time=rows[0].event_time,
+                end_time=rows[-1].event_time,
+                complete=True,
+            ),
+            metadata={
+                "symbol": "BTCUSD",
+                "exchange": request.options.get("exchange", "bitstamp"),
+                "frequency": frequency,
+                "rows": [row.model_dump(mode="json") for row in rows],
+            },
+        )
+
+    def _fetch_archive_rows(
+        self,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> list[NormalizedMarketBar]:
+        request = Request(
+            self.archive_url,
+            headers={"User-Agent": "quant-platform/0.1 (+https://localhost)"},
+        )
+        rows: list[NormalizedMarketBar] = []
+        with urlopen(request, timeout=60) as response:
+            decoded_lines = (
+                line.decode("utf-8", errors="replace")
+                for line in response.readlines()
+            )
+            reader = csv.DictReader(line for line in decoded_lines if not line.startswith("https://"))
+            for row in reader:
+                event_time = self._parse_event_time(row.get("date"), row.get("unix"))
+                if event_time is None:
+                    continue
+                if event_time < start_time or event_time > end_time:
+                    continue
+                try:
+                    rows.append(
+                        NormalizedMarketBar(
+                            event_time=event_time,
+                            available_time=event_time,
+                            symbol="BTCUSD",
+                            venue="bitstamp",
+                            open=float(row.get("open", 0.0) or 0.0),
+                            high=float(row.get("high", 0.0) or 0.0),
+                            low=float(row.get("low", 0.0) or 0.0),
+                            close=float(row.get("close", 0.0) or 0.0),
+                            volume=float(row.get("Volume BTC", 0.0) or 0.0),
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise DataConnectorError(
+                        data_domain="market",
+                        vendor="bitstamp_archive",
+                        message=f"Invalid Bitstamp archive row: {exc}",
+                        retryable=False,
+                        code="invalid_payload",
+                    ) from exc
+        rows.sort(key=lambda item: item.event_time)
+        return rows
+
+    @staticmethod
+    def _parse_event_time(date_value: object, unix_value: object) -> datetime | None:
+        if isinstance(date_value, str) and date_value.strip():
+            try:
+                return datetime.fromisoformat(date_value.strip()).replace(tzinfo=UTC)
+            except ValueError:
+                pass
+        if isinstance(unix_value, str) and unix_value.strip():
+            try:
+                return datetime.fromtimestamp(int(unix_value.strip()), tz=UTC)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _require_identifier(request: IngestionRequest) -> str:
+        if not request.identifiers:
+            raise DataConnectorError(
+                data_domain="market",
+                vendor="bitstamp_archive",
+                message="Bitstamp archive connector requires at least one symbol identifier.",
+                retryable=False,
+                code="identifier_required",
+            )
+        return request.identifiers[0]

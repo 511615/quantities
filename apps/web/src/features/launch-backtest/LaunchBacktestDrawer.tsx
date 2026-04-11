@@ -49,6 +49,17 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
     }
   }, [optionsQuery.data?.default_benchmark_symbol]);
 
+  useEffect(() => {
+    if (jobQuery.data?.status !== "success") {
+      return;
+    }
+    void queryClient.invalidateQueries({ queryKey: ["run", runId] });
+    void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    void queryClient.invalidateQueries({ queryKey: ["experiments"] });
+    void queryClient.invalidateQueries({ queryKey: ["backtests"] });
+    void queryClient.invalidateQueries({ queryKey: ["workbench-overview"] });
+  }, [jobQuery.data?.status, queryClient, runId]);
+
   const mutation = useMutation({
     mutationFn: () =>
       api.launchBacktest({

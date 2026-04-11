@@ -45,23 +45,41 @@ function readFilters(searchParams: URLSearchParams): DatasetBrowserFilters {
 
 function filterLabel(value: string) {
   if (!value) {
-    return "全部";
+    return "All";
   }
 
   const labels: Record<string, string> = {
-    market: "市场数据",
-    derivatives: "衍生品数据",
-    on_chain: "链上数据",
-    macro: "宏观数据",
-    sentiment_events: "情绪 / 事件数据",
-    training_panel: "训练面板",
-    fusion_training_panel: "融合训练面板",
-    display_slice: "展示切片",
-    feature_snapshot: "特征快照",
+    market: "Market data",
+    derivatives: "Derivatives data",
+    on_chain: "On-chain data",
+    macro: "Macro data",
+    sentiment_events: "Sentiment / event data",
+    training_panel: "Training panel",
+    fusion_training_panel: "Fusion training panel",
+    display_slice: "Display slice",
+    feature_snapshot: "Feature snapshot",
   };
 
   return labels[value] ?? value;
 }
+
+const datasetTypeExplainers = [
+  {
+    title: "Raw event library",
+    summary: "Streams of cleaned NLP events preserved with timestamps and metadata.",
+    detail: "This is the source table that feeds downstream feature snapshots and training panels.",
+  },
+  {
+    title: "Training panel",
+    summary: "Labeled datasets aligned to market history for benchmarking or model training.",
+    detail: "It bundles features, labels, and splits so training workflows stay dataset_id-first.",
+  },
+  {
+    title: "Feature snapshot",
+    summary: "Aggregated signal collections ready for fusion without rebuilding from raw text.",
+    detail: "Feature snapshots are structured assets, not raw multimodal text inputs.",
+  },
+];
 
 function mergeFacetValues(fallback: string[], backend: string[]) {
   return Array.from(new Set([...backend, ...fallback].filter(Boolean))).sort((a, b) =>
@@ -141,15 +159,15 @@ export function DatasetsBrowserPage() {
     <div className="page-stack">
       <section className="hero-strip compact-hero">
         <div>
-          <div className="eyebrow">数据浏览器</div>
-          <h1>按数据域、来源与版本浏览</h1>
+          <div className="eyebrow">Dataset Explorer</div>
+          <h1>Build signal-ready NLP datasets with clarity</h1>
           <p>
-            先按真实后端能力筛出数据域、来源、交易所、频率和版本，再决定进入详情、查看依赖，还是直接发起新的数据申请。
+            Choose sources, inspect coverage, and understand roles before requesting new assets. The workflow stays dataset_id-first and aligned with training/backtest chains.
           </p>
         </div>
         <div className="hero-actions">
           <DatasetRequestDrawer
-            description="按照当前筛选条件发起新的数据集申请，提交后继续沿用现有任务追踪链路。"
+            description="Request a curated dataset built from cleaned NLP and market sources. Pick sources, exchange, frequency, and filters, and we materialize the merged dataset for training."
             initialValues={{
               dataDomain: filters.data_domain || undefined,
               exchange: filters.exchange || undefined,
@@ -157,15 +175,38 @@ export function DatasetsBrowserPage() {
               sourceVendor: filters.source || undefined,
               symbol: filters.symbol || undefined,
             }}
-            title="按当前筛选申请数据集"
+            title="Request dataset"
             triggerTone="secondary"
           />
           <Link className="comparison-link" to="/datasets">
-            返回总览
+            Back to datasets
           </Link>
           <Link className="comparison-link" to="/datasets/training">
-            查看训练面板
+            View training panels
           </Link>
+        </div>
+      </section>
+
+      <section className="panel dataset-education-panel">
+        <PanelHeader
+          eyebrow="Why it matters"
+          title="Dataset roles explained"
+          description="Raw event libraries, training panels, and feature snapshots have distinct duties - choose the product that matches your goal."
+        />
+        <div className="dataset-education-grid">
+          {datasetTypeExplainers.map((item) => (
+            <article className="details-panel dataset-education-card" key={item.title}>
+              <h3>{item.title}</h3>
+              <p>{item.summary}</p>
+              <small>{item.detail}</small>
+            </article>
+          ))}
+        </div>
+        <div className="dataset-callout">
+          <strong>Structured NLP signals, not raw multimodal blobs.</strong>
+          <span>
+            These assets capture aggregated sentiment and event metrics aligned by event_time, ready to fuse with market features without reprocessing raw text.
+          </span>
         </div>
       </section>
 
@@ -173,28 +214,28 @@ export function DatasetsBrowserPage() {
 
       {deleteNotice ? (
         <section className="dataset-callout">
-          <strong>数据集已处理</strong>
+          <strong>Dataset update</strong>
           <span>{deleteNotice}</span>
         </section>
       ) : null}
 
       <section className="panel">
         <PanelHeader
-          eyebrow="筛选条件"
-          title="后端驱动的真实筛选项"
-          description="优先使用后端返回的 options；如果某个维度暂未开放，前端才退回到目录观察值。"
+          eyebrow="Dataset filters"
+          title="Filter datasets"
+          description="Use the selectors below to focus on raw event libraries, training panels, or feature snapshots."
         />
 
         {requestOptionsQuery.isError ? (
           <div className="dataset-callout">
             <strong>
               {isApiNotReadyError(requestOptionsQuery.error)
-                ? "筛选项接口暂未就绪"
-                : "筛选项加载失败"}
+                ? "Filter options are not ready"
+                : "Failed to load filters"}
             </strong>
             <span>
               {isApiNotReadyError(requestOptionsQuery.error)
-                ? `${createApiNotReadyMessage("数据筛选项")} 当前先用目录里的真实值继续浏览。`
+                ? `${createApiNotReadyMessage("dataset filters")} Please try again once the service is available.`
                 : (requestOptionsQuery.error as Error).message}
             </span>
           </div>
@@ -203,14 +244,14 @@ export function DatasetsBrowserPage() {
         <div className="form-section-grid dataset-filter-grid">
           <label>
             <span>
-              <TermLabel hintKey="data_domain" label="数据域" />
+              <TermLabel hintKey="data_domain" label="Data domain" />
             </span>
             <select
               className="field"
               onChange={(event) => updateFilter("data_domain", event.target.value)}
               value={filters.data_domain}
             >
-              <option value="">全部</option>
+              <option value="">All</option>
               {facets.domains.map((item) => (
                 <option key={item} value={item}>
                   {filterLabel(item)}
@@ -221,14 +262,14 @@ export function DatasetsBrowserPage() {
 
           <label>
             <span>
-              <TermLabel hintKey="dataset_type" label="数据类型" />
+              <TermLabel hintKey="dataset_type" label="Dataset type" />
             </span>
             <select
               className="field"
               onChange={(event) => updateFilter("dataset_type", event.target.value)}
               value={filters.dataset_type}
             >
-              <option value="">全部</option>
+              <option value="">All</option>
               {facets.types.map((item) => (
                 <option key={item} value={item}>
                   {filterLabel(item)}
@@ -238,13 +279,13 @@ export function DatasetsBrowserPage() {
           </label>
 
           <label>
-            <span>来源</span>
+            <span>Source</span>
             <select
               className="field"
               onChange={(event) => updateFilter("source", event.target.value)}
               value={filters.source}
             >
-              <option value="">全部</option>
+              <option value="">All</option>
               {facets.sources.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -254,13 +295,13 @@ export function DatasetsBrowserPage() {
           </label>
 
           <label>
-            <span>交易所</span>
+            <span>Exchange</span>
             <select
               className="field"
               onChange={(event) => updateFilter("exchange", event.target.value)}
               value={filters.exchange}
             >
-              <option value="">全部</option>
+              <option value="">All</option>
               {facets.exchanges.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -270,13 +311,13 @@ export function DatasetsBrowserPage() {
           </label>
 
           <label>
-            <span>资产 / Symbol</span>
+            <span>Asset / symbol</span>
             <select
               className="field"
               onChange={(event) => updateFilter("symbol", event.target.value)}
               value={filters.symbol}
             >
-              <option value="">全部</option>
+              <option value="">All</option>
               {facets.symbols.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -286,13 +327,13 @@ export function DatasetsBrowserPage() {
           </label>
 
           <label>
-            <span>频率</span>
+            <span>Frequency</span>
             <select
               className="field"
               onChange={(event) => updateFilter("frequency", event.target.value)}
               value={filters.frequency}
             >
-              <option value="">全部</option>
+              <option value="">All</option>
               {facets.frequencies.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -303,14 +344,14 @@ export function DatasetsBrowserPage() {
 
           <label>
             <span>
-              <TermLabel hintKey="snapshot_version" label="版本" />
+              <TermLabel hintKey="snapshot_version" label="Snapshot version" />
             </span>
             <select
               className="field"
               onChange={(event) => updateFilter("version", event.target.value)}
               value={filters.version}
             >
-              <option value="">全部</option>
+              <option value="">All</option>
               {facets.versions.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -320,7 +361,7 @@ export function DatasetsBrowserPage() {
           </label>
 
           <label>
-            <span>开始时间</span>
+            <span>Start time</span>
             <input
               className="field"
               onChange={(event) =>
@@ -332,7 +373,7 @@ export function DatasetsBrowserPage() {
           </label>
 
           <label>
-            <span>结束时间</span>
+            <span>End time</span>
             <input
               className="field"
               onChange={(event) =>
@@ -345,109 +386,108 @@ export function DatasetsBrowserPage() {
         </div>
 
         <div className="dataset-filter-summary">
-          <strong>当前结果：</strong>
-          <span>{filteredItems.length} 份数据集</span>
-          <span>{activeSummary || "还没有启用筛选条件"}</span>
+          <strong>Current results:</strong>
+          <span>{filteredItems.length} datasets</span>
+          <span>{activeSummary || "No filters applied"}</span>
         </div>
       </section>
 
       {filteredItems.length === 0 ? (
         <EmptyState
-          title="没有匹配的数据集"
-          body="放宽一个或多个筛选条件后再试，通常先从数据域、来源和频率开始回退最有效。"
+          title="No matching datasets"
+          body="Relax one or more filters (data domain, source, or frequency) and try again."
         />
       ) : (
-        <section className="panel">
-          <PanelHeader
-            eyebrow="结果目录"
-            title="数据集目录"
-            description="这里展示的是当前目录中真实存在的数据集，而不是前端根据本地文件猜出来的列表。"
-          />
-
-          <div className="dataset-browser-table-shell">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>
-                    <TermLabel hintKey="data_domain" label="数据域" />
-                  </th>
-                  <th>
-                    <TermLabel hintKey="dataset_type" label="类型" />
-                  </th>
-                  <th>来源 / 交易所</th>
-                  <th>覆盖范围</th>
-                  <th>频率</th>
-                  <th>
-                    <TermLabel hintKey="snapshot_version" label="版本" />
-                  </th>
-                  <th>
-                    <TermLabel hintKey="freshness" label="新鲜度" />
-                  </th>
-                  <th>健康状态</th>
-                  <th>操作</th>
+      <section className="panel">
+        <PanelHeader
+          eyebrow="Results"
+          title="Dataset catalog"
+          description="The table below lists the datasets currently available in the registry, not guesses from local files."
+        />
+        <div className="dataset-browser-table-shell">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>
+                  <TermLabel hintKey="data_domain" label="Data domain" />
+                </th>
+                <th>
+                  <TermLabel hintKey="dataset_type" label="Type" />
+                </th>
+                <th>Source / Exchange</th>
+                <th>Coverage</th>
+                <th>Frequency</th>
+                <th>
+                  <TermLabel hintKey="snapshot_version" label="Snapshot version" />
+                </th>
+                <th>
+                  <TermLabel hintKey="freshness" label="Freshness" />
+                </th>
+                <th>Health</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredItems.map((item) => (
+                <tr key={item.datasetId}>
+                  <td>
+                    <Link to={`/datasets/${item.datasetId}`}>{item.title}</Link>
+                    <div className="dataset-row-subcopy">
+                      <span>{item.subtitle}</span>
+                      <span>Tech ID: {item.technicalId}</span>
+                    </div>
+                  </td>
+                  <td>{item.dataDomainLabel}</td>
+                  <td>{item.datasetTypeLabel}</td>
+                  <td>
+                    {item.sourceVendor}
+                    <div className="dataset-row-subcopy">
+                      <span>{item.exchangeLabel}</span>
+                      <span>{item.symbolLabel}</span>
+                    </div>
+                  </td>
+                  <td>{item.coverageLabel}</td>
+                  <td>{item.frequencyLabel}</td>
+                  <td>
+                    {item.snapshotVersion}
+                    <div className="dataset-row-subcopy">
+                      <span>{formatDate(item.asOfTime)}</span>
+                    </div>
+                  </td>
+                  <td>{item.freshnessLabel}</td>
+                  <td>{item.healthLabel}</td>
+                  <td>
+                    <div className="table-actions">
+                      <Link className="link-button" to={`/datasets/${item.datasetId}`}>
+                        View details
+                      </Link>
+                      <button
+                        className="link-button danger-link"
+                        onClick={() => {
+                          setDeleteNotice(null);
+                          setDeleteTarget({ datasetId: item.datasetId, label: item.title });
+                        }}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filteredItems.map((item) => (
-                  <tr key={item.datasetId}>
-                    <td>
-                      <Link to={`/datasets/${item.datasetId}`}>{item.title}</Link>
-                      <div className="dataset-row-subcopy">
-                        <span>{item.subtitle}</span>
-                        <span>技术标识：{item.technicalId}</span>
-                      </div>
-                    </td>
-                    <td>{item.dataDomainLabel}</td>
-                    <td>{item.datasetTypeLabel}</td>
-                    <td>
-                      {item.sourceVendor}
-                      <div className="dataset-row-subcopy">
-                        <span>{item.exchangeLabel}</span>
-                        <span>{item.symbolLabel}</span>
-                      </div>
-                    </td>
-                    <td>{item.coverageLabel}</td>
-                    <td>{item.frequencyLabel}</td>
-                    <td>
-                      {item.snapshotVersion}
-                      <div className="dataset-row-subcopy">
-                        <span>{formatDate(item.asOfTime)}</span>
-                      </div>
-                    </td>
-                    <td>{item.freshnessLabel}</td>
-                    <td>{item.healthLabel}</td>
-                    <td>
-                      <div className="table-actions">
-                        <Link className="link-button" to={`/datasets/${item.datasetId}`}>
-                          查看详情
-                        </Link>
-                        <button
-                          className="link-button danger-link"
-                          onClick={() => {
-                            setDeleteNotice(null);
-                            setDeleteTarget({ datasetId: item.datasetId, label: item.title });
-                          }}
-                          type="button"
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
+        </div>
         </section>
       )}
 
       <DatasetDeleteDialog
         datasetId={deleteTarget?.datasetId ?? null}
-        datasetLabel={deleteTarget?.label ?? "数据集"}
+        datasetLabel={deleteTarget?.label ?? "dataset"}
         onClose={() => setDeleteTarget(null)}
         onDeleted={(result) => {
-          setDeleteNotice(`${result.dataset_id} 已从本地目录与缓存中移除。`);
+          setDeleteNotice(`${result.dataset_id} has been removed from the registry.`);
         }}
         open={Boolean(deleteTarget)}
       />

@@ -41,11 +41,12 @@ type SourceDraft = {
   identifier: string;
 };
 
-const DEFAULT_DOMAIN_ORDER = ["market", "macro", "on_chain"];
+const DEFAULT_DOMAIN_ORDER = ["market", "macro", "on_chain", "sentiment_events"];
 const DEFAULT_VENDOR_BY_DOMAIN: Record<string, string> = {
   market: "binance",
   macro: "fred",
   on_chain: "defillama",
+  sentiment_events: "gnews",
 };
 const DEFAULT_EXCHANGE_BY_DOMAIN: Record<string, string> = {
   market: "binance",
@@ -53,6 +54,7 @@ const DEFAULT_EXCHANGE_BY_DOMAIN: Record<string, string> = {
 const DEFAULT_IDENTIFIER_BY_DOMAIN: Record<string, string> = {
   macro: "DFF",
   on_chain: "ethereum",
+  sentiment_events: "btc",
 };
 const DEFAULT_SYMBOL = "BTCUSDT";
 
@@ -111,12 +113,53 @@ function capabilityForDomain(
   domain: string,
 ): DatasetDomainCapabilityView {
   const domainSpecific = options?.domain_capabilities?.[domain];
+  const resolveOptions = (
+    explicit: DatasetOptionValueView[] | undefined,
+    supported: string[] | undefined,
+    fallback: DatasetOptionValueView[] | undefined,
+  ) => {
+    if (explicit && explicit.length > 0) {
+      return explicit;
+    }
+    if (supported && supported.length > 0) {
+      return supported.map((value, index) => {
+        const matched = fallback?.find((option) => option.value === value);
+        return {
+          value,
+          label: matched?.label ?? value,
+          description: matched?.description ?? null,
+          recommended: matched?.recommended ?? index === 0,
+        };
+      });
+    }
+    return fallback ?? [];
+  };
   return {
-    source_vendors: domainSpecific?.source_vendors ?? options?.source_vendors ?? [],
-    exchanges: domainSpecific?.exchanges ?? options?.exchanges ?? [],
-    frequencies: domainSpecific?.frequencies ?? options?.frequencies ?? [],
-    symbol_types: domainSpecific?.symbol_types ?? options?.symbol_types ?? [],
-    selection_modes: domainSpecific?.selection_modes ?? options?.selection_modes ?? [],
+    source_vendors: resolveOptions(
+      domainSpecific?.source_vendors,
+      domainSpecific?.supported_vendors,
+      options?.source_vendors,
+    ),
+    exchanges: resolveOptions(
+      domainSpecific?.exchanges,
+      domainSpecific?.supported_exchanges,
+      options?.exchanges,
+    ),
+    frequencies: resolveOptions(
+      domainSpecific?.frequencies,
+      domainSpecific?.supported_frequencies,
+      options?.frequencies,
+    ),
+    symbol_types: resolveOptions(
+      domainSpecific?.symbol_types,
+      domainSpecific?.supported_symbol_types,
+      options?.symbol_types,
+    ),
+    selection_modes: resolveOptions(
+      domainSpecific?.selection_modes,
+      domainSpecific?.supported_selection_modes,
+      options?.selection_modes,
+    ),
   };
 }
 
@@ -207,6 +250,34 @@ function buildSourceRequest(draft: SourceDraft): DatasetAcquisitionSourceRequest
   };
 }
 
+function alignDraftFrequencies(
+  drafts: SourceDraft[],
+  options: DatasetRequestOptionsView | undefined,
+): SourceDraft[] {
+  if (drafts.length <= 1) {
+    return drafts;
+  }
+  const supportedSets = drafts.map((draft) => {
+    const values = capabilityForDomain(options, draft.dataDomain).frequencies
+      .map((option) => option.value)
+      .filter(Boolean);
+    return new Set(values);
+  });
+  const commonFrequencies = drafts
+    .map((draft) => capabilityForDomain(options, draft.dataDomain).frequencies.map((option) => option.value))
+    .find((values) => values.length > 0)
+    ?.filter((value) => supportedSets.every((supported) => supported.has(value))) ?? [];
+  if (commonFrequencies.length === 0) {
+    return drafts;
+  }
+  const currentFrequencies = new Set(drafts.map((draft) => draft.frequency).filter(Boolean));
+  if (currentFrequencies.size === 1 && commonFrequencies.includes(drafts[0]?.frequency ?? "")) {
+    return drafts;
+  }
+  const nextFrequency = commonFrequencies[0];
+  return drafts.map((draft) => ({ ...draft, frequency: nextFrequency }));
+}
+
 export function DatasetRequestDrawer({
   title = "\u7533\u8bf7\u6570\u636e\u96c6",
   description = "\u4e00\u6b21\u9009\u62e9 1..n \u4e2a\u57df\uff0c\u591a\u57df\u65f6\u76f4\u63a5\u4ea7\u51fa merged dataset\uff0c\u7136\u540e\u7528 dataset_id \u8fde\u5230\u8bad\u7ec3\u548c\u56de\u6d4b\u3002",
@@ -273,10 +344,15 @@ export function DatasetRequestDrawer({
     if (!nextDomain) {
       return;
     }
-    setSourceDrafts((current) => [
-      ...current,
-      hydrateDraft(createDraft(nextDomain), optionsQuery.data, initialValues),
-    ]);
+    setSourceDrafts((current) =>
+      alignDraftFrequencies(
+        [
+          ...current,
+          hydrateDraft(createDraft(nextDomain), optionsQuery.data, initialValues),
+        ],
+        optionsQuery.data,
+      ),
+    );
   }
 
   function removeDomain(key: string) {
@@ -292,18 +368,19 @@ export function DatasetRequestDrawer({
     if (startDate > endDate) {
       return "\u5f00\u59cb\u65e5\u671f\u4e0d\u80fd\u665a\u4e8e\u7ed3\u675f\u65e5\u671f\u3002";
     }
-    const marketCount = drafts.filter((draft) => draft.dataDomain === "market").length;
-    if (marketCount !== 1) {
-      return "\u53ef\u8bad\u7ec3 / \u53ef\u56de\u6d4b\u7684 merged request \u5fc5\u987b\u5305\u542b\u4e14\u4ec5\u5305\u542b\u4e00\u4e2a market \u951a\u70b9\u3002";
-    }
     if (new Set(drafts.map((draft) => draft.dataDomain)).size !== drafts.length) {
       return "\u540c\u4e00\u57df\u4e0d\u9700\u8981\u91cd\u590d\u6dfb\u52a0\uff0c\u8bf7\u79fb\u9664\u91cd\u590d\u914d\u7f6e\u3002";
     }
-    if (new Set(drafts.map((draft) => draft.frequency)).size !== 1) {
+    const multiDomain = drafts.length > 1;
+    const marketCount = drafts.filter((draft) => draft.dataDomain === "market").length;
+    if (multiDomain && marketCount !== 1) {
+      return "\u53ef\u8bad\u7ec3 / \u53ef\u56de\u6d4b\u7684 merged request \u5fc5\u987b\u5305\u542b\u4e14\u4ec5\u5305\u542b\u4e00\u4e2a market \u951a\u70b9\u3002";
+    }
+    if (multiDomain && new Set(drafts.map((draft) => draft.frequency)).size !== 1) {
       return "\u591a\u57df direct merge \u8981\u6c42\u6240\u6709 source \u7684 frequency \u5b8c\u5168\u4e00\u81f4\u3002";
     }
     const marketDraft = drafts.find((draft) => draft.dataDomain === "market");
-    if (!marketDraft?.symbols.trim()) {
+    if (marketDraft && !marketDraft.symbols.trim()) {
       return "\u8bf7\u4e3a market \u57df\u81f3\u5c11\u586b\u5199\u4e00\u4e2a symbol\u3002";
     }
     const missingIdentifier = drafts.find(
@@ -316,8 +393,9 @@ export function DatasetRequestDrawer({
   }
 
   function submitRequest() {
-    const normalizedDrafts = sourceDrafts.map((draft) =>
-      hydrateDraft(draft, optionsQuery.data, initialValues),
+    const normalizedDrafts = alignDraftFrequencies(
+      sourceDrafts.map((draft) => hydrateDraft(draft, optionsQuery.data, initialValues)),
+      optionsQuery.data,
     );
     setSourceDrafts(normalizedDrafts);
 
@@ -329,24 +407,32 @@ export function DatasetRequestDrawer({
 
     const marketDraft =
       normalizedDrafts.find((draft) => draft.dataDomain === "market") ?? normalizedDrafts[0];
+    const singleDraft = normalizedDrafts[0];
+    const isSingleDomain = normalizedDrafts.length === 1;
+    const isSingleMarket = isSingleDomain && singleDraft?.dataDomain === "market";
+    const singleDomain = isSingleDomain ? singleDraft.dataDomain : "market";
+    const singleSelectionMode =
+      isSingleMarket
+        ? singleDraft.selectionMode || "manual_list"
+        : "explicit";
 
     const payload: DatasetAcquisitionRequest = {
-      request_name: `workbench-${normalizedDrafts.length > 1 ? "merged" : "single"}-${Date.now()}`,
-      data_domain: "market",
+      request_name: `workbench-${normalizedDrafts.length > 1 ? "merged" : singleDomain}-${Date.now()}`,
+      data_domain: isSingleDomain ? singleDomain : "market",
       dataset_type: "training_panel",
       asset_mode: "single_asset",
       time_window: {
         start_time: `${startDate}T00:00:00Z`,
         end_time: `${endDate}T23:59:59Z`,
       },
-      symbol_selector: buildSymbolSelector(marketDraft),
-      selection_mode: marketDraft.selectionMode || "manual_list",
-      source_vendor: normalizedDrafts.length > 1 ? undefined : marketDraft.sourceVendor,
-      exchange: normalizedDrafts.length > 1 ? undefined : marketDraft.exchange,
-      frequency: normalizedDrafts.length > 1 ? undefined : marketDraft.frequency,
+      symbol_selector: isSingleMarket ? buildSymbolSelector(marketDraft) : undefined,
+      selection_mode: singleSelectionMode,
+      source_vendor: isSingleDomain ? singleDraft.sourceVendor : undefined,
+      exchange: isSingleMarket ? marketDraft.exchange : undefined,
+      frequency: isSingleDomain ? singleDraft.frequency : undefined,
       filters: {},
       sources: normalizedDrafts.map(buildSourceRequest),
-      merge_policy_name: normalizedDrafts.length > 1 ? "strict_timestamp_inner" : undefined,
+      merge_policy_name: normalizedDrafts.length > 1 ? "available_time_safe_asof" : undefined,
       build_config: {
         feature_set_id: recommendedValue(
           optionsQuery.data?.feature_sets,
@@ -363,7 +449,7 @@ export function DatasetRequestDrawer({
         ),
         alignment_policy_name: recommendedValue(
           optionsQuery.data?.alignment_policies,
-          "event_time_inner",
+          normalizedDrafts.length > 1 ? "available_time_safe_asof" : "event_time_inner",
         ),
         missing_feature_policy_name: recommendedValue(
           optionsQuery.data?.missing_feature_policies,
@@ -401,7 +487,7 @@ export function DatasetRequestDrawer({
             </strong>
             <span>
               {sourceDrafts.length > 1
-                ? "\u591a\u57df\u65f6\u4f1a\u7528 market \u505a\u552f\u4e00\u951a\u70b9\uff0c\u6309 strict_timestamp_inner \u89c4\u5219\u76f4\u63a5\u4ea7\u51fa\u6700\u7ec8 merged dataset\u3002"
+                ? "\u591a\u57df\u65f6\u4f1a\u7528 market \u505a\u552f\u4e00\u951a\u70b9\uff0c\u540e\u7aef\u6309 available_time_safe_asof \u76f4\u63a5\u5408\u5e76\u4e3a\u6700\u7ec8 merged dataset\u3002"
                 : "\u5355\u57df\u65f6\u4f1a\u76f4\u63a5\u4ea7\u51fa\u53ef\u7ee7\u7eed dataset_id \u8bad\u7ec3\u7684\u6570\u636e\u96c6\u3002"}
             </span>
           </div>
@@ -623,7 +709,7 @@ export function DatasetRequestDrawer({
                 <GlossaryHint hintKey="sample_policy" iconOnly />
               </strong>
               <span>
-                {`\u7279\u5f81 ${recommendedValue(optionsQuery.data?.feature_sets, "baseline_market_features")} / split ${recommendedValue(optionsQuery.data?.split_strategies, "time_series")} / merge ${sourceDrafts.length > 1 ? "strict_timestamp_inner" : "single_domain"}`}
+                {`\u7279\u5f81 ${recommendedValue(optionsQuery.data?.feature_sets, "baseline_market_features")} / split ${recommendedValue(optionsQuery.data?.split_strategies, "time_series")} / merge ${sourceDrafts.length > 1 ? "available_time_safe_asof" : "single_domain"}`}
               </span>
             </section>
 
