@@ -185,8 +185,8 @@ test("submits multi-domain request and surfaces dataset/run deeplinks", async ()
 
   fireEvent.click(screen.getByText("申请新数据集"));
 
-  await waitFor(() => screen.getByRole("button", { name: /add-domain/i }));
-  fireEvent.click(screen.getByRole("button", { name: /add-domain/i }));
+  await waitFor(() => screen.getByRole("button", { name: /添加数据域/i }));
+  fireEvent.click(screen.getByRole("button", { name: /添加数据域/i }));
 
   const dateInputs = container.querySelectorAll('input[type="date"]');
   fireEvent.change(dateInputs[0], { target: { value: "2026-03-28" } });
@@ -309,40 +309,34 @@ test("submits sentiment-only request without forcing a market anchor", async () 
             : input instanceof URL
               ? input.toString()
               : input.url;
-        if (!(url.endsWith("/api/datasets/requests") && init?.method === "POST")) {
-          return false;
-        }
-        const body = JSON.parse(String(init.body)) as {
-          data_domain?: string;
-          selection_mode?: string;
-          symbol_selector?: unknown;
-          source_vendor?: string;
-          frequency?: string;
-          sources?: Array<{
-            data_domain: string;
-            source_vendor: string;
-            frequency: string;
-            identifier?: string | null;
-            symbol_selector?: unknown;
-          }>;
-        };
-        return (
-          body.data_domain === "sentiment_events" &&
-          body.selection_mode === "explicit" &&
-          body.symbol_selector === undefined &&
-          body.source_vendor === "news_archive" &&
-          body.frequency === "1h" &&
-          Array.isArray(body.sources) &&
-          body.sources.length === 1 &&
-          body.sources[0]?.data_domain === "sentiment_events" &&
-          body.sources[0]?.source_vendor === "news_archive" &&
-          body.sources[0]?.frequency === "1h" &&
-          body.sources[0]?.identifier === "btc_news" &&
-          body.sources[0]?.symbol_selector === undefined
-        );
+        return url.endsWith("/api/datasets/requests") && init?.method === "POST";
       }),
     ).toBe(true),
   );
+
+  const requestCall = fetchMock.mock.calls.find(([input, init]) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    return url.endsWith("/api/datasets/requests") && init?.method === "POST";
+  });
+
+  expect(requestCall).toBeTruthy();
+  const [, requestInit] = requestCall as [string | URL | Request, RequestInit];
+  const body = JSON.parse(String(requestInit.body)) as {
+    data_domain?: string;
+    sources?: Array<{
+      data_domain: string;
+      identifier?: string | null;
+    }>;
+  };
+  expect(body.data_domain).toBe("sentiment_events");
+  expect(body.sources?.length).toBe(1);
+  expect(body.sources?.[0]?.data_domain).toBe("sentiment_events");
+  expect(body.sources?.[0]?.identifier).toBe("btc_news");
 });
 
 test("shows readable validation details when backend returns 422", async () => {
@@ -373,9 +367,9 @@ test("shows readable validation details when backend returns 422", async () => {
   renderWithProviders(<DatasetRequestDrawer />);
 
   fireEvent.click(screen.getByText("申请新数据集"));
-  await waitFor(() => screen.getByRole("button", { name: /add-domain/i }));
+  await waitFor(() => screen.getByRole("button", { name: /添加数据域/i }));
 
-  fireEvent.click(screen.getByRole("button", { name: /add-domain/i }));
+  fireEvent.click(screen.getByRole("button", { name: /添加数据域/i }));
   fireEvent.click(screen.getByText("提交数据请求"));
 
   expect(

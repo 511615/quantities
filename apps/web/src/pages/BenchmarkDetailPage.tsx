@@ -23,12 +23,13 @@ export function BenchmarkDetailPage() {
     return (
       <EmptyState
         title={I18N.state.empty}
-        body={"\u6ca1\u6709\u627e\u5230\u5bf9\u5e94\u7684 benchmark \u8be6\u60c5\u3002"}
+        body={"\u6ca1\u6709\u627e\u5230\u5bf9\u5e94\u7684\u57fa\u51c6\u8be6\u60c5\u3002"}
       />
     );
   }
 
   const detail = mapBenchmarkDetail(query.data);
+  const rows = detail.results.length > 0 ? detail.results : detail.leaderboard;
 
   return (
     <div className="page-stack">
@@ -36,7 +37,7 @@ export function BenchmarkDetailPage() {
         <PanelHeader
           eyebrow={I18N.nav.benchmarks}
           title={detail.benchmark_name}
-          description={"\u5305\u542b leaderboard\u3001\u9a8c\u8bc1\u6458\u8981\u4e0e\u53ef\u8ffd\u6eaf\u5de5\u4ef6\u5165\u53e3\u3002"}
+          description={"\u5305\u542b\u6392\u884c\u699c\u3001\u9a8c\u8bc1\u6458\u8981\u4e0e\u53ef\u8ffd\u6eaf\u5de5\u4ef6\u5165\u53e3\u3002"}
         />
         <MetricGrid
           items={[
@@ -50,23 +51,23 @@ export function BenchmarkDetailPage() {
       <div className="detail-grid">
         <section className="panel">
           <PanelHeader
-            eyebrow={"Leaderboard"}
+            eyebrow={"排行榜"}
             title={"\u6a21\u578b\u6392\u540d"}
             description={"\u57fa\u4e8e MAE \u7684\u6a2a\u5411\u5bf9\u6bd4\uff0c\u5173\u952e\u672f\u8bed\u5168\u90e8\u6536\u655b\u4e3a hover \u95ee\u53f7\u89e3\u91ca\u3002"}
           />
-          {detail.results.length > 0 ? (
+          {rows.length > 0 ? (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Rank</th>
+                  <th>排名</th>
                   <th>{I18N.nav.runs}</th>
                   <th>{"\u7b97\u6cd5\u65cf"}</th>
                   <th><GlossaryHint hintKey="mae" /></th>
-                  <th><GlossaryHint hintKey="mae" termOverride={"Test MAE"} /></th>
+                  <th><GlossaryHint hintKey="mae" termOverride={"测试集 MAE"} /></th>
                 </tr>
               </thead>
               <tbody>
-                {detail.results.map((row) => (
+                {rows.map((row) => (
                   <tr key={`${row.rank}-${row.model_name}`}>
                     <td>{row.rank}</td>
                     <td>{row.model_name}</td>
@@ -80,7 +81,7 @@ export function BenchmarkDetailPage() {
           ) : (
             <EmptyState
               title={I18N.state.empty}
-              body={"\u57fa\u51c6\u7ed3\u679c\u4e2d\u6ca1\u6709 leaderboard \u6570\u636e\u3002"}
+              body={"\u57fa\u51c6\u7ed3\u679c\u4e2d\u6ca1\u6709\u6392\u884c\u699c\u6570\u636e\u3002"}
             />
           )}
         </section>
@@ -98,7 +99,7 @@ export function BenchmarkDetailPage() {
           ) : (
             <EmptyState
               title={"\u65e0\u544a\u8b66"}
-              body={"\u5f53\u524d benchmark \u6ca1\u6709\u989d\u5916\u544a\u8b66\u3002"}
+              body={"\u5f53\u524d\u57fa\u51c6\u6ca1\u6709\u989d\u5916\u544a\u8b66\u3002"}
             />
           )}
           {detail.review_summary ? (

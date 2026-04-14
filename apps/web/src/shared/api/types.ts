@@ -38,6 +38,15 @@ export type PredictionArtifactView = {
   uri: string;
 };
 
+export type DatasetReferenceView = {
+  dataset_id: string;
+  label?: string | null;
+  href?: string | null;
+  api_path?: string | null;
+  role?: string | null;
+  modality?: string | null;
+};
+
 export type RelatedBacktestView = {
   backtest_id: string;
   model_name: string;
@@ -51,6 +60,10 @@ export type ExperimentListItem = {
   run_id: string;
   model_name: string;
   dataset_id: string | null;
+  dataset_ids?: string[];
+  datasets?: DatasetReferenceView[];
+  primary_dataset_id?: string | null;
+  composition?: Record<string, unknown> | null;
   family: string | null;
   backend: string | null;
   status: string;
@@ -60,6 +73,8 @@ export type ExperimentListItem = {
   metrics: Record<string, number>;
   backtest_count: number;
   prediction_scopes: string[];
+  official_template_eligible?: boolean | null;
+  official_blocking_reasons?: string[];
   tags: Record<string, string>;
 };
 
@@ -77,6 +92,20 @@ export type RunDetailView = {
   run_id: string;
   model_name: string;
   dataset_id: string | null;
+  dataset_ids?: string[];
+  datasets?: DatasetReferenceView[];
+  composition?: {
+    fusion_strategy?: string;
+    source_runs?: Array<{
+      run_id: string;
+      model_name?: string;
+      modality?: string;
+      weight?: number;
+      dataset_ids?: string[];
+    }>;
+    rules?: string[];
+  } | null;
+  source_run_ids?: string[];
   task_type?: string | null;
   artifact_format_status?: string;
   missing_artifacts?: string[];
@@ -98,6 +127,8 @@ export type RunDetailView = {
   related_backtests: RelatedBacktestView[];
   artifacts: ArtifactView[];
   notes: string[];
+  official_template_eligible?: boolean | null;
+  official_blocking_reasons?: string[];
   review_summary: ReviewSummaryView | null;
   warning_summary: WarningSummaryView | null;
   glossary_hints: GlossaryHintView[];
@@ -157,6 +188,20 @@ export type BacktestProtocolResultView = {
   slice_coverage: string[];
   lookback_bucket: string | null;
   metadata_summary: Record<string, string | null>;
+  actual_market_start_time?: string | null;
+  actual_market_end_time?: string | null;
+  actual_backtest_start_time?: string | null;
+  actual_backtest_end_time?: string | null;
+  actual_nlp_start_time?: string | null;
+  actual_nlp_end_time?: string | null;
+  nlp_gate_status?: string | null;
+  nlp_gate_reasons?: string[];
+  official_benchmark_version?: string | null;
+  official_window_days?: number | null;
+  official_window_start_time?: string | null;
+  official_window_end_time?: string | null;
+  official_market_dataset_id?: string | null;
+  official_multimodal_dataset_id?: string | null;
 };
 
 export type BenchmarkListItemView = {
@@ -237,6 +282,8 @@ export type BacktestReportView = {
   backtest_id: string;
   model_name: string | null;
   run_id: string | null;
+  dataset_id?: string | null;
+  dataset_ids?: string[];
   template_id?: string | null;
   official?: boolean;
   protocol_version?: string | null;
@@ -375,17 +422,32 @@ export type LaunchTrainRequest = {
   run_id_prefix?: string;
 };
 
+export type LaunchModelCompositionRequest = {
+  source_run_ids: string[];
+  composition_name: string;
+  dataset_ids?: string[];
+};
+
 export type LaunchBacktestRequest = {
   run_id: string;
   mode?: "official" | "custom";
   template_id?: string;
+  official_window_days?: 30 | 90 | 180 | 365;
   dataset_id?: string;
+  dataset_ids?: string[];
   dataset_preset?: "smoke" | "real_benchmark";
   prediction_scope: "full" | "test";
   strategy_preset: "sign";
   portfolio_preset: "research_default";
   cost_preset: "standard";
   benchmark_symbol: string;
+};
+
+export type LaunchBacktestPreflightRequest = {
+  run_id: string;
+  mode?: "official" | "custom";
+  template_id?: string;
+  official_window_days?: 30 | 90 | 180 | 365;
 };
 
 export type LaunchJobResponse = {
@@ -415,14 +477,37 @@ export type TrainLaunchOptionsView = {
 export type BacktestLaunchOptionsView = {
   default_mode?: "official" | "custom";
   official_template_id?: string | null;
+  official_multimodal_schema_version?: string | null;
+  official_multimodal_feature_names?: string[];
   template_options?: BacktestTemplateView[];
+  official_window_options?: PresetOptionView[];
   dataset_presets: PresetOptionView[];
   prediction_scopes: PresetOptionView[];
   strategy_presets: PresetOptionView[];
   portfolio_presets: PresetOptionView[];
   cost_presets: PresetOptionView[];
   default_benchmark_symbol: string;
+  default_official_window_days?: number;
   constraints: Record<string, unknown>;
+};
+
+export type BacktestLaunchPreflightView = {
+  compatible: boolean;
+  mode: "official" | "custom";
+  template_id?: string | null;
+  official_window_days?: number | null;
+  official_benchmark_version?: string | null;
+  official_market_dataset_id?: string | null;
+  official_multimodal_dataset_id?: string | null;
+  official_window_start_time?: string | null;
+  official_window_end_time?: string | null;
+  requires_text_features: boolean;
+  required_feature_names: string[];
+  available_official_feature_names: string[];
+  missing_official_feature_names: string[];
+  blocking_reasons: string[];
+  nlp_gate_status?: string | null;
+  nlp_gate_reasons: string[];
 };
 
 export type JobStageView = {
@@ -741,6 +826,23 @@ export type DatasetReadinessSummaryView = {
   temporal_safety_status: string | null;
   freshness_status: string | null;
   recommended_next_actions: string[];
+  official_template_eligible?: boolean | null;
+  official_nlp_gate_status?: string | null;
+  official_nlp_gate_reasons?: string[];
+  archival_nlp_source_only?: boolean | null;
+  nlp_requested_start_time?: string | null;
+  nlp_requested_end_time?: string | null;
+  nlp_actual_start_time?: string | null;
+  nlp_actual_end_time?: string | null;
+  market_window_start_time?: string | null;
+  market_window_end_time?: string | null;
+  official_backtest_start_time?: string | null;
+  official_backtest_end_time?: string | null;
+  nlp_coverage_ratio?: number | null;
+  nlp_test_coverage_ratio?: number | null;
+  nlp_max_consecutive_empty_bars?: number | null;
+  nlp_duplicate_ratio?: number | null;
+  nlp_entity_link_coverage_ratio?: number | null;
 };
 
 export type DatasetDependencyView = {
@@ -759,13 +861,20 @@ export type DatasetDependenciesResponse = {
   items: DatasetDependencyView[];
   can_delete?: boolean;
   blocking_items?: DatasetDependencyView[];
+  delete_block_reasons?: string[];
+  protection_reason?: string | null;
+  protection_kind?: string | null;
 };
 
 export type DatasetDeleteResponse = {
   dataset_id: string;
   status: string;
   message: string;
+  can_delete?: boolean;
   blocking_items?: DatasetDependencyView[];
+  delete_block_reasons?: string[];
+  protection_reason?: string | null;
+  protection_kind?: string | null;
   deleted_files: string[];
 };
 
@@ -795,6 +904,19 @@ export type DatasetNlpInspectionView = {
     url?: string | null;
   }>;
   sample_feature_preview?: Record<string, number | null>;
+  official_template_gate_status?: string | null;
+  official_template_gate_reasons?: string[];
+  official_template_eligible?: boolean | null;
+  archival_source_only?: boolean | null;
+  coverage_ratio?: number | null;
+  test_coverage_ratio?: number | null;
+  max_consecutive_empty_bars?: number | null;
+  duplicate_ratio?: number | null;
+  entity_link_coverage_ratio?: number | null;
+  market_window_start_time?: string | null;
+  market_window_end_time?: string | null;
+  official_backtest_start_time?: string | null;
+  official_backtest_end_time?: string | null;
 };
 
 export type TrainingDatasetSummaryView = {

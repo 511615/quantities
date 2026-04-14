@@ -19,8 +19,7 @@ from quant_platform.data.connectors import (
     GNewsSentimentConnector,
     InternalSmokeMarketConnector,
     NewsArchiveSentimentConnector,
-    RedditHistoryCsvSentimentConnector,
-    RedditPublicSentimentConnector,
+    RedditArchiveSentimentConnector,
 )
 from quant_platform.data.contracts.ingestion import (
     DataConnectorError,
@@ -33,6 +32,11 @@ from quant_platform.data.contracts.series import NormalizedSeriesPoint
 
 _GNEWS_RSS_MAX_LOOKBACK_DAYS = 7
 _REDDIT_PUBLIC_MAX_LOOKBACK_DAYS = 31
+_SENTIMENT_VENDOR_ALIASES: dict[str, str] = {
+    "reddit_history_csv": "reddit_archive",
+    "reddit_pullpush": "reddit_archive",
+    "reddit_public": "reddit_archive",
+}
 
 
 @dataclass(frozen=True)
@@ -61,11 +65,14 @@ class DomainIngestionCoordinator(DomainIngestionService):
             self._register_defaults()
 
     def register(self, connector: DataConnector) -> None:
-        key = (connector.registration.data_domain, connector.registration.vendor)
+        key = (
+            connector.registration.data_domain,
+            self._normalize_vendor(connector.registration.data_domain, connector.registration.vendor),
+        )
         self._connectors[key] = connector
 
     def resolve(self, data_domain: str, vendor: str) -> DataConnector | None:
-        return self._connectors.get((data_domain, vendor))
+        return self._connectors.get((data_domain, self._normalize_vendor(data_domain, vendor)))
 
     def fetch_market_bars(
         self,
@@ -124,6 +131,7 @@ class DomainIngestionCoordinator(DomainIngestionService):
         options: dict[str, Any],
         model_key: str,
     ) -> tuple[list[dict[str, Any]], str]:
+        vendor = self._normalize_vendor(data_domain, vendor)
         self._enforce_vendor_window_policy(
             data_domain=data_domain,
             vendor=vendor,
@@ -243,6 +251,17 @@ class DomainIngestionCoordinator(DomainIngestionService):
             )
         return rows, fetch_status
 
+    def _normalize_vendor(self, data_domain: str, vendor: str) -> str:
+        if data_domain != "sentiment_events":
+            return vendor
+        return _SENTIMENT_VENDOR_ALIASES.get(vendor, vendor)
+
+    def _vendor_lookup_values(self, data_domain: str, vendor: str) -> list[str]:
+        normalized = self._normalize_vendor(data_domain, vendor)
+        if data_domain != "sentiment_events" or normalized != "reddit_archive":
+            return [normalized]
+        return [normalized, *sorted(alias for alias, target in _SENTIMENT_VENDOR_ALIASES.items() if target == normalized)]
+
     def _enforce_vendor_window_policy(
         self,
         *,
@@ -340,17 +359,19 @@ class DomainIngestionCoordinator(DomainIngestionService):
         identifier: str,
         frequency: str,
     ) -> list[CacheSnapshot]:
+        lookup_vendors = self._vendor_lookup_values(data_domain, vendor)
+        vendor_placeholders = ", ".join("?" for _ in lookup_vendors)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, data_domain, vendor, identifier, frequency, start_time, end_time,
                        raw_uri, normalized_uri, status
                 FROM snapshots
-                WHERE data_domain = ? AND vendor = ? AND identifier = ? AND frequency = ?
+                WHERE data_domain = ? AND vendor IN ({vendor_placeholders}) AND identifier = ? AND frequency = ?
                   AND status = 'success'
                 ORDER BY start_time ASC
                 """,
-                (data_domain, vendor, identifier, frequency),
+                (data_domain, *lookup_vendors, identifier, frequency),
             ).fetchall()
         snapshots = [CacheSnapshot(*row) for row in rows]
         return [snapshot for snapshot in snapshots if self._snapshot_is_usable(snapshot)]
@@ -445,8 +466,7 @@ class DomainIngestionCoordinator(DomainIngestionService):
         self.register(GdeltSentimentConnector())
         self.register(GNewsSentimentConnector())
         self.register(NewsArchiveSentimentConnector())
-        self.register(RedditHistoryCsvSentimentConnector(self.artifact_root))
-        self.register(RedditPublicSentimentConnector())
+        self.register(RedditArchiveSentimentConnector(self.artifact_root))
         self.register(ContractOnlyConnector(data_domain="derivatives"))
         self.register(
             ContractOnlyConnector(data_domain="sentiment_events", vendor="contract_only")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import pickle
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -129,9 +131,21 @@ def test_multimodal_model_supports_missing_text_modality(tmp_path) -> None:
         )
     )
     assert frame.sample_count == len(samples)
+    metadata_payload = json.loads(
+        (tmp_path / "artifacts" / "models" / "multimodal-missing-text" / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata_payload["prediction_metadata"]["fusion_strategy"] == "late_score_blend"
+    state_payload = (
+        tmp_path / "artifacts" / "models" / "multimodal-missing-text" / "state.pkl"
+    ).read_bytes()
+    estimator = pickle.loads(state_payload)["estimator"]
+    assert estimator["market_branch"] is not None
+    assert estimator["blender_branch"] is not None
 
 
-def test_multimodal_aligned_text_rejects_future_available_time() -> None:
+def test_multimodal_aligned_text_allows_market_available_time_when_text_features_exist() -> None:
     registry = ModelRegistry()
     register_default_models(registry)
     runtime = registry.resolve_runtime("multimodal_reference")
@@ -145,7 +159,10 @@ def test_multimodal_aligned_text_rejects_future_available_time() -> None:
             target=0.0,
         )
     ]
-    dataset_ref = _build_dataset_ref(as_of_time=base + timedelta(hours=2))
+    dataset_ref = _build_dataset_ref(
+        as_of_time=base + timedelta(hours=2),
+        feature_names=["lag_return_1", "sentiment_score"],
+    )
     bundle = runtime.input_adapter.build_train_input(
         samples,
         dataset_ref,
@@ -162,13 +179,100 @@ def test_multimodal_aligned_text_rejects_future_available_time() -> None:
         ),
         runtime.registration,
     )
-    with pytest.raises(ValueError, match="text_block available_time"):
-        registry.capability_validator.validate(runtime.registration, dataset_ref, bundle)
+    registry.capability_validator.validate(runtime.registration, dataset_ref, bundle)
 
 
-def _build_dataset_ref(as_of_time: datetime | None = None) -> DatasetRef:
+def test_multimodal_aligned_text_treats_zero_value_text_features_as_present() -> None:
+    registry = ModelRegistry()
+    register_default_models(registry)
+    runtime = registry.resolve_runtime("multimodal_reference")
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    samples = [
+        DatasetSample(
+            entity_key="BTCUSDT",
+            timestamp=base,
+            available_time=base,
+            features={"lag_return_1": 0.1, "sentiment_score": 0.0},
+            target=0.0,
+        )
+    ]
+    dataset_ref = _build_dataset_ref(
+        as_of_time=base + timedelta(hours=1),
+        feature_names=["lag_return_1", "sentiment_score"],
+    )
+    bundle = runtime.input_adapter.build_predict_input(
+        samples,
+        dataset_ref,
+        ModelSpec(
+            model_name="multimodal_reference",
+            family=ModelFamily.DEEP,
+            version="0.1.0",
+            input_schema=[
+                SchemaField(name="lag_return_1", dtype="float"),
+                SchemaField(name="sentiment_score", dtype="float"),
+            ],
+            output_schema=[SchemaField(name="prediction", dtype="float")],
+            hyperparams={"lookback": 2, "text_feature_prefixes": ["sentiment_"]},
+        ),
+        runtime.registration,
+    )
+    assert bundle.blocks["text_feature_names"] == ["sentiment_score"]
+    assert bundle.blocks["text_mask"] == [True]
+
+
+def test_multimodal_aligned_text_uses_dataset_schema_when_first_sample_is_sparse() -> None:
+    registry = ModelRegistry()
+    register_default_models(registry)
+    runtime = registry.resolve_runtime("multimodal_reference")
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    samples = [
+        DatasetSample(
+            entity_key="BTCUSDT",
+            timestamp=base,
+            available_time=base,
+            features={"lag_return_1": 0.1},
+            target=0.0,
+        ),
+        DatasetSample(
+            entity_key="BTCUSDT",
+            timestamp=base + timedelta(hours=1),
+            available_time=base + timedelta(hours=1),
+            features={"lag_return_1": 0.2, "sentiment_score": 0.3},
+            target=0.0,
+        ),
+    ]
+    dataset_ref = _build_dataset_ref(
+        as_of_time=base + timedelta(hours=2),
+        feature_names=["lag_return_1", "sentiment_score"],
+    )
+    bundle = runtime.input_adapter.build_predict_input(
+        samples,
+        dataset_ref,
+        ModelSpec(
+            model_name="multimodal_reference",
+            family=ModelFamily.DEEP,
+            version="0.1.0",
+            input_schema=[
+                SchemaField(name="lag_return_1", dtype="float"),
+                SchemaField(name="sentiment_score", dtype="float"),
+            ],
+            output_schema=[SchemaField(name="prediction", dtype="float")],
+            hyperparams={"lookback": 2, "text_feature_prefixes": ["sentiment_"]},
+        ),
+        runtime.registration,
+    )
+    assert bundle.feature_names == ["lag_return_1", "sentiment_score"]
+    assert bundle.blocks["text_feature_names"] == ["sentiment_score"]
+    assert bundle.blocks["text_mask"] == [False, True]
+
+
+def _build_dataset_ref(
+    as_of_time: datetime | None = None,
+    feature_names: list[str] | None = None,
+) -> DatasetRef:
     start = datetime(2024, 1, 1, tzinfo=UTC)
     as_of = as_of_time or (start + timedelta(days=5))
+    schema_names = feature_names or ["lag_return_1"]
     feature_view_ref = FeatureViewRef(
         feature_set_id="advanced-tests",
         input_data_refs=[
@@ -185,7 +289,10 @@ def _build_dataset_ref(as_of_time: datetime | None = None) -> DatasetRef:
             )
         ],
         as_of_time=as_of,
-        feature_schema=[FeatureField(name="lag_return_1", dtype="float", lineage_source="tests")],
+        feature_schema=[
+            FeatureField(name=name, dtype="float", lineage_source="tests")
+            for name in schema_names
+        ],
         build_config_hash="advanced-tests",
         storage_uri="memory://advanced-tests",
     )

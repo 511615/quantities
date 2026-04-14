@@ -67,7 +67,9 @@ export function ExperimentBrowser({
       }),
       columnHelper.accessor("run_id", {
         header: "\u8bad\u7ec3\u5b9e\u4f8b ID",
-        cell: ({ row }) => <Link to={`/runs/${row.original.run_id}`}>{row.original.run_id}</Link>,
+      cell: ({ row }) => (
+        <Link to={`/runs/${encodeURIComponent(row.original.run_id)}`}>{row.original.run_id}</Link>
+      ),
       }),
       columnHelper.accessor("model_name", { header: "\u6a21\u578b" }),
       columnHelper.accessor("dataset_id", {
@@ -75,7 +77,7 @@ export function ExperimentBrowser({
         cell: ({ getValue }) => getValue() ?? "--",
       }),
       columnHelper.accessor("primary_metric_value", {
-        header: "MAE",
+        header: "平均绝对误差",
         cell: ({ getValue }) => formatNumber(getValue()),
       }),
       columnHelper.accessor("created_at", {
@@ -134,7 +136,7 @@ export function ExperimentBrowser({
         <input
           className="field"
           onChange={(event) => onSearchChange(event.target.value)}
-          placeholder={"\u641c\u7d22 run_id / \u6a21\u578b / \u6570\u636e\u96c6"}
+          placeholder={"\u641c\u7d22\u8bad\u7ec3\u5b9e\u4f8b ID / \u6a21\u578b / \u6570\u636e\u96c6"}
           value={search}
         />
         <select

@@ -37,7 +37,7 @@ export function HomePage() {
     ...overview.recentJobs.filter((job) => job.status === "failed").map((job) => ({
       id: job.job_id,
       title: `${formatJobTypeLabel(job.job_type)} / ${job.job_id}`,
-      body: "\u4efb\u52a1\u72b6\u6001\u4e3a failed\uff0c\u5efa\u8bae\u5148\u56de\u5230\u4efb\u52a1\u4e2d\u5fc3\u67e5\u770b stage \u548c error \u8bf4\u660e\u3002",
+      body: "\u4efb\u52a1\u72b6\u6001\u4e3a\u5931\u8d25\uff0c\u5efa\u8bae\u5148\u56de\u5230\u4efb\u52a1\u4e2d\u5fc3\u67e5\u770b\u9636\u6bb5\u548c\u9519\u8bef\u8bf4\u660e\u3002",
     })),
     ...overview.recentBacktests
       .filter((item) => item.warning_count > 0 || item.status === "failed")
@@ -72,14 +72,14 @@ export function HomePage() {
             <PanelHeader
               eyebrow={"\u6700\u8fd1\u6d3b\u52a8"}
               title={"\u6700\u8fd1\u6d3b\u52a8"}
-              description={"\u4ece run\u3001backtest \u548c job \u4e09\u6761\u4e3b\u7ebf\u53cd\u6620\u5f53\u524d\u7814\u7a76\u6d41\u8f6c\u72b6\u6001\u3002"}
+              description={"\u4ece\u8bad\u7ec3\u5b9e\u4f8b\u3001\u56de\u6d4b\u548c\u4efb\u52a1\u4e09\u6761\u4e3b\u7ebf\u53cd\u6620\u5f53\u524d\u7814\u7a76\u6d41\u8f6c\u72b6\u6001\u3002"}
             />
             <div className="activity-list">
               {overview.recentRuns.slice(0, 3).map((item) => (
                 <div className="activity-row" key={item.run_id}>
                   <div className="activity-badge">{I18N.nav.trainedModels}</div>
                   <div className="activity-copy">
-                    <Link to={`/models/trained/${item.run_id}`}>{item.run_id}</Link>
+                    <Link to={`/models/trained/${encodeURIComponent(item.run_id)}`}>{item.run_id}</Link>
                     <span>
                       {item.model_name} / {item.dataset_id ?? "--"} / <GlossaryHint hintKey="mae" />
                       {" "}
@@ -93,7 +93,7 @@ export function HomePage() {
                 <div className="activity-row" key={item.backtest_id}>
                   <div className="activity-badge">{I18N.nav.backtests}</div>
                   <div className="activity-copy">
-                    <Link to={`/backtests/${item.backtest_id}`}>{item.backtest_id}</Link>
+                    <Link to={`/backtests/${encodeURIComponent(item.backtest_id)}`}>{item.backtest_id}</Link>
                     <span>
                       <GlossaryHint hintKey="max_drawdown" /> {formatNumber(item.max_drawdown)} / {"\u544a\u8b66 "}
                       {item.warning_count}
@@ -182,7 +182,7 @@ export function HomePage() {
               <div className="stack-list">
                 {overview.recentBenchmarks.map((item) => (
                   <div className="stack-item align-start" key={item.benchmark_name}>
-                    <Link to={`/benchmarks/${item.benchmark_name}`}>{item.benchmark_name}</Link>
+                    <Link to={`/benchmarks/${encodeURIComponent(item.benchmark_name)}`}>{item.benchmark_name}</Link>
                     <span>{item.dataset_id}</span>
                     <span>
                       {`\u5f53\u524d\u9886\u5148 ${item.top_model_name ?? "--"} / \u5f97\u5206 ${formatNumber(item.top_model_score)}`}

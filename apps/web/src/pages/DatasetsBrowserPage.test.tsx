@@ -56,7 +56,7 @@ test("renders browser results and shows blocked delete dependencies", async () =
 
   fireEvent.click(screen.getByRole("button", { name: "申请新数据集" }));
 
-  await waitFor(() => expect(screen.getByText("按当前筛选申请数据集")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getAllByText("申请新数据集").length).toBeGreaterThan(1));
   expect(screen.getAllByRole("button", { name: "关于 数据域" }).length).toBeGreaterThan(1);
   expect(screen.getByRole("button", { name: "关于 选择方式" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "关于 样本策略" })).toBeInTheDocument();
@@ -64,9 +64,9 @@ test("renders browser results and shows blocked delete dependencies", async () =
   fireEvent.click(screen.getAllByRole("button", { name: "删除" })[0]);
 
   await waitFor(() => expect(screen.getByText("删除数据集")).toBeInTheDocument());
-  await waitFor(() => expect(screen.getByText("当前不允许删除")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText("当前已启用硬删除")).toBeInTheDocument());
 
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getAllByText("mean_baseline").length).toBeGreaterThan(0);
-  expect(within(dialog).getAllByRole("link", { name: /训练运行/i }).length).toBeGreaterThan(0);
+  expect(within(dialog).getAllByRole("link", { name: /训练实例/i }).length).toBeGreaterThan(0);
 });

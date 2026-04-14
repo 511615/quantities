@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from quant_platform.webapi.app import ServicesDep
 from quant_platform.webapi.schemas.launch import LaunchJobResponse
@@ -115,10 +116,29 @@ def delete_dataset(
     services: ServicesDep,
     dataset_id: str,
 ) -> DatasetDeleteResponse:
-    result = services.workbench.delete_dataset(dataset_id)
+    try:
+        result = services.workbench.delete_dataset(dataset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Dataset not found.")
     return result
+
+
+@router.get("/{dataset_id}/download")
+def download_dataset(
+    services: ServicesDep,
+    dataset_id: str,
+) -> StreamingResponse:
+    archive = services.workbench.download_dataset_archive(dataset_id)
+    if archive is None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    filename, buffer = archive
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{dataset_id}/slices", response_model=DatasetSlicesResponse)

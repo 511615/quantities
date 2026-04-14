@@ -35,7 +35,7 @@ test("renders model comparison rows and chart sections", async () => {
   render(<App />);
 
   await waitFor(() => expect(screen.getByText("\u6a21\u578b\u6027\u80fd\u5bf9\u6bd4")).toBeInTheDocument());
-  expect(screen.getByText("Test MAE vs \u5e74\u5316\u6536\u76ca")).toBeInTheDocument();
+  expect(screen.getByText("\u6d4b\u8bd5\u96c6 MAE \u4e0e\u5e74\u5316\u6536\u76ca")).toBeInTheDocument();
   expect(screen.getByText("\u5bf9\u6bd4\u7ed3\u679c")).toBeInTheDocument();
   expect(screen.getByText("baseline_family_walk_forward / elastic_net")).toBeInTheDocument();
   await waitFor(() =>

@@ -1,25 +1,237 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+﻿import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api } from "../../shared/api/client";
-import { useBacktestOptions, useJobStatus } from "../../shared/api/hooks";
-import { formatStageNameLabel } from "../../shared/lib/labels";
+import {
+  useBacktestOptions,
+  useBacktestPreflight,
+  useDatasetReadiness,
+  useJobStatus,
+  useRunDetail,
+} from "../../shared/api/hooks";
+import type {
+  BacktestTemplateView,
+  DatasetReferenceView,
+  RunDetailView,
+} from "../../shared/api/types";
+import { formatDate } from "../../shared/lib/format";
 import { I18N } from "../../shared/lib/i18n";
+import { formatStageNameLabel } from "../../shared/lib/labels";
+import {
+  localizeBacktestGateReason,
+  localizeBacktestMetadata,
+  localizeBacktestRequirement,
+  localizeBacktestTemplateName,
+} from "../../shared/lib/protocolI18n";
 import { StatusPill } from "../../shared/ui/StatusPill";
 
 type LaunchBacktestDrawerProps = {
   initialRunId?: string | null;
   initialDatasetId?: string | null;
+  initialDatasetIds?: string[] | null;
 };
 
-export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = null }: LaunchBacktestDrawerProps) {
+type RunOfficialEligibility = {
+  composition?: Record<string, unknown> | null;
+  official_template_eligible?: boolean | null;
+  official_blocking_reasons?: string[] | null;
+};
+
+type OfficialWindowDays = 30 | 90 | 180 | 365;
+
+const OFFICIAL_MARKET_DATASET_ID = "baseline_real_benchmark_dataset";
+const OFFICIAL_MULTIMODAL_DATASET_ID = "official_reddit_pullpush_multimodal_v2_fusion";
+const OFFICIAL_WINDOW_OPTIONS: OfficialWindowDays[] = [30, 90, 180, 365];
+
+function normalizeDatasetIds(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\s,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function formatWindow(startTime?: string | null, endTime?: string | null) {
+  if (startTime && endTime) {
+    return `${formatDate(startTime)} - ${formatDate(endTime)}`;
+  }
+  if (startTime) {
+    return `${formatDate(startTime)} - --`;
+  }
+  if (endTime) {
+    return `-- - ${formatDate(endTime)}`;
+  }
+  return "--";
+}
+
+function computeOfficialRollingWindow(endTime?: string | null, windowDays = 180) {
+  if (!endTime) {
+    return { start: null, end: null };
+  }
+  const end = new Date(endTime);
+  if (Number.isNaN(end.getTime())) {
+    return { start: null, end: endTime };
+  }
+  const start = new Date(end.getTime() - windowDays * 24 * 60 * 60 * 1000);
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
+}
+
+function gateStatusLabel(status?: string | null) {
+  if (status === "passed") {
+    return "通过";
+  }
+  if (status === "failed") {
+    return "未通过";
+  }
+  if (status === "warning") {
+    return "需复核";
+  }
+  return "--";
+}
+
+function localizeBacktestOptionLabel(value: string, label?: string | null) {
+  const normalized = (label ?? value).trim().toLowerCase();
+  if (normalized === "smoke") {
+    return "Smoke";
+  }
+  if (normalized === "real_benchmark") {
+    return "Real Benchmark";
+  }
+  if (normalized === "full") {
+    return "全部";
+  }
+  if (normalized === "test") {
+    return "测试集";
+  }
+  if (normalized === "sign") {
+    return "Sign";
+  }
+  if (normalized === "research_default" || normalized === "default") {
+    return "Research Default";
+  }
+  if (normalized === "standard") {
+    return "Standard";
+  }
+  return label ?? value;
+}
+
+function localizeOfficialWindowOptionLabel(value: string, label?: string | null) {
+  const days = Number.parseInt(value, 10);
+  if (OFFICIAL_WINDOW_OPTIONS.includes(days as OfficialWindowDays)) {
+    return `最近 ${days} 天`;
+  }
+  return label ?? value;
+}
+
+function parseOfficialWindowDays(value: string): OfficialWindowDays {
+  const parsed = Number.parseInt(value, 10);
+  if (OFFICIAL_WINDOW_OPTIONS.includes(parsed as OfficialWindowDays)) {
+    return parsed as OfficialWindowDays;
+  }
+  return 180;
+}
+
+function normalizeModality(value?: string | null) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function resolveRunOfficialEligibility(run?: RunDetailView | null) {
+  const candidate = (run ?? null) as (RunDetailView & RunOfficialEligibility) | null;
+  return {
+    isComposed: Boolean(candidate?.composition),
+    eligible: candidate?.official_template_eligible,
+    blockingReasons: Array.isArray(candidate?.official_blocking_reasons)
+      ? candidate.official_blocking_reasons.filter((item): item is string => Boolean(item))
+      : [],
+  };
+}
+
+function isNlpModality(value?: string | null) {
+  const modality = normalizeModality(value);
+  return Boolean(modality) && modality !== "market";
+}
+
+function localizeRequirementItemText(item: string) {
+  let localized = item;
+  const replacements = [
+    "Model output must follow the prediction_frame_v1 contract.",
+    "Training-time disclosure fields must be populated before official comparison is trusted.",
+    "Official mode binds to the newest official rolling benchmark and ignores dataset overrides.",
+    "Official mode allows only fixed window presets: 30, 90, 180, and 365 days.",
+    "Official ranking compares runs only when the official benchmark version and window size match.",
+    "If NLP is used, the requested NLP collection window must match the market template window.",
+    "If NLP is used, only archival NLP sources are eligible for official same-template comparison.",
+    "If NLP is used, the official gate requires test-window coverage >= 60%, max empty gap <= 168 bars, duplicate ratio <= 5%, and entity link coverage >= 95%.",
+    "Any compatible run can be launched in custom mode.",
+    "The official template is read-only and cannot be deleted.",
+    "The official template locks prediction scope to test and defaults the benchmark to BTCUSDT.",
+    "The official template always uses the newest available market environment instead of the training dataset window.",
+    "Window size is user-selectable, but official rankings only compare results that use the same window preset.",
+    "Custom mode keeps dataset preset, scope, strategy, portfolio, and cost controls flexible.",
+    "Custom mode stays visible for inspection but is excluded from official ranking.",
+    "Training dataset start/end time",
+    "Lookback window / context length",
+    "Label horizon",
+    "Modalities and fusion summary",
+    "Random seed",
+    "Tuning trial count",
+    "External pretraining flag",
+    "Synthetic data flag",
+    "Actual market dataset window",
+    "Actual official backtest test window",
+    "Actual NLP coverage window and official NLP gate result when NLP is present",
+    "Official rolling benchmark version",
+    "Official rolling window size and actual window start/end time",
+    "Official market benchmark dataset id",
+    "Official multimodal benchmark dataset id when text signals are used",
+  ] as const;
+
+  replacements.forEach((source) => {
+    const target =
+      localizeBacktestRequirement(source) !== source
+        ? localizeBacktestRequirement(source)
+        : localizeBacktestMetadata(source);
+    localized = localized.replace(source, target);
+  });
+  return localized;
+}
+
+function templateRequirementItems(template: BacktestTemplateView | undefined) {
+  if (!template) {
+    return [];
+  }
+  const items = [
+    "如果使用 NLP，申请的 NLP 采集时间窗必须与市场模板时间窗一致。",
+    "如果使用 NLP，只有归档型 NLP 数据源才允许参加官方同模板对比。",
+    "如果 NLP 质量门禁失败，官方模板会被阻断。",
+    template.output_contract_version
+      ? `模型输出必须遵守 ${template.output_contract_version}。`
+      : null,
+    template.fixed_prediction_scope
+      ? `官方模式会将预测范围固定为 ${localizeBacktestOptionLabel(template.fixed_prediction_scope)}。`
+      : null,
+    ...template.eligibility_rules.map((item) => `准入要求：${item}`),
+    ...template.required_metadata.map((item) => `必填披露：${item}`),
+    ...template.notes.map((item) => `说明：${item}`),
+  ];
+  return items.filter((item): item is string => Boolean(item)).map(localizeRequirementItemText);
+}
+
+export function LaunchBacktestDrawer({
+  initialRunId = null,
+  initialDatasetId = null,
+  initialDatasetIds = null,
+}: LaunchBacktestDrawerProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const optionsQuery = useBacktestOptions();
-  const officialTemplate = optionsQuery.data?.template_options?.find(
-    (item) => item.template_id === optionsQuery.data?.official_template_id,
-  );
   const [open, setOpen] = useState(false);
   const [runId, setRunId] = useState(initialRunId ?? "");
   const [jobId, setJobId] = useState<string | null>(null);
@@ -28,16 +240,143 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
   const [predictionScope, setPredictionScope] = useState<"full" | "test">("full");
   const [datasetPreset, setDatasetPreset] = useState<"smoke" | "real_benchmark">("smoke");
   const [benchmarkSymbol, setBenchmarkSymbol] = useState("BTCUSDT");
+  const [officialWindowDays, setOfficialWindowDays] = useState<OfficialWindowDays>(180);
   const [datasetId, setDatasetId] = useState(initialDatasetId ?? "");
+  const [datasetIdsText, setDatasetIdsText] = useState(
+    initialDatasetIds?.length
+      ? initialDatasetIds.join("\n")
+      : initialDatasetId
+        ? initialDatasetId
+        : "",
+  );
+
+  const runQuery = useRunDetail(runId.trim());
+  const runOfficialEligibility = resolveRunOfficialEligibility(runQuery.data);
+  const officialRunBlockingReasons = runOfficialEligibility.blockingReasons;
+  const fallbackBoundDatasetId = initialDatasetId ?? runQuery.data?.dataset_id ?? null;
+  const boundDatasetIds = initialDatasetIds?.length
+    ? initialDatasetIds
+    : runQuery.data?.dataset_ids?.length
+      ? runQuery.data.dataset_ids
+      : fallbackBoundDatasetId
+        ? [fallbackBoundDatasetId]
+        : [];
+  const runDatasets = runQuery.data?.datasets ?? [];
+  const marketDatasetId =
+    runDatasets.find((item: DatasetReferenceView) => normalizeModality(item.modality) === "market")
+      ?.dataset_id ??
+    boundDatasetIds[0] ??
+    null;
+  const nlpDatasetId =
+    runDatasets.find((item: DatasetReferenceView) => isNlpModality(item.modality))?.dataset_id ??
+    boundDatasetIds.find((item) => item !== marketDatasetId) ??
+    null;
+  const customDatasetIds = normalizeDatasetIds(datasetIdsText);
+  const marketReadinessQuery = useDatasetReadiness(
+    mode === "official" ? marketDatasetId : null,
+    mode === "official" && Boolean(marketDatasetId),
+  );
+  const nlpReadinessQuery = useDatasetReadiness(
+    mode === "official" ? nlpDatasetId : null,
+    mode === "official" && Boolean(nlpDatasetId) && nlpDatasetId !== marketDatasetId,
+  );
+  const officialPreflightQuery = useBacktestPreflight(
+    {
+      run_id: runId.trim(),
+      mode: "official",
+      template_id: optionsQuery.data?.official_template_id ?? undefined,
+      official_window_days: officialWindowDays,
+    },
+    mode === "official" &&
+      Boolean(runId.trim()) &&
+      Boolean(optionsQuery.data?.official_template_id),
+  );
   const jobQuery = useJobStatus(jobId);
+  const officialReadiness = nlpReadinessQuery.data ?? marketReadinessQuery.data;
+  const officialPreflight = officialPreflightQuery.data;
+
+  const officialTemplate = optionsQuery.data?.template_options?.find(
+    (item) => item.template_id === optionsQuery.data?.official_template_id,
+  );
+  const officialRequirements = templateRequirementItems(officialTemplate);
+  const officialSchemaVersion =
+    optionsQuery.data?.official_multimodal_schema_version ?? "official_multimodal_standard_v1";
+  const officialSchemaFeatureNames = optionsQuery.data?.official_multimodal_feature_names ?? [];
+  const officialNlpGateFailed =
+    officialPreflight?.nlp_gate_status === "failed" ||
+    officialReadiness?.official_nlp_gate_status === "failed";
+  const officialGateReasons =
+    officialPreflight?.nlp_gate_reasons?.length
+      ? officialPreflight.nlp_gate_reasons
+      : officialReadiness?.official_nlp_gate_reasons ?? [];
+  const officialBlockingReasons = officialPreflight?.blocking_reasons ?? [];
+  const officialSchemaMissingFeatures = officialPreflight?.missing_official_feature_names ?? [];
+  const officialPreflightPending =
+    !officialPreflight && (officialPreflightQuery.isLoading || officialPreflightQuery.isFetching);
+  const officialPreflightError = !officialPreflight && officialPreflightQuery.isError
+    ? (officialPreflightQuery.error as Error).message
+    : null;
+  const officialCompatibilityBlocked =
+    Boolean(officialPreflightError) ||
+    Boolean(officialSchemaMissingFeatures.length) ||
+    officialNlpGateFailed ||
+    (officialPreflight ? officialPreflight.compatible === false : false);
+  const officialSubmitBlocked =
+    mode === "official" && officialCompatibilityBlocked;
+  const officialBlockingSummary = officialPreflightPending
+    ? "Checking official compatibility. Please wait."
+    : officialPreflightError ??
+      (!officialPreflight && mode === "official" && runId.trim()
+        ? "Official compatibility checks have not completed yet."
+        : null) ??
+      officialBlockingReasons[0] ??
+      officialRunBlockingReasons[0] ??
+      officialGateReasons[0] ??
+      (officialNlpGateFailed ? "The official NLP gate failed." : null);
+  const officialCompatibilityLabel = officialPreflightPending
+    ? "Checking"
+    : officialPreflightError
+      ? "Error"
+      : officialPreflight
+        ? officialPreflight.compatible
+          ? "Compatible"
+          : "Incompatible"
+        : "--";
+  const actualMarketWindow = formatWindow(
+    officialReadiness?.market_window_start_time,
+    officialReadiness?.market_window_end_time,
+  );
+  const officialTestWindow = formatWindow(
+    officialReadiness?.official_backtest_start_time,
+    officialReadiness?.official_backtest_end_time,
+  );
+  const actualNlpWindow = formatWindow(
+    officialReadiness?.nlp_actual_start_time,
+    officialReadiness?.nlp_actual_end_time,
+  );
+  const rollingWindowEnd =
+    officialReadiness?.nlp_actual_end_time ?? officialReadiness?.market_window_end_time ?? null;
+  const rollingWindow = computeOfficialRollingWindow(rollingWindowEnd, officialWindowDays);
+  const officialRollingWindow = officialPreflight
+    ? formatWindow(
+        officialPreflight.official_window_start_time,
+        officialPreflight.official_window_end_time,
+      )
+    : formatWindow(rollingWindow.start, rollingWindow.end);
+  const officialWindowOptions =
+    optionsQuery.data?.official_window_options?.length
+      ? optionsQuery.data.official_window_options
+      : OFFICIAL_WINDOW_OPTIONS.map((days) => ({
+          value: String(days),
+          label: `Recent ${days}d`,
+          description: null,
+          recommended: days === 180,
+        }));
 
   useEffect(() => {
     if (initialRunId) {
       setRunId(initialRunId);
       setOpen(true);
-    }
-    if (initialDatasetId) {
-      setDatasetId(initialDatasetId);
     }
   }, [initialRunId]);
 
@@ -48,10 +387,27 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
   }, [initialDatasetId]);
 
   useEffect(() => {
+    if (initialDatasetIds?.length) {
+      setDatasetIdsText(initialDatasetIds.join("\n"));
+      return;
+    }
+    if (initialDatasetId) {
+      setDatasetIdsText(initialDatasetId);
+    }
+  }, [initialDatasetId, initialDatasetIds]);
+
+  useEffect(() => {
     if (optionsQuery.data?.default_benchmark_symbol) {
       setBenchmarkSymbol(optionsQuery.data.default_benchmark_symbol);
     }
   }, [optionsQuery.data?.default_benchmark_symbol]);
+
+  useEffect(() => {
+    const nextValue = optionsQuery.data?.default_official_window_days;
+    if (nextValue === 30 || nextValue === 90 || nextValue === 180 || nextValue === 365) {
+      setOfficialWindowDays(nextValue);
+    }
+  }, [optionsQuery.data?.default_official_window_days]);
 
   useEffect(() => {
     if (optionsQuery.data?.default_mode) {
@@ -75,14 +431,27 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
       api.launchBacktest({
         run_id: runId,
         mode,
-        template_id: mode === "official" ? optionsQuery.data?.official_template_id ?? undefined : undefined,
-        dataset_id: mode === "custom" && datasetId.trim() ? datasetId.trim() : undefined,
-        dataset_preset: mode === "custom" && !datasetId.trim() ? datasetPreset : undefined,
+        template_id:
+          mode === "official" ? optionsQuery.data?.official_template_id ?? undefined : undefined,
+        official_window_days: mode === "official" ? officialWindowDays : undefined,
+        dataset_id:
+          mode === "custom" && customDatasetIds.length === 1
+            ? customDatasetIds[0]
+            : mode === "custom" && datasetId.trim() && customDatasetIds.length === 0
+              ? datasetId.trim()
+              : undefined,
+        dataset_ids:
+          mode === "custom" && customDatasetIds.length > 1 ? customDatasetIds : undefined,
+        dataset_preset:
+          mode === "custom" && !datasetId.trim() && customDatasetIds.length === 0
+            ? datasetPreset
+            : undefined,
         prediction_scope: mode === "official" ? "test" : predictionScope,
         strategy_preset: "sign",
         portfolio_preset: "research_default",
         cost_preset: "standard",
-        benchmark_symbol: mode === "official" ? benchmarkSymbol.trim() || "BTCUSDT" : benchmarkSymbol,
+        benchmark_symbol:
+          mode === "official" ? benchmarkSymbol.trim() || "BTCUSDT" : benchmarkSymbol,
       }),
     onSuccess: (result) => {
       setJobId(result.job_id);
@@ -93,19 +462,48 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
     },
   });
 
-  const backtestLink = jobQuery.data?.result.deeplinks.backtest_detail ?? null;
+  const backtestLink = jobQuery.data?.result?.deeplinks?.backtest_detail ?? null;
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!runId.trim()) {
-      setFormError("\u8bf7\u8f93\u5165 run_id\u3002");
+      setFormError("Please enter a run_id.");
       return;
     }
     if (!benchmarkSymbol.trim()) {
-      setFormError("\u8bf7\u8f93\u5165 benchmark \u4ee3\u7801\u3002");
+      setFormError("Please enter a benchmark symbol.");
       return;
     }
-    if (mode === "custom" && !datasetId.trim() && !datasetPreset) {
-      setFormError("\u8bf7\u5148\u63d0\u4f9b dataset_id \u6216\u9009\u62e9 dataset preset\u3002");
+    if (
+      mode === "custom" &&
+      !datasetId.trim() &&
+      customDatasetIds.length === 0 &&
+      !datasetPreset
+    ) {
+      setFormError("Provide dataset_id / dataset_ids, or choose a dataset preset.");
+      return;
+    }
+    if (mode === "official" && !officialPreflight && !officialPreflightError) {
+      const preflightResult = await officialPreflightQuery.refetch();
+      const nextPreflight = preflightResult.data;
+      if (!nextPreflight) {
+        setFormError("Official compatibility checks have not completed yet.");
+        return;
+      }
+      if (
+        nextPreflight.compatible === false ||
+        nextPreflight.missing_official_feature_names.length > 0 ||
+        nextPreflight.nlp_gate_status === "failed"
+      ) {
+        setFormError(
+          nextPreflight.blocking_reasons[0] ??
+            nextPreflight.nlp_gate_reasons[0] ??
+            "Official compatibility checks failed.",
+        );
+        return;
+      }
+    }
+    if (mode === "official" && officialSubmitBlocked) {
+      setFormError(officialBlockingSummary ?? "Official compatibility checks failed.");
       return;
     }
     setFormError(null);
@@ -124,60 +522,235 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
       {open ? (
         <div className="drawer-panel">
           <h3>{I18N.action.launchBacktest}</h3>
-          <div className="segmented-tabs" role="tablist" aria-label="backtest mode">
+          <div className="segmented-tabs" role="tablist" aria-label="回测模式">
             <button
               className={`tab-chip ${mode === "official" ? "active" : ""}`}
               onClick={() => setMode("official")}
               type="button"
             >
-              {"\u5b98\u65b9\u6a21\u677f"}
+              官方模板
             </button>
             <button
               className={`tab-chip ${mode === "custom" ? "active" : ""}`}
               onClick={() => setMode("custom")}
               type="button"
             >
-              {"\u81ea\u5b9a\u4e49\u56de\u6d4b"}
+              自定义回测
             </button>
           </div>
+
           <label>
-            <span>{"\u8bad\u7ec3\u5b9e\u4f8b ID"}</span>
+            <span>训练实例 ID</span>
             <input onChange={(event) => setRunId(event.target.value)} value={runId} />
           </label>
           {mode === "official" ? (
             <div className="dataset-callout">
-              <strong>{officialTemplate?.name ?? "\u5b98\u65b9\u56de\u6d4b\u534f\u8bae"}</strong>
+              <strong>
+                {localizeBacktestTemplateName(officialTemplate?.name, officialTemplate?.template_id)}
+              </strong>
               <span>
-                {"\u4e0d\u53ef\u5220\u9664\u3001\u9ed8\u8ba4\u6bd4\u8f83\u6807\u51c6\u3002\u5b98\u65b9\u6a21\u5f0f\u4f1a\u56fa\u5b9a\u4f7f\u7528 test \u9884\u6d4b\u8303\u56f4\uff0c\u4f18\u5148\u7ed1\u5b9a run \u5bf9\u5e94\u7684\u8bad\u7ec3\u6570\u636e\u96c6\u3002"}
+                官方模式会绑定最新的官方基准数据集，并忽略自定义数据集覆盖。
               </span>
+              <span>
+                官方排名只比较使用同一官方基准版本和同一窗口档位的结果。
+              </span>
+              {boundDatasetIds.length > 0 ? (
+                <span>{`训练参考数据集：${boundDatasetIds.join(", ")}`}</span>
+              ) : runQuery.isLoading ? (
+                <span>正在解析训练参考数据集...</span>
+              ) : null}
               {officialTemplate?.protocol_version ? (
-                <span>{`protocol_version: ${officialTemplate.protocol_version}`}</span>
+                <span>{`协议版本：${officialTemplate.protocol_version}`}</span>
               ) : null}
               {officialTemplate?.scenario_bundle?.length ? (
-                <span>{`\u538b\u529b\u573a\u666f: ${officialTemplate.scenario_bundle.join(", ")}`}</span>
+                <span>{`场景包：${officialTemplate.scenario_bundle.join(", ")}`}</span>
               ) : null}
-              {officialTemplate?.required_metadata?.length ? (
-                <span>{`\u5fc5\u586b\u62ab\u9732: ${officialTemplate.required_metadata.join("\u3001")}`}</span>
+
+              <label>
+                  <span>官方窗口</span>
+                <select
+                  onChange={(event) =>
+                    setOfficialWindowDays(parseOfficialWindowDays(event.target.value))
+                  }
+                  value={String(officialWindowDays)}
+                >
+                  {officialWindowOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {localizeOfficialWindowOptionLabel(option.value, option.label)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="stack-list">
+                <div className="stack-item align-start">
+                  <strong>官方市场数据集 ID</strong>
+                  <span>{OFFICIAL_MARKET_DATASET_ID}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>官方多模态数据集 ID</strong>
+                  <span>{OFFICIAL_MULTIMODAL_DATASET_ID}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>最新官方窗口</strong>
+                  <span>{officialRollingWindow}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>实际市场窗口</strong>
+                  <span>{actualMarketWindow}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>官方测试窗口</strong>
+                  <span>{officialTestWindow}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>实际 NLP 窗口</strong>
+                  <span>{actualNlpWindow}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>NLP Gate</strong>
+                  <span>{gateStatusLabel(officialReadiness?.official_nlp_gate_status)}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>仅归档型 NLP</strong>
+                  <span>
+                    {officialReadiness?.archival_nlp_source_only === null ||
+                    officialReadiness?.archival_nlp_source_only === undefined
+                      ? "--"
+                      : officialReadiness.archival_nlp_source_only
+                        ? "是"
+                        : "否"}
+                  </span>
+                </div>
+              </div>
+
+              <span>
+                官方滚动窗口会取官方市场与 NLP 数据共同支持到的最新时间戳作为结束点。
+              </span>
+              <span>
+                官方多模态比较要求模型实际特征集能够映射到官方 NLP schema。
+              </span>
+
+              {officialRequirements.length > 0 ? (
+                <div className="stack-list">
+                  {officialRequirements.map((item) => (
+                    <div className="stack-item align-start" key={item}>
+                      <strong>模板规则</strong>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {officialGateReasons.length > 0 ? (
+                <div className="stack-list">
+                  {officialGateReasons.map((reason) => (
+                    <div className="stack-item align-start" key={reason}>
+                      <strong>NLP 门禁说明</strong>
+                      <span>{localizeBacktestGateReason(reason)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="stack-list">
+                <div className="stack-item align-start">
+                  <strong>官方兼容性</strong>
+                  <span>{officialCompatibilityLabel}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>官方基准版本</strong>
+                  <span>{officialPreflight?.official_benchmark_version ?? "--"}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>官方 Schema 版本</strong>
+                  <span>{officialSchemaVersion}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>需要 NLP 特征</strong>
+                  <span>
+                    {officialPreflight?.requires_text_features === undefined
+                      ? "--"
+                      : officialPreflight.requires_text_features
+                        ? "是"
+                        : "否"}
+                  </span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>解析后的官方窗口</strong>
+                  <span>{officialRollingWindow}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>阻断摘要</strong>
+                  <span>{officialBlockingSummary ?? "当前可发起官方回测。"}</span>
+                </div>
+              </div>
+
+              {officialSchemaMissingFeatures.length > 0 ? (
+                <div className="stack-list">
+                  {officialSchemaMissingFeatures.map((featureName) => (
+                    <div className="stack-item align-start" key={featureName}>
+                      <strong>缺失官方特征</strong>
+                      <span>{featureName}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {officialPreflight?.required_feature_names?.length ? (
+                <div className="stack-list">
+                  {officialPreflight.required_feature_names.map((featureName) => (
+                    <div className="stack-item align-start" key={featureName}>
+                      <strong>模型实际所需特征</strong>
+                      <span>{featureName}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {officialSchemaFeatureNames.length > 0 ? (
+                <div className="stack-list">
+                  {officialSchemaFeatureNames.map((featureName) => (
+                    <div className="stack-item align-start" key={featureName}>
+                      <strong>官方标准特征</strong>
+                      <span>{featureName}</span>
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </div>
           ) : (
             <>
               <label>
-                <span>{"Dataset ID"}</span>
+                <span>Dataset ID</span>
                 <input onChange={(event) => setDatasetId(event.target.value)} value={datasetId} />
               </label>
-              {datasetId.trim() ? (
+              <label>
+                <span>Dataset IDs</span>
+                <textarea
+                  className="field area-field"
+                  onChange={(event) => setDatasetIdsText(event.target.value)}
+                  placeholder="One dataset_id per line, or separate with commas"
+                  value={datasetIdsText}
+                />
+              </label>
+              {customDatasetIds.length > 0 || datasetId.trim() ? (
                 <div className="dataset-callout">
-                  <strong>{"\u56de\u6d4b\u5c06\u4f18\u5148\u4f7f\u7528\u8bad\u7ec3\u6570\u636e\u96c6"}</strong>
+                  <strong>
+                    {customDatasetIds.length > 1
+                      ? "Backtest from multiple datasets"
+                      : "Backtest from a dataset"}
+                  </strong>
                   <span>
-                    {
-                      "\u5de5\u4f5c\u53f0\u4e3b\u94fe\u5728 dataset-aware \u56de\u6d4b\u4e2d\u4e0d\u4f1a\u9759\u9ed8\u56de\u9000\u5230 smoke / real_benchmark preset\u3002"
-                    }
+                    Custom mode uses the dataset IDs you provide directly instead of any preset benchmark dataset.
                   </span>
+                  {customDatasetIds.length > 1 ? (
+                    <span>{`This launch will submit ${customDatasetIds.length} dataset IDs.`}</span>
+                  ) : null}
                 </div>
               ) : (
                 <label>
-                  <span>{"\u6570\u636e\u96c6\u9884\u7f6e"}</span>
+                  <span>Dataset Preset</span>
                   <select
                     onChange={(event) =>
                       setDatasetPreset(event.target.value as "smoke" | "real_benchmark")
@@ -186,7 +759,7 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
                   >
                     {(optionsQuery.data?.dataset_presets ?? []).map((option) => (
                       <option key={option.value} value={option.value}>
-                        {option.label}
+                        {localizeBacktestOptionLabel(option.value, option.label)}
                       </option>
                     ))}
                   </select>
@@ -194,45 +767,52 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
               )}
             </>
           )}
+
           {mode === "custom" ? (
             <label>
-              <span>{"\u9884\u6d4b\u8303\u56f4"}</span>
+              <span>Prediction Scope</span>
               <select
                 onChange={(event) => setPredictionScope(event.target.value as "full" | "test")}
                 value={predictionScope}
               >
                 {(optionsQuery.data?.prediction_scopes ?? []).map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {localizeBacktestOptionLabel(option.value, option.label)}
                   </option>
                 ))}
               </select>
             </label>
           ) : (
             <div className="dataset-callout">
-              <strong>{"\u56fa\u5b9a\u9884\u6d4b\u8303\u56f4"}</strong>
-              <span>{"test"}</span>
+              <strong>Fixed prediction scope</strong>
+              <span>Test</span>
             </div>
           )}
+
           <label>
-            <span>{"\u57fa\u51c6\u4ee3\u7801"}</span>
+            <span>Benchmark Symbol</span>
             <input
               onChange={(event) => setBenchmarkSymbol(event.target.value)}
               value={benchmarkSymbol}
             />
           </label>
+
           {formError ? <p className="form-error">{formError}</p> : null}
-          {mutation.isError ? (
-            <p className="form-error">{(mutation.error as Error).message}</p>
-          ) : null}
+          {mutation.isError ? <p className="form-error">{(mutation.error as Error).message}</p> : null}
+
           <button
             className="action-button secondary"
-            disabled={mutation.isPending || optionsQuery.isLoading}
+            disabled={
+              mutation.isPending ||
+              optionsQuery.isLoading ||
+              officialSubmitBlocked
+            }
             onClick={handleSubmit}
             type="button"
           >
-            {mutation.isPending ? "\u63d0\u4ea4\u4e2d..." : I18N.action.submit}
+            {mutation.isPending ? "鎻愪氦涓?.." : I18N.action.submit}
           </button>
+
           {jobQuery.data ? (
             <div className="job-box">
               <div className="split-line">
@@ -254,7 +834,7 @@ export function LaunchBacktestDrawer({ initialRunId = null, initialDatasetId = n
                   onClick={() => navigate(backtestLink)}
                   type="button"
                 >
-                  {"\u8df3\u8f6c\u5230\u56de\u6d4b\u8be6\u60c5"}
+                  鎵撳紑鍥炴祴璇︽儏
                 </button>
               ) : null}
             </div>

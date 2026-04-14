@@ -9,7 +9,12 @@ export function DatasetsPage() {
   const rangePreset = searchParams.get("range_preset") ?? "30d";
 
   if (legacyTab === "market" && datasetId) {
-    return <Navigate replace to={`/datasets/${datasetId}?range_preset=${rangePreset}`} />;
+    return (
+      <Navigate
+        replace
+        to={`/datasets/${encodeURIComponent(datasetId)}?range_preset=${encodeURIComponent(rangePreset)}`}
+      />
+    );
   }
 
   if (legacyTab === "macro") {

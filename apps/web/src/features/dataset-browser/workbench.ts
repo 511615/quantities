@@ -176,85 +176,85 @@ export type TrainingDatasetWorkbenchItem = {
 };
 
 const DOMAIN_LABELS: Record<DatasetDomain, string> = {
-  market: "Market data",
-  derivatives: "Derivatives data",
-  on_chain: "On-chain data",
-  macro: "Macro data",
-  sentiment_events: "Sentiment / event data",
+  market: "市场数据",
+  derivatives: "衍生品数据",
+  on_chain: "链上数据",
+  macro: "宏观数据",
+  sentiment_events: "情绪 / 事件数据",
 };
 
 const TYPE_LABELS: Record<DatasetType, string> = {
-  display_slice: "Display slice",
-  training_panel: "Training panel",
-  feature_snapshot: "Feature snapshot",
-  fusion_training_panel: "Fusion training panel",
+  display_slice: "展示切片",
+  training_panel: "训练面板",
+  feature_snapshot: "特征快照",
+  fusion_training_panel: "融合训练面板",
 };
 
 const ENTITY_SCOPE_LABELS: Record<DatasetEntityScope, string> = {
-  single_asset: "Single asset",
-  multi_asset: "Multi asset",
-  macro_series: "Macro series",
-  event_stream: "Event stream",
-  unknown: "Unknown",
+  single_asset: "单资产",
+  multi_asset: "多资产",
+  macro_series: "宏观序列",
+  event_stream: "事件流",
+  unknown: "未知",
 };
 
 const DOMAIN_SUMMARIES: Record<DatasetDomain, string> = {
-  market: "Price, volume, and volatility series for a single asset.",
-  derivatives: "Interest rate, funding, and open-interest indicators from derivatives markets.",
-  on_chain: "Blockchain-native metrics such as transfers, balances, and wallet activity.",
-  macro: "Macro-economic series gathered from public sources and indexes.",
-  sentiment_events: "Event streams capturing news, social chatter, and sentiment signals.",
+  market: "单资产价格、成交量与波动率序列。",
+  derivatives: "来自衍生品市场的利率、资金费率与持仓量指标。",
+  on_chain: "链上转账、余额、钱包活跃度等原生区块链指标。",
+  macro: "从公开来源与指数采集的宏观经济序列。",
+  sentiment_events: "承载新闻、社媒讨论与情绪信号的事件流。",
 };
 
 const TYPE_SUMMARIES: Record<DatasetType, string> = {
-  display_slice: "Reference slices for monitoring values or auditing data quickly.",
-  training_panel: "Fully labeled tables designed for training and benchmark scoring.",
-  feature_snapshot: "Aggregated feature collections ready for downstream fusion without raw rebuilding.",
-  fusion_training_panel: "Multi-domain training panels combining complementary signal sets.",
+  display_slice: "用于监控数值或快速审计数据的参考切片。",
+  training_panel: "为训练与基准评测准备好的完整带标签表。",
+  feature_snapshot: "无需回到原始数据重建、可直接做下游融合的聚合特征集合。",
+  fusion_training_panel: "组合多种互补信号的多域训练面板。",
 };
 
 const PRETTY_LABELS: Record<string, string> = {
-  asset_mode: "Asset mode",
-  asset_id: "Asset ID",
-  available_time: "Available time",
-  as_of_time: "As of time",
-  build_status: "Build status",
-  calendar_mode: "Calendar mode",
-  data_domain: "Data domain",
-  data_source: "Data source",
-  dataset_type: "Dataset type",
-  drop_unaligned_rows: "Drop unaligned rows",
-  end_time: "End time",
-  entity_count: "Entity count",
-  entity_scope: "Entity scope",
-  exchange: "Exchange",
-  feature_count: "Feature count",
-  feature_schema_hash: "Feature schema hash",
-  frequency: "Frequency",
-  join_key: "Join key",
-  label_count: "Label count",
-  label_horizon: "Label horizon",
-  label_kind: "Label kind",
-  max_missing_ratio: "Max missing ratio",
-  min_entity_coverage_ratio: "Min entity coverage ratio",
-  missing_feature_policy: "Missing feature policy",
-  quality_status: "Quality status",
-  readiness_status: "Readiness status",
-  request_name: "Request name",
-  request_origin: "Request origin",
-  sample_count: "Sample count",
-  sample_policy: "Sample policy",
-  selection_mode: "Selection mode",
-  source_vendor: "Primary vendor",
-  split_strategy: "Split strategy",
-  start_time: "Start time",
-  symbol_count: "Symbol count",
-  symbol_type: "Symbol type",
-  symbols: "Symbols",
-  symbols_preview: "Symbol preview",
-  temporal_safety_status: "Temporal safety",
-  time_window: "Time window",
-  usable_sample_count: "Usable sample count",
+  asset_mode: "资产模式",
+  asset_id: "资产 ID",
+  available_time: "可用时间",
+  as_of_time: "截至时间",
+  build_status: "构建状态",
+  calendar_mode: "日历模式",
+  data_domain: "数据域",
+  data_source: "数据源",
+  dataset_type: "数据集类型",
+  drop_unaligned_rows: "丢弃未对齐行",
+  end_time: "结束时间",
+  entity_count: "实体数量",
+  entity_scope: "实体范围",
+  exchange: "交易所",
+  feature_count: "特征数量",
+  feature_schema_hash: "特征模式哈希",
+  frequency: "频率",
+  join_key: "连接键",
+  label_count: "标签数量",
+  label_horizon: "标签窗口",
+  label_kind: "标签类型",
+  max_missing_ratio: "最大缺失比例",
+  min_entity_coverage_ratio: "最小实体覆盖比例",
+  missing_feature_policy: "缺失特征策略",
+  quality_status: "质量状态",
+  readiness_status: "就绪状态",
+  request_name: "申请名称",
+  request_origin: "请求来源",
+  sample_count: "样本数量",
+  sample_policy: "样本策略",
+  selection_mode: "选择方式",
+  source_vendor: "主来源",
+  split_strategy: "切分策略",
+  start_time: "开始时间",
+  symbol_count: "标的数量",
+  symbol_type: "标的类型",
+  symbols: "标的列表",
+  symbols_preview: "标的预览",
+  temporal_safety_status: "时间安全",
+  time_window: "时间窗口",
+  usable_sample_count: "可用样本数量",
 };
 
 function compactText(value: string | null | undefined): string | null {
@@ -487,6 +487,26 @@ function formatVersion(value: string | null | undefined): string {
   return value.slice(0, 10);
 }
 
+function formatSplitStrategy(value: string | null | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return "待补充";
+  }
+  if (normalized === "time_walk_forward" || normalized === "walk_forward") {
+    return "时间滚动切分";
+  }
+  if (normalized === "time_series" || normalized === "chronological_holdout") {
+    return "时间顺序切分";
+  }
+  if (normalized === "random_split") {
+    return "随机切分";
+  }
+  if (normalized === "stratified_split") {
+    return "分层切分";
+  }
+  return value ?? "待补充";
+}
+
 function formatCoverage(summary: DatasetSummaryView): string {
   if (summary.time_range_label) {
     return summary.time_range_label;
@@ -681,10 +701,10 @@ function createReadableTitle(
   const freqPart = summary.frequency ? ` ${frequencyLabel}` : "";
   const englishType =
     type === "training_panel"
-      ? "Training Panel"
+      ? "训练面板"
       : type === "feature_snapshot"
-        ? "Feature Snapshot"
-        : "Display Slice";
+        ? "特征快照"
+        : "展示切片";
 
   if (domain === "macro") {
     return `${sourceVendor}${freqPart}宏观因子数据集 / ${englishType}`;
@@ -1217,8 +1237,8 @@ export function adaptTrainingDatasetSummary(
     labelHorizonLabel:
       item.label_horizon === null || item.label_horizon === undefined
         ? "不适用"
-        : `${item.label_horizon} 个 bar`,
-    splitStrategyLabel: item.split_strategy ?? "待补充",
+        : `${item.label_horizon} 个周期`,
+    splitStrategyLabel: formatSplitStrategy(item.split_strategy),
     frequencyLabel: formatFrequency(item.frequency),
     freshnessLabel: formatFreshnessLabel(item.freshness_status),
     qualityLabel: formatQualityStatus(item.quality_status),
@@ -1254,7 +1274,7 @@ export function createFallbackTrainingDatasetItems(
       featureCountLabel: item.featureCountLabel,
       labelCountLabel: item.labelCountLabel,
       labelHorizonLabel: item.labelHorizonLabel,
-      splitStrategyLabel: item.raw.split_strategy ?? "待补充",
+      splitStrategyLabel: formatSplitStrategy(item.raw.split_strategy),
       frequencyLabel: item.frequencyLabel,
       freshnessLabel: item.freshnessLabel,
       qualityLabel: item.qualityLabel,
@@ -1375,24 +1395,26 @@ export function createApiNotReadyMessage(featureLabel: string): string {
 export function filterDatasetRequestJobs(items: JobStatusView[]): JobStatusView[] {
   return items.filter((job) => {
     const type = (job.job_type ?? "").toLowerCase();
+    const result = job.result;
     return (
       type.includes("dataset") ||
       type.includes("prepare") ||
       type.includes("acquisition") ||
       type.includes("ingestion") ||
       type.includes("build") ||
-      (Boolean(job.result.dataset_id) &&
-        (job.result.run_ids?.length ?? 0) === 0 &&
-        (job.result.backtest_ids?.length ?? 0) === 0)
+      (Boolean(result?.dataset_id) &&
+        (result?.run_ids?.length ?? 0) === 0 &&
+        (result?.backtest_ids?.length ?? 0) === 0)
     );
   });
 }
 
 export function datasetJobDetailPath(job: JobStatusView): string | null {
-  if (job.result.deeplinks.dataset_detail) {
-    return job.result.deeplinks.dataset_detail;
+  const deeplinks = job.result?.deeplinks;
+  if (deeplinks?.dataset_detail) {
+    return deeplinks.dataset_detail;
   }
-  if (job.result.dataset_id) {
+  if (job.result?.dataset_id) {
     return `/datasets/${encodeURIComponent(job.result.dataset_id)}`;
   }
   return null;

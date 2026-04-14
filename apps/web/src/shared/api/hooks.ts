@@ -2,10 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client";
 import type {
+  LaunchBacktestPreflightRequest,
   DatasetAcquisitionRequest,
   DatasetFusionRequest,
   DatasetNlpInspectionView,
   DatasetPipelineRequest,
+  LaunchModelCompositionRequest,
 } from "./types";
 
 export function useWorkbenchOverview() {
@@ -49,6 +51,17 @@ export function useBacktestDetail(backtestId: string) {
     queryKey: ["backtest", backtestId],
     queryFn: () => api.backtest(backtestId),
     enabled: Boolean(backtestId),
+  });
+}
+
+export function useBacktestPreflight(
+  body: LaunchBacktestPreflightRequest,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["launch-options", "backtest", "preflight", body],
+    queryFn: () => api.backtestPreflight(body),
+    enabled: enabled && Boolean(body.run_id),
   });
 }
 
@@ -155,6 +168,47 @@ export function useDatasetOhlcv(
   });
 }
 
+export function useDatasetOhlcvAll(
+  datasetId: string | null,
+  params: {
+    per_page?: number;
+    start_time?: string | null;
+    end_time?: string | null;
+  },
+) {
+  return useQuery({
+    queryKey: ["dataset-ohlcv-all", datasetId, params],
+    queryFn: async () => {
+      const perPage = Math.min(params.per_page ?? 5000, 5000);
+      const firstPage = await api.datasetOhlcv(datasetId ?? "", {
+        ...params,
+        page: 1,
+        per_page: perPage,
+      });
+      const totalPages = Math.max(1, Math.ceil(firstPage.total / perPage));
+      if (totalPages === 1) {
+        return firstPage;
+      }
+      const remainingPages = await Promise.all(
+        Array.from({ length: totalPages - 1 }, (_, index) =>
+          api.datasetOhlcv(datasetId ?? "", {
+            ...params,
+            page: index + 2,
+            per_page: perPage,
+          }),
+        ),
+      );
+      return {
+        ...firstPage,
+        page: 1,
+        per_page: perPage,
+        items: [firstPage.items, ...remainingPages.map((page) => page.items)].flat(),
+      };
+    },
+    enabled: Boolean(datasetId),
+  });
+}
+
 export function useComparison(
   query: {
     runIds: string[];
@@ -245,6 +299,21 @@ export function useBacktestOptions() {
   return useQuery({
     queryKey: ["launch-options", "backtest"],
     queryFn: () => api.backtestOptions(),
+  });
+}
+
+export function useLaunchModelCompositionMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LaunchModelCompositionRequest) => api.launchModelComposition(body),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+        queryClient.invalidateQueries({ queryKey: ["experiments"] }),
+        queryClient.invalidateQueries({ queryKey: ["workbench-overview"] }),
+      ]);
+    },
   });
 }
 

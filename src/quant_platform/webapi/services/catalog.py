@@ -3,7 +3,9 @@
 import json
 import shutil
 import uuid
+import zipfile
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,8 @@ from quant_platform.common.enums.core import LabelKind
 from quant_platform.common.hashing.digest import stable_digest
 from quant_platform.common.io.files import LocalArtifactStore
 from quant_platform.common.types.core import FeatureField, TimeRange
+from quant_platform.data.connectors.sentiment import RedditArchiveSentimentConnector
+from quant_platform.data.contracts.ingestion import IngestionRequest
 from quant_platform.data.contracts.data_asset import DataAssetRef
 from quant_platform.data.contracts.market import NormalizedMarketBar
 from quant_platform.data.contracts.series import NormalizedSeriesPoint
@@ -41,6 +45,7 @@ from quant_platform.webapi.repositories.dataset_registry import (
 from quant_platform.webapi.schemas.views import (
     ArtifactPreviewResponse,
     ArtifactView,
+    BacktestAlignmentView,
     BacktestDeleteResponse,
     BacktestEngineView,
     BacktestListItemView,
@@ -54,6 +59,7 @@ from quant_platform.webapi.schemas.views import (
     DatasetAcquisitionRequest,
     DatasetDeleteResponse,
     DatasetAcquisitionSourceRequest,
+    DatasetAcquisitionTimeWindow,
     DatasetDependenciesResponse,
     DatasetDependencyView,
     DatasetDetailView,
@@ -64,6 +70,8 @@ from quant_platform.webapi.schemas.views import (
     DatasetFusionBuildResponse,
     DatasetFusionRequest,
     DatasetFusionSourceRequest,
+    DatasetBuildConfigView,
+    DatasetLinkView,
     DatasetReadinessSummaryView,
     DatasetRequestOptionsView,
     DatasetRequestOptionView,
@@ -98,8 +106,11 @@ from quant_platform.webapi.schemas.views import (
     RelatedBacktestView,
     ReviewSummaryView,
     RunDetailView,
+    RunCompositionSourceView,
+    RunCompositionView,
     ScenarioDeltaView,
     StableSummaryView,
+    DatasetSymbolSelectorView,
     TimeValuePoint,
     TrainingDatasetSummaryView,
     TrainingDatasetsResponse,
@@ -110,9 +121,52 @@ from quant_platform.webapi.schemas.views import (
     WorkbenchOverviewView,
 )
 from quant_platform.webapi.services.backtest_protocol import (
+    OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
+    OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+    OFFICIAL_NLP_ARCHIVAL_VENDORS,
+    OFFICIAL_NLP_MAX_DUPLICATE_RATIO,
+    OFFICIAL_NLP_MAX_TEST_EMPTY_BARS,
+    OFFICIAL_NLP_MIN_ENTITY_LINK_COVERAGE_RATIO,
+    OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO,
     compute_protocol_result,
     custom_backtest_template,
 )
+
+_SENTIMENT_VENDOR_CANONICAL_MAP: dict[str, str] = {
+    "reddit_history_csv": "reddit_archive",
+    "reddit_pullpush": "reddit_archive",
+    "reddit_public": "reddit_archive",
+}
+
+OFFICIAL_MARKET_STANDARD_FEATURES_V1: list[str] = [
+    "lag_return_1",
+    "lag_return_2",
+    "momentum_3",
+    "realized_vol_3",
+    "close_to_open",
+    "range_frac",
+    "volume_zscore",
+    "volume_ratio_3",
+]
+
+OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1: list[str] = [
+    "news_event_count",
+    "text_reddit_attention_zscore_24h",
+    "text_reddit_body_len_mean_1h",
+    "text_reddit_comment_count_1h",
+    "text_reddit_controversiality_ratio_1h",
+    "text_reddit_core_subreddit_ratio_1h",
+    "text_reddit_negative_ratio_1h",
+    "text_reddit_positive_ratio_1h",
+    "text_reddit_score_mean_1h",
+    "text_reddit_score_sum_1h",
+    "text_reddit_sentiment_mean_1h",
+    "text_reddit_sentiment_std_1h",
+    "text_reddit_unique_author_count_1h",
+    "sentiment_score",
+]
+
+OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION = "official_multimodal_standard_v1"
 
 
 class ResearchWorkbenchService:
@@ -135,6 +189,842 @@ class ResearchWorkbenchService:
         self.trained_root = self.repository.artifact_root / "webapi" / "trained_models"
         self.templates_root.mkdir(parents=True, exist_ok=True)
         self.trained_root.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _canonical_sentiment_vendor(vendor: str | None) -> str | None:
+        if not vendor:
+            return vendor
+        return _SENTIMENT_VENDOR_CANONICAL_MAP.get(vendor, vendor)
+
+    @staticmethod
+    def official_multimodal_feature_names_v1() -> list[str]:
+        return [
+            *OFFICIAL_MARKET_STANDARD_FEATURES_V1,
+            *OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1,
+        ]
+
+    @staticmethod
+    def _official_nlp_feature_aliases(feature_name: str) -> list[str]:
+        alias_map = {
+            "news_event_count": [
+                "news_event_count",
+                "text_social_event_count",
+                "text_reddit_event_count",
+                "text_event_count",
+            ],
+            "text_reddit_attention_zscore_24h": [
+                "text_reddit_attention_zscore_24h",
+                "text_social_reddit_attention_zscore_24h",
+            ],
+            "text_reddit_body_len_mean_1h": [
+                "text_reddit_body_len_mean_1h",
+                "text_social_reddit_body_len_mean_1h",
+            ],
+            "text_reddit_comment_count_1h": [
+                "text_reddit_comment_count_1h",
+                "text_social_reddit_comment_count_1h",
+            ],
+            "text_reddit_controversiality_ratio_1h": [
+                "text_reddit_controversiality_ratio_1h",
+                "text_social_reddit_controversiality_ratio_1h",
+            ],
+            "text_reddit_core_subreddit_ratio_1h": [
+                "text_reddit_core_subreddit_ratio_1h",
+                "text_social_reddit_core_subreddit_ratio_1h",
+            ],
+            "text_reddit_negative_ratio_1h": [
+                "text_reddit_negative_ratio_1h",
+                "text_social_reddit_negative_ratio_1h",
+                "sentiment_social_negative_ratio",
+            ],
+            "text_reddit_positive_ratio_1h": [
+                "text_reddit_positive_ratio_1h",
+                "text_social_reddit_positive_ratio_1h",
+                "sentiment_social_positive_ratio",
+            ],
+            "text_reddit_score_mean_1h": [
+                "text_reddit_score_mean_1h",
+                "text_social_reddit_score_mean_1h",
+            ],
+            "text_reddit_score_sum_1h": [
+                "text_reddit_score_sum_1h",
+                "text_social_reddit_score_sum_1h",
+            ],
+            "text_reddit_sentiment_mean_1h": [
+                "text_reddit_sentiment_mean_1h",
+                "text_social_reddit_sentiment_mean_1h",
+            ],
+            "text_reddit_sentiment_std_1h": [
+                "text_reddit_sentiment_std_1h",
+                "text_social_reddit_sentiment_std_1h",
+            ],
+            "text_reddit_unique_author_count_1h": [
+                "text_reddit_unique_author_count_1h",
+                "text_social_reddit_unique_author_count_1h",
+            ],
+            "sentiment_score": [
+                "sentiment_score",
+                "sentiment_social_score",
+                "sentiment_reddit_score",
+            ],
+        }
+        return alias_map.get(feature_name, [feature_name])
+
+    def _official_multimodal_schema_matches(self, payload: dict[str, Any] | None) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        feature_view_ref = payload.get("feature_view_ref")
+        if not isinstance(feature_view_ref, dict):
+            return False
+        feature_names = [
+            str(item.get("name"))
+            for item in (feature_view_ref.get("feature_schema") or [])
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        if feature_names != self.official_multimodal_feature_names_v1():
+            return False
+        manifest = self._dataset_manifest(payload)
+        acquisition_profile = manifest.get("acquisition_profile") or {}
+        if acquisition_profile.get("official_benchmark_version") != OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION:
+            return False
+        if self._str(acquisition_profile.get("base_dataset_id")) != OFFICIAL_MARKET_BENCHMARK_DATASET_ID:
+            return False
+        if self._str(acquisition_profile.get("market_anchor_dataset_id")) != OFFICIAL_MARKET_BENCHMARK_DATASET_ID:
+            return False
+        market_payload = self._dataset_ref(OFFICIAL_MARKET_BENCHMARK_DATASET_ID)
+        if not isinstance(market_payload, dict):
+            return False
+        market_snapshot_version = self._str(acquisition_profile.get("market_snapshot_version"))
+        sentiment_snapshot_version = self._str(acquisition_profile.get("sentiment_snapshot_version"))
+        current_market_snapshot_version = self._str(self._dataset_manifest(market_payload).get("snapshot_version"))
+        if market_snapshot_version and market_snapshot_version != current_market_snapshot_version:
+            return False
+        source_specs = acquisition_profile.get("source_specs") or []
+        if not isinstance(source_specs, list):
+            return False
+        market_specs = [
+            item for item in source_specs if isinstance(item, dict) and self._str(item.get("data_domain")) == "market"
+        ]
+        sentiment_specs = [
+            item
+            for item in source_specs
+            if isinstance(item, dict) and self._str(item.get("data_domain")) == "sentiment_events"
+        ]
+        if len(market_specs) != 1 or len(sentiment_specs) != 1:
+            return False
+        market_symbols = list(((market_specs[0].get("symbol_selector") or {}).get("symbols") or []))
+        if self._str(market_specs[0].get("source_vendor")) != "binance" or market_symbols != ["BTCUSDT"]:
+            return False
+        if (
+            self._canonical_sentiment_vendor(self._str(sentiment_specs[0].get("source_vendor"))) != "reddit_archive"
+            or self._str(sentiment_specs[0].get("identifier")) != "BTC"
+        ):
+            return False
+        fusion_sources = acquisition_profile.get("fusion_sources") or []
+        if not fusion_sources:
+            return False
+        if not all(
+            isinstance(item, dict)
+            and self._canonical_sentiment_vendor(self._str(item.get("vendor"))) == "reddit_archive"
+            and self._str(item.get("identifier")) == "BTC"
+            for item in fusion_sources
+        ):
+            return False
+        if sentiment_snapshot_version and not any(self._str(item.get("storage_uri")) for item in fusion_sources):
+            return False
+        readiness = self.get_dataset_readiness(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
+        if readiness is None:
+            return False
+        if readiness.readiness_status != "ready" or readiness.official_nlp_gate_status == "failed":
+            return False
+        return (readiness.usable_row_count or 0) >= 24
+
+    @staticmethod
+    def _official_nlp_feature_name_from_metric_name(metric_name: str) -> str | None:
+        metric_map = {
+            "event_count": "news_event_count",
+            "reddit_attention_zscore_24h": "text_reddit_attention_zscore_24h",
+            "reddit_body_len_mean_1h": "text_reddit_body_len_mean_1h",
+            "reddit_comment_count_1h": "text_reddit_comment_count_1h",
+            "reddit_controversiality_ratio_1h": "text_reddit_controversiality_ratio_1h",
+            "reddit_core_subreddit_ratio_1h": "text_reddit_core_subreddit_ratio_1h",
+            "reddit_negative_ratio_1h": "text_reddit_negative_ratio_1h",
+            "reddit_positive_ratio_1h": "text_reddit_positive_ratio_1h",
+            "reddit_score_mean_1h": "text_reddit_score_mean_1h",
+            "reddit_score_sum_1h": "text_reddit_score_sum_1h",
+            "reddit_sentiment_mean_1h": "text_reddit_sentiment_mean_1h",
+            "reddit_sentiment_std_1h": "text_reddit_sentiment_std_1h",
+            "reddit_unique_author_count_1h": "text_reddit_unique_author_count_1h",
+            "sentiment_score": "sentiment_score",
+        }
+        return metric_map.get(metric_name)
+
+    def ensure_official_multimodal_benchmark(self) -> str:
+        if self.facade is None:
+            return OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
+        existing_payload = self._dataset_ref(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
+        if self._official_multimodal_schema_matches(existing_payload):
+            existing_samples = self._load_dataset_samples(existing_payload)
+            if existing_samples:
+                self.facade.dataset_store[OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID] = existing_samples
+            return OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
+        return self._materialize_official_multimodal_benchmark()
+
+    def _load_existing_official_multimodal_sentiment_points(
+        self,
+        payload: dict[str, Any] | None,
+    ) -> list[NormalizedSeriesPoint]:
+        if not isinstance(payload, dict):
+            return []
+        feature_view_ref = payload.get("feature_view_ref") or {}
+        input_data_refs = feature_view_ref.get("input_data_refs") or []
+        candidate_uris: list[str] = []
+        for input_ref in input_data_refs:
+            if not isinstance(input_ref, dict):
+                continue
+            tags = {self._str(tag) for tag in (input_ref.get("tags") or []) if self._str(tag)}
+            if (
+                self._str(input_ref.get("asset_id")) != "sentiment_social_btc_1h"
+                and self._str(input_ref.get("source")) != "reddit_archive"
+                and self._str(input_ref.get("venue")) != "reddit_archive"
+                and "sentiment_events" not in tags
+            ):
+                continue
+            storage_uri = self._str(input_ref.get("storage_uri"))
+            if storage_uri:
+                candidate_uris.append(storage_uri)
+        for storage_uri in candidate_uris:
+            path = self._resolve_artifact_path(storage_uri)
+            if not path.exists():
+                continue
+            loaded = self._load(path).get("rows", [])
+            if not isinstance(loaded, list):
+                continue
+            points = [
+                NormalizedSeriesPoint.model_validate(item)
+                for item in loaded
+                if isinstance(item, dict)
+            ]
+            if points:
+                return points
+        return []
+
+    def _materialize_official_multimodal_benchmark(self) -> str:
+        if self.facade is None:
+            raise ValueError("Facade is required to materialize the official multimodal benchmark.")
+        market_payload = self._dataset_ref(OFFICIAL_MARKET_BENCHMARK_DATASET_ID)
+        if not isinstance(market_payload, dict):
+            raise ValueError(
+                f"Official market benchmark dataset '{OFFICIAL_MARKET_BENCHMARK_DATASET_ID}' is not available."
+            )
+        market_dataset_ref = DatasetRef.model_validate(market_payload)
+        market_samples = self._load_dataset_samples(market_payload)
+        if not market_samples:
+            raise ValueError(
+                f"Official market benchmark dataset '{OFFICIAL_MARKET_BENCHMARK_DATASET_ID}' has no samples."
+            )
+        market_feature_schema = {
+            field.name: field for field in market_dataset_ref.feature_view_ref.feature_schema
+        }
+        missing_market_features = [
+            name for name in OFFICIAL_MARKET_STANDARD_FEATURES_V1 if name not in market_feature_schema
+        ]
+        if missing_market_features:
+            raise ValueError(
+                "Official market benchmark is missing standard market features: "
+                + ", ".join(missing_market_features)
+            )
+        market_input_ref = market_dataset_ref.feature_view_ref.input_data_refs[0]
+        existing_payload = self._dataset_ref(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
+        sentiment_points = self._load_existing_official_multimodal_sentiment_points(existing_payload)
+        if not sentiment_points:
+            sentiment_connector = RedditArchiveSentimentConnector(self.repository.artifact_root)
+            sentiment_points = sentiment_connector.store.query_points(
+                asset_id="BTC",
+                start_time=market_input_ref.time_range.start,
+                end_time=market_input_ref.time_range.end,
+                vendor="reddit_archive",
+            )
+            if not sentiment_points:
+                sentiment_result = sentiment_connector.ingest(
+                    IngestionRequest(
+                        data_domain="sentiment_events",
+                        vendor="reddit_archive",
+                        request_id=(
+                            "official-multimodal-benchmark-"
+                            f"{market_input_ref.time_range.start.isoformat()}-"
+                            f"{market_input_ref.time_range.end.isoformat()}"
+                        ),
+                        time_range={
+                            "start": market_input_ref.time_range.start,
+                            "end": market_input_ref.time_range.end,
+                        },
+                        identifiers=["BTC"],
+                        frequency="1h",
+                        options={"symbol": "BTCUSDT"},
+                    )
+                )
+                sentiment_points = [
+                    NormalizedSeriesPoint.model_validate(item)
+                    for item in (sentiment_result.metadata.get("rows") or [])
+                    if isinstance(item, dict)
+                ]
+        if not sentiment_points:
+            raise ValueError("Official multimodal benchmark could not fetch Reddit archive NLP points.")
+        points_payload = {"rows": [point.model_dump(mode="json") for point in sentiment_points]}
+        points_artifact = self.store.write_json(
+            f"datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_sentiment_points.json",
+            points_payload,
+        )
+
+        nlp_feature_names_seen: set[str] = set()
+        nlp_rows_by_key: dict[tuple[str, datetime], dict[str, Any]] = {}
+        for point in sentiment_points:
+            official_feature_name = self._official_nlp_feature_name_from_metric_name(point.metric_name)
+            if official_feature_name is None:
+                continue
+            nlp_feature_names_seen.add(official_feature_name)
+            row_key = (point.entity_key, point.event_time)
+            row_entry = nlp_rows_by_key.setdefault(
+                row_key,
+                {
+                    "available_time": point.available_time,
+                    "values": {},
+                },
+            )
+            if point.available_time > row_entry["available_time"]:
+                row_entry["available_time"] = point.available_time
+            row_entry["values"][official_feature_name] = float(point.value)
+        missing_nlp_features = [
+            name for name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1 if name not in nlp_feature_names_seen
+        ]
+        if missing_nlp_features:
+            raise ValueError(
+                "Official Reddit archive feed is missing standard NLP features: "
+                + ", ".join(missing_nlp_features)
+            )
+        nlp_feature_rows = [
+            FeatureRow(
+                entity_key=entity_key,
+                timestamp=timestamp,
+                available_time=entry["available_time"],
+                values=entry["values"],
+            )
+            for (entity_key, timestamp), entry in sorted(
+                nlp_rows_by_key.items(),
+                key=lambda item: (item[0][1], item[0][0]),
+            )
+        ]
+        if not nlp_feature_rows:
+            raise ValueError("Official multimodal benchmark could not build Reddit archive feature rows.")
+        nlp_by_timestamp = {row.timestamp: row for row in nlp_feature_rows}
+        enriched_rows: list[FeatureRow] = []
+        labels: dict[tuple[str, datetime], float] = {}
+        missing_counts = {name: 0 for name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1}
+        dropped_missing_rows = 0
+        for market_sample in sorted(market_samples, key=lambda item: (item.timestamp, item.entity_key)):
+            nlp_sample = nlp_by_timestamp.get(market_sample.timestamp)
+            if nlp_sample is None:
+                dropped_missing_rows += 1
+                for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1:
+                    missing_counts[feature_name] += 1
+                continue
+            missing_features = [
+                feature_name
+                for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+                if feature_name not in nlp_sample.values
+            ]
+            if missing_features:
+                dropped_missing_rows += 1
+                for feature_name in missing_features:
+                    missing_counts[feature_name] += 1
+                continue
+            values = {
+                **{
+                    feature_name: float(market_sample.features[feature_name])
+                    for feature_name in OFFICIAL_MARKET_STANDARD_FEATURES_V1
+                },
+                **{
+                    feature_name: float(nlp_sample.values[feature_name])
+                    for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+                },
+            }
+            available_time = max(market_sample.available_time, nlp_sample.available_time)
+            enriched_rows.append(
+                FeatureRow(
+                    entity_key=market_sample.entity_key,
+                    timestamp=market_sample.timestamp,
+                    available_time=available_time,
+                    values=values,
+                )
+            )
+            labels[(market_sample.entity_key, market_sample.timestamp)] = market_sample.target
+        if len(enriched_rows) < 3:
+            raise ValueError("Official multimodal benchmark could not align enough market/NLP rows.")
+
+        feature_schema = [
+            market_feature_schema[name] for name in OFFICIAL_MARKET_STANDARD_FEATURES_V1
+        ] + [
+            FeatureField(
+                name=name,
+                dtype="float",
+                lineage_source="sentiment_events",
+                max_available_time=max(point.available_time for point in sentiment_points),
+            )
+            for name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+        ]
+        sentiment_input_ref = DataAssetRef(
+            asset_id="sentiment_social_btc_1h",
+            schema_version=1,
+            source="reddit_archive",
+            symbol="BTC",
+            venue="reddit_archive",
+            frequency="1h",
+            time_range=TimeRange(
+                start=min(row.timestamp for row in nlp_feature_rows),
+                end=max(row.timestamp for row in nlp_feature_rows) + timedelta(seconds=1),
+            ),
+            storage_uri=points_artifact.uri,
+            content_hash=stable_digest(points_payload),
+            entity_key="BTC",
+            tags=["sentiment_events"],
+            request_origin="official_template",
+        )
+        self.store.write_model(f"datasets/{sentiment_input_ref.asset_id}_ref.json", sentiment_input_ref)
+        official_as_of_time = max(
+            market_dataset_ref.feature_view_ref.as_of_time,
+            max(point.available_time for point in sentiment_points),
+        )
+        feature_view_ref = FeatureViewRef(
+            feature_set_id="multi_domain_fusion_v1",
+            input_data_refs=[
+                *list(market_dataset_ref.feature_view_ref.input_data_refs),
+                sentiment_input_ref,
+            ],
+            as_of_time=official_as_of_time,
+            feature_schema=feature_schema,
+            build_config_hash=stable_digest(
+                {
+                    "dataset_id": OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+                    "schema_version": OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION,
+                    "market_snapshot_version": self._str(self._dataset_manifest(market_payload).get("snapshot_version")),
+                    "sentiment_snapshot_version": stable_digest(points_payload)[:12],
+                    "feature_names": self.official_multimodal_feature_names_v1(),
+                }
+            ),
+            storage_uri=f"artifact://datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_feature_rows.json",
+        )
+        self.store.write_json(
+            f"datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_feature_rows.json",
+            {"rows": [row.model_dump(mode="json") for row in enriched_rows]},
+        )
+        feature_result = FeatureViewBuildResult(feature_view_ref=feature_view_ref, rows=enriched_rows)
+        sample_policy = market_dataset_ref.sample_policy.model_copy(
+            update={"recommended_training_use": "fusion_training_panel"}
+        )
+        dataset_ref, samples, dataset_manifest = DatasetBuilder.build_dataset(
+            dataset_id=OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+            feature_result=feature_result,
+            labels=labels,
+            label_spec=market_dataset_ref.label_spec,
+            split_manifest=market_dataset_ref.split_manifest,
+            sample_policy=sample_policy,
+        )
+        coverage_by_feature = {
+            feature_name: (
+                0.0
+                if len(market_samples) == 0
+                else (len(market_samples) - missing_counts[feature_name]) / len(market_samples)
+            )
+            for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+        }
+        market_manifest = self._dataset_manifest(market_payload)
+        market_snapshot_version = self._str(market_manifest.get("snapshot_version"))
+        sentiment_snapshot_version = stable_digest(points_payload)[:12]
+        snapshot_version = stable_digest(
+            {
+                "dataset_id": OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+                "schema_version": OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION,
+                "market_snapshot_version": market_snapshot_version,
+                "sentiment_snapshot_version": sentiment_snapshot_version,
+                "sample_count": len(samples),
+            }
+        )[:12]
+        dataset_manifest = dataset_manifest.model_copy(
+            update={
+                "asset_id": market_manifest.get("asset_id") or OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
+                "feature_set_id": "multi_domain_fusion_v1",
+                "dropped_rows": dataset_manifest.dropped_rows + dropped_missing_rows,
+                "raw_row_count": len(enriched_rows),
+                "usable_sample_count": len(samples),
+                "snapshot_version": snapshot_version,
+                "readiness_status": "ready" if samples else "not_ready",
+                "alignment_status": "aligned_asof",
+                "missing_feature_status": "clean",
+                "label_alignment_status": "aligned",
+                "split_integrity_status": "valid",
+                "temporal_safety_status": "passed",
+                "freshness_status": "fresh",
+                "quality_status": "healthy",
+                "build_config": {
+                    "sample_policy_name": "fusion_training_panel_strict",
+                    "alignment_policy_name": "available_time_safe_asof",
+                    "missing_feature_policy_name": "drop_if_missing",
+                    "sample_policy": {},
+                    "alignment_policy": {"mode": "available_time_safe_asof"},
+                    "missing_feature_policy": {
+                        "strategy": "drop_if_missing",
+                        "coverage_by_feature": coverage_by_feature,
+                    },
+                    "official_schema_version": OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION,
+                },
+                "acquisition_profile": {
+                    **dict(market_manifest.get("acquisition_profile") or {}),
+                    "request_name": "official_reddit_pullpush_multimodal_v2",
+                    "request_origin": "official_template",
+                    "data_domain": "market",
+                    "data_domains": ["market", "sentiment_events"],
+                    "dataset_type": "fusion_training_panel",
+                    "base_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
+                    "market_anchor_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
+                    "source_dataset_ids": [OFFICIAL_MARKET_BENCHMARK_DATASET_ID],
+                    "fusion_domains": ["market", "sentiment_events"],
+                    "source_vendor": "binance",
+                    "source_specs": [
+                        {
+                            "data_domain": "market",
+                            "source_vendor": "binance",
+                            "exchange": "binance",
+                            "frequency": "1h",
+                            "symbol_selector": {"symbols": ["BTCUSDT"]},
+                        },
+                        {
+                            "data_domain": "sentiment_events",
+                            "source_vendor": "reddit_archive",
+                            "exchange": "reddit_archive",
+                            "frequency": "1h",
+                            "identifier": "BTC",
+                        },
+                    ],
+                    "fusion_sources": [
+                        {
+                            "data_domain": "sentiment_events",
+                            "vendor": "reddit_archive",
+                            "identifier": "BTC",
+                            "feature_name": feature_name,
+                            "frequency": "1h",
+                            "metric_name": feature_name,
+                            "fetch_status": "connector_direct",
+                            "storage_uri": points_artifact.uri,
+                        }
+                        for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+                    ],
+                    "coverage_by_feature": coverage_by_feature,
+                    "connector_status_by_source": {
+                        f"market:{OFFICIAL_MARKET_BENCHMARK_DATASET_ID}": self._str(
+                            (market_manifest.get("acquisition_profile") or {}).get("request_origin")
+                        )
+                        or "unknown",
+                        "sentiment_events:reddit_archive:BTC": "connector_direct",
+                    },
+                    "merge_policy_name": "available_time_safe_asof",
+                    "official_benchmark_version": OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION,
+                    "market_snapshot_version": market_snapshot_version,
+                    "sentiment_snapshot_version": sentiment_snapshot_version,
+                    "archival_nlp_source_only": True,
+                    "internal_visibility": "public",
+                },
+            }
+        )
+        dataset_samples_artifact = self.store.write_json(
+            f"datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_dataset_samples.json",
+            {"samples": [sample.model_dump(mode="json") for sample in samples]},
+        )
+        feature_view_artifact = self.store.write_model(
+            f"datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_feature_view_ref.json",
+            feature_view_ref,
+        )
+        dataset_manifest_artifact = self.store.write_model(
+            f"datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_dataset_manifest.json",
+            dataset_manifest,
+        )
+        dataset_ref = dataset_ref.model_copy(
+            update={
+                "dataset_manifest_uri": dataset_manifest_artifact.uri,
+                "dataset_samples_uri": dataset_samples_artifact.uri,
+                "entity_scope": market_dataset_ref.entity_scope,
+                "entity_count": market_dataset_ref.entity_count,
+                "readiness_status": dataset_manifest.readiness_status,
+            }
+        )
+        self.store.write_model(
+            f"datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_dataset_ref.json",
+            dataset_ref,
+        )
+        self.facade.dataset_store[OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID] = samples
+        self.dataset_registry.bootstrap_from_artifacts()
+        return OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
+
+    @staticmethod
+    def _system_recommended_dataset_ids() -> set[str]:
+        return {
+            "smoke_dataset",
+            "baseline_benchmark_dataset",
+            "baseline_real_benchmark_dataset",
+            "baseline_reference_benchmark_dataset",
+            OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+        }
+
+    def _dataset_protection_meta(self, dataset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        request_origin = self._str(payload.get("request_origin"))
+        acquisition_profile = dict((payload.get("acquisition_profile") or {}))
+        protected = (
+            dataset_id in self._system_recommended_dataset_ids()
+            or request_origin in {"system_recommendation", "official_template", "benchmark_preset"}
+            or bool(acquisition_profile.get("system_recommended"))
+        )
+        return {
+            "is_system_recommended": protected,
+            "is_protected": protected,
+            "deletion_policy": "system_protected" if protected else "user_managed",
+            "download_available": True,
+        }
+
+    def _dataset_link(
+        self,
+        dataset_id: str,
+        *,
+        label: str | None = None,
+        role: str | None = None,
+        modality: str | None = None,
+    ) -> DatasetLinkView:
+        entry = self._dataset_entry(dataset_id)
+        payload = entry.payload if entry is not None else None
+        resolved_label = (
+            label
+            or (
+                self._dataset_display_meta(payload).get("display_name")
+                if isinstance(payload, dict)
+                else None
+            )
+            or dataset_id
+        )
+        resolved_modality = (
+            modality
+            or (entry.data_domain if entry is not None else None)
+            or None
+        )
+        return DatasetLinkView(
+            dataset_id=dataset_id,
+            label=resolved_label,
+            href=f"/datasets/{dataset_id}",
+            api_path=f"/api/datasets/{dataset_id}",
+            role=role,
+            modality=resolved_modality,
+        )
+
+    def _dataset_links_from_ids(
+        self,
+        dataset_ids: list[str],
+        *,
+        role_map: dict[str, str] | None = None,
+        modality_map: dict[str, str] | None = None,
+    ) -> list[DatasetLinkView]:
+        links: list[DatasetLinkView] = []
+        seen: set[str] = set()
+        for dataset_id in dataset_ids:
+            if not dataset_id or dataset_id in seen:
+                continue
+            seen.add(dataset_id)
+            links.append(
+                self._dataset_link(
+                    dataset_id,
+                    role=(role_map or {}).get(dataset_id),
+                    modality=(modality_map or {}).get(dataset_id),
+                )
+            )
+        return links
+
+    @staticmethod
+    def _dataset_modality_from_domain(data_domain: str | None) -> str | None:
+        normalized = (data_domain or "").strip().lower()
+        if not normalized:
+            return None
+        if normalized == "market":
+            return "market"
+        if normalized in {"sentiment_events", "sentiment", "text", "news"}:
+            return "nlp"
+        return normalized
+
+    def _run_dataset_ids(
+        self,
+        *,
+        dataset_id: str | None,
+        manifest: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> list[str]:
+        candidates: list[str] = []
+        for value in [
+            dataset_id,
+            self._str(manifest.get("dataset_id")),
+            self._str(metadata.get("primary_dataset_id")),
+        ]:
+            if value:
+                candidates.append(value)
+        for source in manifest.get("source_runs", []):
+            if isinstance(source, dict):
+                source_dataset_ids = source.get("dataset_ids")
+                if isinstance(source_dataset_ids, list):
+                    candidates.extend(
+                        str(item) for item in source_dataset_ids if isinstance(item, str) and item
+                    )
+        for collection in [
+            manifest.get("source_dataset_ids"),
+            metadata.get("source_dataset_ids"),
+            metadata.get("dataset_ids"),
+        ]:
+            if isinstance(collection, list):
+                candidates.extend(str(item) for item in collection if isinstance(item, str) and item)
+        deduped: list[str] = []
+        for item in candidates:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
+
+    def _run_composition(self, manifest: dict[str, Any]) -> RunCompositionView | None:
+        composition = manifest.get("composition")
+        if not isinstance(composition, dict):
+            return None
+        source_runs_payload = composition.get("source_runs")
+        if not isinstance(source_runs_payload, list) or not source_runs_payload:
+            return None
+        source_runs: list[RunCompositionSourceView] = []
+        for source in source_runs_payload:
+            if not isinstance(source, dict):
+                continue
+            source_run_id = self._str(source.get("run_id"))
+            if not source_run_id:
+                continue
+            source_dataset_ids = [
+                str(item)
+                for item in source.get("dataset_ids", [])
+                if isinstance(item, str) and item
+            ]
+            source_runs.append(
+                RunCompositionSourceView(
+                    run_id=source_run_id,
+                    model_name=self._str(source.get("model_name")) or source_run_id,
+                    modality=self._str(source.get("modality")),
+                    weight=self._float(source.get("weight")),
+                    dataset_ids=source_dataset_ids,
+                    datasets=self._dataset_links_from_ids(source_dataset_ids),
+                )
+            )
+        if not source_runs:
+            return None
+        rules = [
+            str(item)
+            for item in composition.get("rules", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        return RunCompositionView(
+            fusion_strategy=self._str(composition.get("fusion_strategy")) or "late_score_blend",
+            source_runs=source_runs,
+            rules=rules,
+        )
+
+    def _official_composition_status(
+        self,
+        manifest: dict[str, Any],
+    ) -> tuple[bool | None, list[str]]:
+        composition = manifest.get("composition")
+        if not isinstance(composition, dict):
+            return None, []
+        source_runs_payload = composition.get("source_runs")
+        if not isinstance(source_runs_payload, list) or not source_runs_payload:
+            return (
+                False,
+                ["This composed run is missing source-run metadata required for official backtests."],
+            )
+
+        blocking_reasons: list[str] = []
+        for source in source_runs_payload:
+            if not isinstance(source, dict):
+                blocking_reasons.append(
+                    "This composed run contains malformed source-run metadata required for official backtests."
+                )
+                continue
+            source_run_id = self._str(source.get("run_id"))
+            modality = self._str(source.get("modality"))
+            if not source_run_id or not modality:
+                blocking_reasons.append(
+                    "This composed run has a source entry without run_id/modality metadata required for official backtests."
+                )
+
+        blocking_reasons = list(dict.fromkeys(blocking_reasons))
+        return (len(blocking_reasons) == 0, blocking_reasons)
+
+    def _backtest_dataset_ids(self, row: dict[str, Any]) -> list[str]:
+        candidates: list[str] = []
+        for value in [
+            self._str(row.get("dataset_id")),
+            self._str((row.get("protocol_metadata") or {}).get("primary_dataset_id"))
+            if isinstance(row.get("protocol_metadata"), dict)
+            else None,
+        ]:
+            if value:
+                candidates.append(value)
+        protocol_metadata = row.get("protocol_metadata")
+        if isinstance(protocol_metadata, dict):
+            for key in ["dataset_ids"]:
+                collection = protocol_metadata.get(key)
+                if isinstance(collection, list):
+                    candidates.extend(
+                        str(item) for item in collection if isinstance(item, str) and item
+                    )
+        deduped: list[str] = []
+        for item in candidates:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
+
+    def _backtest_alignment(self, row: dict[str, Any]) -> BacktestAlignmentView | None:
+        protocol_metadata = row.get("protocol_metadata")
+        if not isinstance(protocol_metadata, dict):
+            return None
+        dataset_ids = self._backtest_dataset_ids(row)
+        if not dataset_ids and not protocol_metadata.get("alignment_status"):
+            return None
+        dataset_roles = (
+            protocol_metadata.get("dataset_roles")
+            if isinstance(protocol_metadata.get("dataset_roles"), dict)
+            else {}
+        )
+        dataset_modalities = (
+            protocol_metadata.get("dataset_modalities")
+            if isinstance(protocol_metadata.get("dataset_modalities"), dict)
+            else {}
+        )
+        notes = [
+            str(item)
+            for item in protocol_metadata.get("alignment_notes", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        return BacktestAlignmentView(
+            fusion_strategy=self._str(protocol_metadata.get("fusion_strategy")),
+            dataset_ids=dataset_ids,
+            datasets=self._dataset_links_from_ids(
+                dataset_ids,
+                role_map={str(key): str(value) for key, value in dataset_roles.items()},
+                modality_map={str(key): str(value) for key, value in dataset_modalities.items()},
+            ),
+            alignment_status=self._str(protocol_metadata.get("alignment_status")),
+            notes=notes,
+        )
+
+    @staticmethod
+    def _is_multimodal_reference_model(model_name: str | None) -> bool:
+        return (model_name or "").strip().lower() == "multimodal_reference"
 
     def workbench_overview(self, jobs: list[JobStatusView]) -> WorkbenchOverviewView:
         runs = self.list_runs(
@@ -287,6 +1177,16 @@ class ResearchWorkbenchService:
         feature_importance = self._metrics(feature_importance_payload.get("feature_importance", {}))
         model_name = str((tracking.get("params") or {}).get("model_name") or metadata.get("model_name") or run_id)
         dataset_id = (tracking.get("params") or {}).get("dataset_id") or manifest.get("dataset_id")
+        primary_dataset_id = str(dataset_id) if isinstance(dataset_id, str) else None
+        dataset_ids = self._run_dataset_ids(
+            dataset_id=primary_dataset_id,
+            manifest=manifest,
+            metadata=metadata,
+        )
+        composition = self._run_composition(manifest)
+        official_template_eligible, official_blocking_reasons = self._official_composition_status(
+            manifest
+        )
         predictions = self._prediction_artifacts(
             run_id,
             evaluation_summary=evaluation_summary,
@@ -314,14 +1214,18 @@ class ResearchWorkbenchService:
         return RunDetailView(
             run_id=run_id,
             model_name=model_name,
-            dataset_id=(str(dataset_id) if isinstance(dataset_id, str) else None),
+            dataset_id=primary_dataset_id,
+            dataset_ids=dataset_ids,
+            datasets=self._dataset_links_from_ids(dataset_ids),
+            primary_dataset_id=primary_dataset_id,
+            composition=composition,
             task_type=self._str(evaluation_summary.get("task_type"))
             or self._str((metadata.get("model_spec") or {}).get("task_type"))
             or "regression",
             artifact_format_status=artifact_format_status,
             missing_artifacts=missing_artifacts,
-            family=self.model_families.get(model_name),
-            backend=self._backend(model_name),
+            family=self.model_families.get(model_name) or self._str(metadata.get("model_family")),
+            backend=self._str(metadata.get("backend")) or self._backend(model_name),
             status="success" if artifact_format_status == "complete" else ("partial" if tracking or manifest else "legacy"),
             created_at=self._dt(tracking.get("created_at")) or self._dt(manifest.get("created_at")),
             metrics=(
@@ -349,6 +1253,8 @@ class ResearchWorkbenchService:
                 ("evaluation_summary", self.repository.artifact_root / "models" / run_id / "evaluation_summary.json"),
             ]),
             notes=notes,
+            official_template_eligible=official_template_eligible,
+            official_blocking_reasons=official_blocking_reasons,
             summary=StableSummaryView(status="success", headline=f"Run {run_id}"),
             pipeline_summary=None,
             review_summary=self._review_unavailable(),
@@ -359,7 +1265,9 @@ class ResearchWorkbenchService:
     def list_benchmarks(self) -> list[BenchmarkListItemView]:
         items: list[BenchmarkListItemView] = []
         for path in self.repository.list_paths("benchmarks/*.json"):
-            payload = self._load(path)
+            payload = self._load_benchmark_payload(path)
+            if payload is None:
+                continue
             leaderboard = payload.get("leaderboard", [])
             top = leaderboard[0] if isinstance(leaderboard, list) and leaderboard else {}
             items.append(
@@ -376,8 +1284,8 @@ class ResearchWorkbenchService:
         return sorted(items, key=lambda x: x.updated_at, reverse=True)
 
     def get_benchmark_detail(self, benchmark_name: str) -> BenchmarkDetailView | None:
-        path = self.repository.artifact_root / "benchmarks" / f"{benchmark_name}.json"
-        if not path.exists():
+        payload, path = self._resolve_benchmark_payload(benchmark_name)
+        if payload is None or path is None:
             return None
 
         def to_row(r: dict[str, Any]) -> BenchmarkRowView:
@@ -393,7 +1301,6 @@ class ResearchWorkbenchService:
                 artifact_uri=self._str(r.get("artifact_uri")),
             )
 
-        payload = self._load(path)
         leaderboard = [to_row(r) for r in payload.get("leaderboard", []) if isinstance(r, dict)]
         return BenchmarkDetailView(
             benchmark_name=benchmark_name,
@@ -420,6 +1327,36 @@ class ResearchWorkbenchService:
             glossary_hints=self._glossary(["benchmark", "mae"]),
         )
 
+    def _resolve_benchmark_payload(
+        self,
+        benchmark_name: str,
+    ) -> tuple[dict[str, Any] | None, Path | None]:
+        path = self.repository.artifact_root / "benchmarks" / f"{benchmark_name}.json"
+        payload = self._load_benchmark_payload(path)
+        if payload is not None:
+            return payload, path
+        if (
+            benchmark_name == "baseline_family_walk_forward"
+            and self.facade is not None
+            and not path.exists()
+        ):
+            self.facade.run_baseline_benchmark()
+            payload = self._load_benchmark_payload(path)
+            if payload is not None:
+                return payload, path
+        return None, None
+
+    def _load_benchmark_payload(self, path: Path) -> dict[str, Any] | None:
+        payload = self._load(path)
+        if self._is_benchmark_payload(payload):
+            return payload
+        return None
+
+    def _is_benchmark_payload(self, payload: dict[str, Any]) -> bool:
+        leaderboard = payload.get("leaderboard")
+        results = payload.get("results")
+        return isinstance(leaderboard, list) and isinstance(results, list)
+
     def list_backtests(
         self,
         *,
@@ -435,10 +1372,16 @@ class ResearchWorkbenchService:
                 if isinstance(row.get("simulation_metrics"), dict)
                 else {}
             )
+            dataset_ids = self._backtest_dataset_ids(row)
+            primary_dataset_id = dataset_ids[0] if dataset_ids else self._str(row.get("dataset_id"))
             item = BacktestListItemView(
                 backtest_id=str(row.get("backtest_id", "unknown_backtest")),
                 run_id=self._str(row.get("run_id")),
                 model_name=self._str(row.get("model_name")),
+                dataset_id=primary_dataset_id,
+                dataset_ids=dataset_ids,
+                datasets=self._dataset_links_from_ids(dataset_ids),
+                primary_dataset_id=primary_dataset_id,
                 # Report materialization success is the primary lifecycle status.
                 # Consistency checks remain visible via passed_consistency_checks and warnings.
                 status="success",
@@ -488,10 +1431,17 @@ class ResearchWorkbenchService:
                 continue
             artifacts = self._backtest_artifacts(row)
             protocol = self._protocol_result_from_row(row)
+            dataset_ids = self._backtest_dataset_ids(row)
+            primary_dataset_id = dataset_ids[0] if dataset_ids else self._str(row.get("dataset_id"))
             return BacktestReportView(
                 backtest_id=backtest_id,
                 model_name=self._str(row.get("model_name")),
                 run_id=self._str(row.get("run_id")),
+                dataset_id=primary_dataset_id,
+                dataset_ids=dataset_ids,
+                datasets=self._dataset_links_from_ids(dataset_ids),
+                primary_dataset_id=primary_dataset_id,
+                alignment=self._backtest_alignment(row),
                 template_id=self._protocol_template_id(row),
                 official=self._protocol_official(row),
                 protocol_version=self._protocol_version(row),
@@ -663,6 +1613,8 @@ class ResearchWorkbenchService:
     def create_model_template(self, request: ModelTemplateCreateRequest) -> ModelTemplateView:
         if request.model_name not in self._registry_models():
             raise ValueError(f"model '{request.model_name}' is not registered")
+        if self._is_multimodal_reference_model(request.model_name):
+            raise ValueError("multimodal_reference 仅作为系统内部融合模板，不允许直接创建。")
         now = datetime.now(UTC)
         item = ModelTemplateView(
             template_id=f"custom-{uuid.uuid4().hex}",
@@ -693,6 +1645,8 @@ class ResearchWorkbenchService:
         if not path.exists():
             return None
         cur = ModelTemplateView.model_validate_json(path.read_text(encoding="utf-8"))
+        if self._is_multimodal_reference_model(cur.model_name):
+            raise ValueError("multimodal_reference 模板由系统保留，不能作为普通模板编辑。")
         nxt = cur.model_copy(
             update={
                 "name": request.name if request.name is not None else cur.name,
@@ -734,6 +1688,8 @@ class ResearchWorkbenchService:
                     metrics=detail.metrics,
                     note=detail.note,
                     is_deleted=detail.is_deleted,
+                    official_template_eligible=detail.official_template_eligible,
+                    official_blocking_reasons=list(detail.official_blocking_reasons),
                     links=detail.links,
                 )
             )
@@ -755,6 +1711,8 @@ class ResearchWorkbenchService:
             metrics=detail.metrics,
             note=self._str(meta.get("note")),
             is_deleted=bool(meta.get("is_deleted", False)),
+            official_template_eligible=detail.official_template_eligible,
+            official_blocking_reasons=list(detail.official_blocking_reasons),
             artifacts=detail.artifacts,
             tracking_params=detail.tracking_params,
             model_spec={},
@@ -878,6 +1836,7 @@ class ResearchWorkbenchService:
                 readiness.model_dump(mode="json") if readiness is not None else detail_meta["readiness_profile"]
             ),
             training_profile=detail_meta["training_profile"],
+            download_href=f"/api/datasets/{dataset_id}/download",
             links=[
                 DeepLinkView(
                     kind="dataset_series",
@@ -900,44 +1859,473 @@ class ResearchWorkbenchService:
             ],
         )
 
+    def _dataset_source_vendors(
+        self,
+        manifest: dict[str, Any],
+        *,
+        points: list[NormalizedSeriesPoint] | None = None,
+        payload: dict[str, Any] | None = None,
+        data_domain: str | None = None,
+    ) -> list[str]:
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        feature_view_ref = dict((payload or {}).get("feature_view_ref") or {})
+        actual_vendors = list(
+            dict.fromkeys(
+                [
+                    self._canonical_sentiment_vendor(
+                        self._str(source.get("vendor")) or self._str(source.get("source_vendor"))
+                    )
+                    for source in (acquisition_profile.get("fusion_sources") or [])
+                    if isinstance(source, dict)
+                    and (
+                        data_domain is None
+                        or self._str(source.get("data_domain")) == data_domain
+                    )
+                    and (
+                        self._str(source.get("vendor")) or self._str(source.get("source_vendor"))
+                    )
+                ]
+                + [
+                    self._canonical_sentiment_vendor(
+                        self._str(source.get("source")) or self._str(source.get("venue"))
+                    )
+                    for source in (feature_view_ref.get("input_data_refs") or [])
+                    if isinstance(source, dict)
+                    and (
+                        data_domain is None
+                        or (
+                            data_domain == "sentiment_events"
+                            and "domain:sentiment_events"
+                            in [str(tag) for tag in source.get("tags", []) if tag is not None]
+                        )
+                    )
+                    and (
+                        self._str(source.get("source")) or self._str(source.get("venue"))
+                    )
+                ]
+            )
+        )
+        if actual_vendors:
+            return actual_vendors
+        if points:
+            point_vendors = list(
+                dict.fromkeys(
+                    [
+                        self._canonical_sentiment_vendor(point.vendor)
+                        for point in points
+                        if isinstance(point.vendor, str)
+                        and point.vendor
+                        and (data_domain is None or point.domain == data_domain)
+                    ]
+                )
+            )
+            if point_vendors:
+                return point_vendors
+        vendors = list(
+            dict.fromkeys(
+                [
+                    self._canonical_sentiment_vendor(self._str(source.get("source_vendor")))
+                    for source in (acquisition_profile.get("source_specs") or [])
+                    if isinstance(source, dict)
+                    and self._str(source.get("source_vendor"))
+                    and (
+                        data_domain is None
+                        or self._str(source.get("data_domain")) == data_domain
+                    )
+                ]
+                or (
+                    [self._canonical_sentiment_vendor(self._str(acquisition_profile.get("source_vendor")))]
+                    if self._str(acquisition_profile.get("source_vendor"))
+                    and (
+                        data_domain is None
+                        or self._str(acquisition_profile.get("data_domain")) == data_domain
+                    )
+                    else []
+                )
+            )
+        )
+        if vendors:
+            return vendors
+        return []
+
+    def _split_range(
+        self,
+        payload: dict[str, Any],
+        key: str,
+    ) -> tuple[datetime | None, datetime | None]:
+        range_payload = (payload.get("split_manifest") or {}).get(key)
+        if not isinstance(range_payload, dict):
+            return None, None
+        return self._dt(range_payload.get("start")), self._dt(range_payload.get("end"))
+
+    def _frequency_step(self, frequency: str | None) -> timedelta | None:
+        if not frequency:
+            return None
+        normalized = frequency.lower().strip()
+        try:
+            if normalized.endswith("m"):
+                return timedelta(minutes=int(normalized[:-1]))
+            if normalized.endswith("h"):
+                return timedelta(hours=int(normalized[:-1]))
+            if normalized.endswith("d"):
+                return timedelta(days=int(normalized[:-1]))
+        except ValueError:
+            return None
+        return None
+
+    def _floor_time_to_frequency(
+        self,
+        value: datetime,
+        frequency: str | None,
+    ) -> datetime:
+        step = self._frequency_step(frequency)
+        if step is None:
+            return value.astimezone(UTC)
+        utc_value = value.astimezone(UTC)
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        bucket_seconds = max(int(step.total_seconds()), 1)
+        elapsed_seconds = int((utc_value - epoch).total_seconds())
+        return epoch + timedelta(seconds=(elapsed_seconds // bucket_seconds) * bucket_seconds)
+
+    def _max_consecutive_empty_bars(
+        self,
+        expected_times: list[datetime],
+        covered_times: set[datetime],
+    ) -> int | None:
+        if not expected_times:
+            return None
+        longest = 0
+        streak = 0
+        for timestamp in expected_times:
+            if timestamp in covered_times:
+                streak = 0
+                continue
+            streak += 1
+            longest = max(longest, streak)
+        return longest
+
+    def _dataset_official_nlp_gate(
+        self,
+        dataset_id: str,
+        payload: dict[str, Any],
+        *,
+        points: list[NormalizedSeriesPoint] | None = None,
+        source_vendors: list[str] | None = None,
+    ) -> dict[str, Any]:
+        summary = self._dataset_summary(payload)
+        manifest = self._dataset_manifest(payload)
+        contains_nlp = self._dataset_contains_nlp(payload)
+        resolved_points = (
+            (
+                points
+                if points is not None
+                else (self._official_reddit_archive_points(payload) or self._dataset_nlp_points(payload))
+            )
+            if contains_nlp
+            else []
+        )
+        event_points = [point for point in resolved_points if point.metric_name == "event_count"]
+        active_event_points = [point for point in event_points if float(point.value or 0.0) > 0.0]
+        vendors = (
+            source_vendors
+            if source_vendors is not None
+            else (
+                self._dataset_source_vendors(
+                    manifest,
+                    points=resolved_points,
+                    payload=payload,
+                    data_domain="sentiment_events",
+                )
+                if contains_nlp
+                else []
+            )
+        )
+        market_bars = self.load_market_bars_for_dataset(dataset_id)
+        market_times = sorted({bar.event_time.astimezone(UTC) for bar in market_bars})
+        market_window_start = market_times[0] if market_times else summary.freshness.data_start_time
+        market_window_end = market_times[-1] if market_times else summary.freshness.data_end_time
+        official_backtest_start, official_backtest_end = self._split_range(payload, "test_range")
+        archival_source_only = bool(vendors) and all(
+            vendor in OFFICIAL_NLP_ARCHIVAL_VENDORS for vendor in vendors
+        )
+        actual_nlp_start = (
+            min((point.available_time for point in event_points), default=None)
+            if event_points
+            else None
+        )
+        actual_nlp_end = (
+            max((point.available_time for point in event_points), default=None)
+            if event_points
+            else None
+        )
+        frequency = summary.frequency or "1h"
+        covered_times = {
+            self._floor_time_to_frequency(point.available_time, frequency)
+            for point in active_event_points
+        }
+        full_expected_times = [
+            timestamp
+            for timestamp in market_times
+            if (market_window_start is None or timestamp >= market_window_start)
+            and (market_window_end is None or timestamp <= market_window_end)
+        ]
+        test_expected_times = [
+            timestamp
+            for timestamp in market_times
+            if (official_backtest_start is None or timestamp >= official_backtest_start)
+            and (official_backtest_end is None or timestamp <= official_backtest_end)
+        ]
+        coverage_ratio = (
+            round(
+                sum(1 for timestamp in full_expected_times if timestamp in covered_times)
+                / len(full_expected_times),
+                4,
+            )
+            if full_expected_times
+            else None
+        )
+        test_coverage_ratio = (
+            round(
+                sum(1 for timestamp in test_expected_times if timestamp in covered_times)
+                / len(test_expected_times),
+                4,
+            )
+            if test_expected_times
+            else None
+        )
+        max_consecutive_empty_bars = self._max_consecutive_empty_bars(
+            test_expected_times,
+            covered_times,
+        )
+
+        seen_event_ids: set[str] = set()
+        preview_event_total = 0
+        duplicate_preview_events = 0
+        linked_event_total = 0
+        for point in active_event_points:
+            preview_events = self._load_json_list(point.dimensions.get("preview_events_json"))
+            candidates = (
+                [item for item in preview_events if isinstance(item, dict)]
+                if preview_events
+                else [
+                    {
+                        "event_id": point.dimensions.get("event_id"),
+                        "symbol": point.dimensions.get("symbol"),
+                    }
+                ]
+            )
+            for index, preview in enumerate(candidates):
+                preview_event_total += 1
+                event_id = (
+                    self._str(preview.get("event_id"))
+                    or self._str(preview.get("url"))
+                    or stable_digest(
+                        {
+                            "point": point.series_key,
+                            "available_time": point.available_time.isoformat(),
+                            "index": index,
+                        }
+                    )
+                )
+                if event_id in seen_event_ids:
+                    duplicate_preview_events += 1
+                else:
+                    seen_event_ids.add(event_id)
+                if (
+                    self._str(preview.get("symbol"))
+                    or self._str(preview.get("entity_key"))
+                    or point.entity_key
+                ):
+                    linked_event_total += 1
+        duplicate_ratio = (
+            round(duplicate_preview_events / preview_event_total, 4)
+            if preview_event_total
+            else 0.0
+        )
+        entity_link_coverage_ratio = (
+            round(linked_event_total / preview_event_total, 4)
+            if preview_event_total
+            else (1.0 if event_points else None)
+        )
+
+        official_template_eligible = bool(
+            market_window_start and market_window_end and official_backtest_start and official_backtest_end
+        )
+        reasons: list[str] = []
+        gate_status: str | None = None
+        if contains_nlp:
+            if not official_template_eligible:
+                gate_status = "failed"
+                reasons.append("Market window or official test window is missing.")
+            if not vendors:
+                gate_status = "failed"
+                reasons.append("No NLP source vendor metadata was recorded.")
+            elif not archival_source_only:
+                gate_status = "failed"
+                reasons.append(
+                    "Official same-template comparison only accepts archival NLP vendors "
+                    f"({', '.join(OFFICIAL_NLP_ARCHIVAL_VENDORS)})."
+                )
+            if actual_nlp_start is None or actual_nlp_end is None:
+                gate_status = "failed"
+                reasons.append("No usable NLP event_count buckets were materialized.")
+            if (
+                test_coverage_ratio is not None
+                and test_coverage_ratio < OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO
+            ):
+                gate_status = "failed"
+                reasons.append(
+                    f"Official test-window NLP coverage {test_coverage_ratio:.1%} is below "
+                    f"{OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO:.0%}."
+                )
+            if (
+                max_consecutive_empty_bars is not None
+                and max_consecutive_empty_bars > OFFICIAL_NLP_MAX_TEST_EMPTY_BARS
+            ):
+                gate_status = "failed"
+                reasons.append(
+                    f"Max consecutive empty NLP gap {max_consecutive_empty_bars} exceeds "
+                    f"{OFFICIAL_NLP_MAX_TEST_EMPTY_BARS} bars."
+                )
+            if duplicate_ratio > OFFICIAL_NLP_MAX_DUPLICATE_RATIO:
+                gate_status = "failed"
+                reasons.append(
+                    f"Duplicate NLP event ratio {duplicate_ratio:.1%} exceeds "
+                    f"{OFFICIAL_NLP_MAX_DUPLICATE_RATIO:.0%}."
+                )
+            if (
+                entity_link_coverage_ratio is not None
+                and entity_link_coverage_ratio < OFFICIAL_NLP_MIN_ENTITY_LINK_COVERAGE_RATIO
+            ):
+                gate_status = "failed"
+                reasons.append(
+                    f"Entity-link coverage {entity_link_coverage_ratio:.1%} is below "
+                    f"{OFFICIAL_NLP_MIN_ENTITY_LINK_COVERAGE_RATIO:.0%}."
+                )
+            if gate_status is None:
+                gate_status = "passed"
+                reasons.append(
+                    "Official NLP gate passed: archival source, aligned time window, and quality thresholds satisfied."
+                )
+
+        return {
+            "requested_start_time": market_window_start,
+            "requested_end_time": market_window_end,
+            "actual_start_time": actual_nlp_start,
+            "actual_end_time": actual_nlp_end,
+            "market_window_start_time": market_window_start,
+            "market_window_end_time": market_window_end,
+            "official_backtest_start_time": official_backtest_start,
+            "official_backtest_end_time": official_backtest_end,
+            "official_template_eligible": official_template_eligible if contains_nlp else True,
+            "archival_source_only": archival_source_only if contains_nlp else None,
+            "coverage_ratio": coverage_ratio if contains_nlp else None,
+            "test_coverage_ratio": test_coverage_ratio if contains_nlp else None,
+            "max_consecutive_empty_bars": max_consecutive_empty_bars if contains_nlp else None,
+            "duplicate_ratio": duplicate_ratio if contains_nlp else None,
+            "entity_link_coverage_ratio": entity_link_coverage_ratio if contains_nlp else None,
+            "official_template_gate_status": gate_status,
+            "official_template_gate_reasons": reasons,
+        }
+
+    def _official_reddit_archive_points(self, payload: dict[str, Any]) -> list[NormalizedSeriesPoint]:
+        manifest = self._dataset_manifest(payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        if acquisition_profile.get("official_benchmark_version") != OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION:
+            return []
+        reddit_input_ref = next(
+            (
+                input_ref
+                for input_ref in self._dataset_input_refs(payload)
+                if self._canonical_sentiment_vendor(self._str(input_ref.get("source"))) == "reddit_archive"
+            ),
+            None,
+        )
+        if not isinstance(reddit_input_ref, dict):
+            return []
+        time_range = reddit_input_ref.get("time_range")
+        if not isinstance(time_range, dict):
+            return []
+        start_time = self._dt(time_range.get("start"))
+        end_time = self._dt(time_range.get("end"))
+        if start_time is None or end_time is None:
+            return []
+        symbol = (
+            self._str(reddit_input_ref.get("symbol"))
+            or self._str(reddit_input_ref.get("entity_key"))
+            or "BTC"
+        ).upper()
+        asset_id = "BTC" if "BTC" in symbol else symbol
+        connector = RedditArchiveSentimentConnector(self.repository.artifact_root)
+        return connector.store.query_points(
+            asset_id=asset_id,
+            start_time=start_time,
+            end_time=end_time,
+            vendor="reddit_archive",
+        )
+
     def get_dataset_nlp_inspection(self, dataset_id: str) -> DatasetNlpInspectionView | None:
         payload = self._dataset_ref(dataset_id)
         if payload is None:
             return None
         manifest = self._dataset_manifest(payload)
-        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
-        summary = self._dataset_summary(payload)
-        source_vendors = list(
-            dict.fromkeys(
-                [
-                    self._str(source.get("source_vendor"))
-                    for source in (acquisition_profile.get("source_specs") or [])
-                    if isinstance(source, dict) and self._str(source.get("source_vendor"))
-                ]
-                or ([self._str(acquisition_profile.get("source_vendor"))] if self._str(acquisition_profile.get("source_vendor")) else [])
-            )
+        source_vendors = self._dataset_source_vendors(
+            manifest,
+            payload=payload,
+            data_domain="sentiment_events",
+        )
+        gate_summary = self._dataset_official_nlp_gate(
+            dataset_id,
+            payload,
+            source_vendors=source_vendors,
         )
         if not self._dataset_contains_nlp(payload):
             return DatasetNlpInspectionView(
                 dataset_id=dataset_id,
                 contains_nlp=False,
                 coverage_summary="当前数据集不包含 NLP / 舆情特征。",
-                requested_start_time=summary.freshness.data_start_time if summary else None,
-                requested_end_time=summary.freshness.data_end_time if summary else None,
+                requested_start_time=gate_summary["requested_start_time"],
+                requested_end_time=gate_summary["requested_end_time"],
                 source_vendors=source_vendors,
+                official_template_eligible=gate_summary["official_template_eligible"],
+                market_window_start_time=gate_summary["market_window_start_time"],
+                market_window_end_time=gate_summary["market_window_end_time"],
+                official_backtest_start_time=gate_summary["official_backtest_start_time"],
+                official_backtest_end_time=gate_summary["official_backtest_end_time"],
             )
 
         points = self._dataset_nlp_points(payload)
         sample_features = self._dataset_nlp_sample_feature_preview(payload)
+        gate_summary = self._dataset_official_nlp_gate(
+            dataset_id,
+            payload,
+            points=points,
+            source_vendors=source_vendors,
+        )
         if not points:
             return DatasetNlpInspectionView(
                 dataset_id=dataset_id,
                 contains_nlp=True,
                 coverage_summary="检测到 NLP 特征入口，但当前没有可供研究检查的事件快照。",
-                requested_start_time=summary.freshness.data_start_time if summary else None,
-                requested_end_time=summary.freshness.data_end_time if summary else None,
+                requested_start_time=gate_summary["requested_start_time"],
+                requested_end_time=gate_summary["requested_end_time"],
+                actual_start_time=gate_summary["actual_start_time"],
+                actual_end_time=gate_summary["actual_end_time"],
                 source_vendors=source_vendors,
                 sample_feature_preview=sample_features,
+                official_template_gate_status=gate_summary["official_template_gate_status"],
+                official_template_gate_reasons=gate_summary["official_template_gate_reasons"],
+                official_template_eligible=gate_summary["official_template_eligible"],
+                archival_source_only=gate_summary["archival_source_only"],
+                coverage_ratio=gate_summary["coverage_ratio"],
+                test_coverage_ratio=gate_summary["test_coverage_ratio"],
+                max_consecutive_empty_bars=gate_summary["max_consecutive_empty_bars"],
+                duplicate_ratio=gate_summary["duplicate_ratio"],
+                entity_link_coverage_ratio=gate_summary["entity_link_coverage_ratio"],
+                market_window_start_time=gate_summary["market_window_start_time"],
+                market_window_end_time=gate_summary["market_window_end_time"],
+                official_backtest_start_time=gate_summary["official_backtest_start_time"],
+                official_backtest_end_time=gate_summary["official_backtest_end_time"],
             )
 
         preview_map: dict[str, DatasetNlpEventPreviewView] = {}
@@ -950,10 +2338,14 @@ class ResearchWorkbenchService:
 
         for point in points:
             coverage_start = (
-                point.event_time if coverage_start is None else min(coverage_start, point.event_time)
+                point.available_time
+                if coverage_start is None
+                else min(coverage_start, point.available_time)
             )
             coverage_end = (
-                point.event_time if coverage_end is None else max(coverage_end, point.event_time)
+                point.available_time
+                if coverage_end is None
+                else max(coverage_end, point.available_time)
             )
             if point.metric_name == "event_count":
                 timeline = timeline_stats.setdefault(
@@ -1042,17 +2434,17 @@ class ResearchWorkbenchService:
         coverage_summary = (
             f"NLP 实际覆盖 {len(event_timeline)} 个 1h 时间桶，"
             f"去重后 {len(preview_map)} 条文本事件，"
-            f"实际事件时间 {coverage_start.isoformat() if coverage_start else '--'}"
+            f"实际可用时间 {coverage_start.isoformat() if coverage_start else '--'}"
             f" 到 {coverage_end.isoformat() if coverage_end else '--'}。"
         )
         return DatasetNlpInspectionView(
             dataset_id=dataset_id,
             contains_nlp=True,
             coverage_summary=coverage_summary,
-            requested_start_time=summary.freshness.data_start_time if summary else None,
-            requested_end_time=summary.freshness.data_end_time if summary else None,
-            actual_start_time=coverage_start,
-            actual_end_time=coverage_end,
+            requested_start_time=gate_summary["requested_start_time"],
+            requested_end_time=gate_summary["requested_end_time"],
+            actual_start_time=gate_summary["actual_start_time"] or coverage_start,
+            actual_end_time=gate_summary["actual_end_time"] or coverage_end,
             source_vendors=source_vendors,
             keyword_summary=[
                 DatasetNlpKeywordView(term=term, score=float(count), count=count)
@@ -1077,17 +2469,39 @@ class ResearchWorkbenchService:
             ],
             recent_event_previews=previews,
             sample_feature_preview=sample_features,
+            official_template_gate_status=gate_summary["official_template_gate_status"],
+            official_template_gate_reasons=gate_summary["official_template_gate_reasons"],
+            official_template_eligible=gate_summary["official_template_eligible"],
+            archival_source_only=gate_summary["archival_source_only"],
+            coverage_ratio=gate_summary["coverage_ratio"],
+            test_coverage_ratio=gate_summary["test_coverage_ratio"],
+            max_consecutive_empty_bars=gate_summary["max_consecutive_empty_bars"],
+            duplicate_ratio=gate_summary["duplicate_ratio"],
+            entity_link_coverage_ratio=gate_summary["entity_link_coverage_ratio"],
+            market_window_start_time=gate_summary["market_window_start_time"],
+            market_window_end_time=gate_summary["market_window_end_time"],
+            official_backtest_start_time=gate_summary["official_backtest_start_time"],
+            official_backtest_end_time=gate_summary["official_backtest_end_time"],
         )
 
     def get_dataset_dependencies(self, dataset_id: str) -> DatasetDependenciesResponse | None:
-        if self._dataset_ref(dataset_id) is None:
+        payload = self._dataset_ref(dataset_id)
+        if payload is None:
             return None
         dependencies = self.dataset_registry.list_dependencies(dataset_id)
         blocking_items = self._blocking_dataset_dependencies(dataset_id)
+        protection_meta = self._dataset_protection_meta(dataset_id, payload)
+        can_delete = not protection_meta["is_protected"]
+        deletion_reason = (
+            "系统推荐数据集会被固定展示并禁止删除。"
+            if protection_meta["is_protected"]
+            else None
+        )
         return DatasetDependenciesResponse(
             dataset_id=dataset_id,
             items=[*[self._dependency_view(item) for item in dependencies], *blocking_items],
-            can_delete=True,
+            can_delete=can_delete,
+            deletion_reason=deletion_reason,
             blocking_items=blocking_items,
         )
 
@@ -1096,6 +2510,11 @@ class ResearchWorkbenchService:
         if entry is None:
             return None
         dependencies = self.get_dataset_dependencies(dataset_id)
+        if dependencies is not None and not dependencies.can_delete:
+            raise ValueError(
+                dependencies.deletion_reason
+                or f"Dataset '{dataset_id}' cannot be deleted because it is protected or still referenced."
+            )
         blocking_items = dependencies.blocking_items if dependencies is not None else []
         delete_targets = [entry, *self._collect_internal_helper_entries(entry)]
         deleted_files: list[str] = []
@@ -1116,6 +2535,21 @@ class ResearchWorkbenchService:
             blocking_items=blocking_items,
             deleted_files=sorted(set(deleted_files)),
         )
+
+    def download_dataset_archive(self, dataset_id: str) -> tuple[str, BytesIO] | None:
+        entry = self._dataset_entry(dataset_id)
+        if entry is None:
+            return None
+        buffer = BytesIO()
+        archive_prefix = f"{dataset_id}_"
+        datasets_root = self.repository.artifact_root / "datasets"
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(datasets_root.glob(f"{archive_prefix}*")):
+                if not path.is_file():
+                    continue
+                archive.write(path, arcname=f"datasets/{path.name}")
+        buffer.seek(0)
+        return (f"{dataset_id}.zip", buffer)
 
     def build_fusion_dataset(self, request: DatasetFusionRequest) -> DatasetFusionBuildResponse:
         if self.facade is None:
@@ -1181,6 +2615,8 @@ class ResearchWorkbenchService:
                     **({"metric_name": source.metric_name} if source.metric_name else {}),
                 },
             )
+            if source.metric_name:
+                points = [point for point in points if point.metric_name == source.metric_name]
             if not points:
                 raise ValueError(
                     f"Fusion source '{source.data_domain}/{source.vendor}/{source.identifier}' returned no rows."
@@ -1889,7 +3325,7 @@ class ResearchWorkbenchService:
         )
 
         label_horizon = max(1, int(request.build_config.label_horizon))
-        uses_real_market_labels = primary_vendor == "reddit_history_csv"
+        uses_real_market_labels = primary_vendor == "reddit_archive"
         label_feature = (
             "forward_return_1"
             if uses_real_market_labels
@@ -2395,10 +3831,10 @@ class ResearchWorkbenchService:
                 self._dataset_option("bitstamp_archive", "Bitstamp Archive", "BTC/USD 历史 1h 价格线，优先用于真实历史训练与回测。"),
                 self._dataset_option("fred", "FRED", "macro 域首批真实连接器。"),
                 self._dataset_option("defillama", "DeFiLlama", "on_chain 域首批真实连接器。"),
-                self._dataset_option("gnews", "GNews / Google News", "sentiment_events 实时新闻源。", True),
+                self._dataset_option("news_archive", "News Archive", "sentiment_events 本地新闻归档源，优先用于稳定历史回放。"),
+                self._dataset_option("gnews", "GNews / Google News", "sentiment_events 实时新闻源。"),
                 self._dataset_option("gdelt", "GDELT DOC 2", "sentiment_events 候选历史新闻源，当前环境可能受限流影响。"),
-                self._dataset_option("reddit_history_csv", "Reddit History CSV", "基于本地 bitcoin_reddit_all.csv 的历史 Reddit 文本库，优先走 DB-first 快照。"),
-                self._dataset_option("reddit_public", "Reddit Public", "sentiment_events 社交源。"),
+                self._dataset_option("reddit_archive", "Reddit Archive", "统一的 Reddit 历史归档源，优先查本地数据库，不足部分再补采。", True),
                 self._dataset_option("contract_only", "Contract Only", "仅冻结接口，不承诺本期真实拉取。"),
                 self._dataset_option("internal_smoke", "内部样例", "保留给 smoke 与现有自动化测试。"),
             ],
@@ -2485,7 +3921,12 @@ class ResearchWorkbenchService:
                 },
                 "sentiment_events": {
                     "supports_real_ingestion": True,
-                    "supported_vendors": ["gnews", "gdelt", "reddit_public", "reddit_history_csv"],
+                    "supported_vendors": [
+                        "news_archive",
+                        "gnews",
+                        "gdelt",
+                        "reddit_archive",
+                    ],
                     "supported_dataset_types": ["display_slice", "training_panel"],
                     "supported_frequencies": ["1h"],
                     "supports_multi_source_same_domain": True,
@@ -2619,6 +4060,7 @@ class ResearchWorkbenchService:
         )
         temporal_safety_status = self._str(manifest.get("temporal_safety_status")) or "passed"
         freshness_status = self._str(manifest.get("freshness_status")) or summary.freshness.status
+        nlp_gate = self._dataset_official_nlp_gate(dataset_id, payload)
 
         blocking_issues: list[str] = []
         warnings: list[str] = []
@@ -2655,6 +4097,8 @@ class ResearchWorkbenchService:
             warnings.append("fallback_source_used")
         if entity_scope == "multi_asset" and entity_count <= 3:
             warnings.append("multi_asset_universe_is_small")
+        if nlp_gate["official_template_gate_status"] == "failed":
+            warnings.append("official_nlp_gate_failed")
 
         readiness_status = self._str(payload.get("readiness_status")) or self._str(manifest.get("readiness_status"))
         if blocking_issues:
@@ -2675,6 +4119,8 @@ class ResearchWorkbenchService:
             recommended_next_actions.append("优先切换到真实来源，避免长期依赖 fallback 样本。")
         if freshness_status in {"stale", "outdated", "warning"}:
             recommended_next_actions.append("刷新或重采集底层数据，再生成训练数据集。")
+        if nlp_gate["official_template_gate_status"] == "failed":
+            recommended_next_actions.append("补齐与 market 模板一致时间窗的 archival NLP 数据，并通过官方质量门禁后再参与 official backtest。")
 
         return DatasetReadinessSummaryView(
             dataset_id=dataset_id,
@@ -2698,6 +4144,23 @@ class ResearchWorkbenchService:
             temporal_safety_status=temporal_safety_status,
             freshness_status=freshness_status,
             recommended_next_actions=list(dict.fromkeys(recommended_next_actions)),
+            official_template_eligible=nlp_gate["official_template_eligible"],
+            official_nlp_gate_status=nlp_gate["official_template_gate_status"],
+            official_nlp_gate_reasons=nlp_gate["official_template_gate_reasons"],
+            archival_nlp_source_only=nlp_gate["archival_source_only"],
+            nlp_requested_start_time=nlp_gate["requested_start_time"],
+            nlp_requested_end_time=nlp_gate["requested_end_time"],
+            nlp_actual_start_time=nlp_gate["actual_start_time"],
+            nlp_actual_end_time=nlp_gate["actual_end_time"],
+            market_window_start_time=nlp_gate["market_window_start_time"],
+            market_window_end_time=nlp_gate["market_window_end_time"],
+            official_backtest_start_time=nlp_gate["official_backtest_start_time"],
+            official_backtest_end_time=nlp_gate["official_backtest_end_time"],
+            nlp_coverage_ratio=nlp_gate["coverage_ratio"],
+            nlp_test_coverage_ratio=nlp_gate["test_coverage_ratio"],
+            nlp_max_consecutive_empty_bars=nlp_gate["max_consecutive_empty_bars"],
+            nlp_duplicate_ratio=nlp_gate["duplicate_ratio"],
+            nlp_entity_link_coverage_ratio=nlp_gate["entity_link_coverage_ratio"],
         )
 
     def _resolved_dataset_type(
@@ -2710,7 +4173,12 @@ class ResearchWorkbenchService:
         dataset_type = (
             self._str(acquisition_profile.get("dataset_type"))
             or self._str((payload.get("sample_policy") or {}).get("recommended_training_use"))
-            or "display_slice"
+            or (
+                "training_panel"
+                if isinstance((payload.get("split_manifest") or {}).get("train_range"), dict)
+                and bool(payload.get("label_spec"))
+                else "display_slice"
+            )
         )
         if dataset_type in {
             "display_slice",
@@ -3156,16 +4624,19 @@ class ResearchWorkbenchService:
                 continue
             manifest = self._load(model_dir / "train_manifest.json") or self._load(model_dir / "manifest.json")
             tracking = self.repository.read_json_if_exists(f"tracking/{model_dir.name}.json") or {}
-            manifest_dataset_id = self._str(manifest.get("dataset_id"))
-            tracking_dataset_id = self._str((tracking.get("params") or {}).get("dataset_id"))
-            dataset_ref_uri = self._str(manifest.get("dataset_ref_uri"))
-            if dataset_id not in {manifest_dataset_id, tracking_dataset_id} and dataset_ref_uri != f"dataset://{dataset_id}":
+            metadata = self._load(model_dir / "metadata.json")
+            run_dataset_ids = self._run_dataset_ids(
+                dataset_id=self._str((tracking.get("params") or {}).get("dataset_id"))
+                or self._str(manifest.get("dataset_id")),
+                manifest=manifest,
+                metadata=metadata,
+            )
+            if dataset_id not in run_dataset_ids and self._str(manifest.get("dataset_ref_uri")) != f"dataset://{dataset_id}":
                 continue
             run_id = self._str(manifest.get("run_id")) or self._str(tracking.get("run_id")) or model_dir.name
             if run_id in seen_run_ids:
                 continue
             seen_run_ids.add(run_id)
-            metadata = self._load(model_dir / "metadata.json")
             model_name = (
                 self._str((tracking.get("params") or {}).get("model_name"))
                 or self._str((manifest.get("model_artifact") or {}).get("metadata", {}).get("model_name"))
@@ -3184,6 +4655,7 @@ class ResearchWorkbenchService:
                     metadata={
                         "run_id": run_id,
                         "model_name": model_name,
+                        "dataset_ids": run_dataset_ids,
                         "artifact_dir": self.repository.display_uri(model_dir),
                     },
                 )
@@ -3195,8 +4667,8 @@ class ResearchWorkbenchService:
         items: list[DatasetDependencyView] = []
         for row in self._backtest_history_rows():
             run_id = self._str(row.get("run_id"))
-            row_dataset_id = self._str(row.get("dataset_id"))
-            if row_dataset_id != dataset_id and run_id not in run_ids:
+            row_dataset_ids = self._backtest_dataset_ids(row)
+            if dataset_id not in row_dataset_ids and run_id not in run_ids:
                 continue
             backtest_id = str(row.get("backtest_id", "unknown_backtest"))
             model_name = self._str(row.get("model_name")) or run_id or backtest_id
@@ -3212,6 +4684,7 @@ class ResearchWorkbenchService:
                     metadata={
                         "run_id": run_id,
                         "model_name": model_name,
+                        "dataset_ids": row_dataset_ids,
                         "prediction_scope": self._str(row.get("prediction_scope")),
                     },
                 )
@@ -3522,6 +4995,12 @@ class ResearchWorkbenchService:
             "template_name": template_name,
             "official": official,
             "protocol_version": protocol_version,
+            "primary_dataset_id": self._str(job_result.get("dataset_id")),
+            "dataset_ids": [
+                str(item)
+                for item in job_result.get("dataset_ids", [])
+                if isinstance(item, str) and item
+            ],
         }
 
     def _protocol_template_id(self, row: dict[str, Any]) -> str | None:
@@ -3940,17 +5419,47 @@ class ResearchWorkbenchService:
         )
 
     def _dataset_nlp_points(self, payload: dict[str, Any]) -> list[NormalizedSeriesPoint]:
-        candidate_paths: list[Path] = []
         dataset_id = str(payload.get("dataset_id", "unknown"))
-        candidate_paths.append(self.repository.artifact_root / "datasets" / f"{dataset_id}_sentiment_points.json")
+        points: list[NormalizedSeriesPoint] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        candidate_paths: list[Path] = [self.repository.artifact_root / "datasets" / f"{dataset_id}_sentiment_points.json"]
         for input_ref in self._dataset_input_refs(payload):
             if self._input_ref_domain(input_ref) != "sentiment_events":
+                continue
+            source = self._canonical_sentiment_vendor(self._str(input_ref.get("source")))
+            if source == "reddit_archive":
+                time_range = input_ref.get("time_range")
+                start_time = self._dt(time_range.get("start")) if isinstance(time_range, dict) else None
+                end_time = self._dt(time_range.get("end")) if isinstance(time_range, dict) else None
+                if start_time is None or end_time is None:
+                    continue
+                symbol = (
+                    self._str(input_ref.get("symbol"))
+                    or self._str(input_ref.get("entity_key"))
+                    or "BTC"
+                ).upper()
+                asset_id = "BTC" if "BTC" in symbol else symbol
+                connector = RedditArchiveSentimentConnector(self.repository.artifact_root)
+                for point in connector.store.query_points(
+                    asset_id=asset_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    vendor="reddit_archive",
+                ):
+                    key = (
+                        point.vendor,
+                        point.metric_name,
+                        point.entity_key,
+                        point.event_time.isoformat(),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    points.append(point)
                 continue
             storage_uri = self._str(input_ref.get("storage_uri"))
             if storage_uri:
                 candidate_paths.append(self._resolve_artifact_path(storage_uri))
-        points: list[NormalizedSeriesPoint] = []
-        seen: set[tuple[str, str, str, str]] = set()
         for path in candidate_paths:
             if not path.exists():
                 continue
@@ -4000,13 +5509,29 @@ class ResearchWorkbenchService:
 
     def _dataset_bars_rows(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for input_ref in self._dataset_input_refs(payload):
+        input_refs = self._dataset_input_refs(payload)
+        explicit_market_refs = [
+            input_ref
+            for input_ref in input_refs
+            if self._input_ref_domain(input_ref) == "market"
+        ]
+        candidate_refs = explicit_market_refs or [
+            input_ref
+            for input_ref in input_refs
+            if self._input_ref_domain(input_ref) != "sentiment_events"
+        ]
+        for input_ref in candidate_refs:
             storage_uri = self._str(input_ref.get("storage_uri"))
             if not storage_uri:
                 continue
             loaded_rows = self._load(self._resolve_artifact_path(storage_uri)).get("rows", [])
             if isinstance(loaded_rows, list):
-                rows.extend(item for item in loaded_rows if isinstance(item, dict))
+                rows.extend(
+                    item
+                    for item in loaded_rows
+                    if isinstance(item, dict)
+                    and {"event_time", "available_time", "symbol", "open", "high", "low", "close", "volume"}.issubset(item)
+                )
         return rows
 
     def _normalized_market_bars_from_payload(self, payload: dict[str, Any]) -> list[NormalizedMarketBar]:
@@ -4077,7 +5602,9 @@ class ResearchWorkbenchService:
         )
         acquisition_profile = dict(manifest.get("acquisition_profile") or {})
         data_domains = self._resolved_data_domains(acquisition_profile)
-        source_vendor = self._str(acquisition_profile.get("source_vendor")) or (sources[0] if len(sources) == 1 else None)
+        source_vendor = self._canonical_sentiment_vendor(
+            self._str(acquisition_profile.get("source_vendor")) or (sources[0] if len(sources) == 1 else None)
+        )
         exchange = self._str(acquisition_profile.get("exchange")) or (venues[0] if len(venues) == 1 else None)
         frequency = frequencies[0] if len(frequencies) == 1 else (frequencies[0] if frequencies else None)
         asset_ids = [self._str(ref.get("asset_id")) for ref in input_refs if self._str(ref.get("asset_id"))]
@@ -4089,6 +5616,7 @@ class ResearchWorkbenchService:
             (self._str(ref.get("request_origin")) for ref in input_refs if self._str(ref.get("request_origin"))),
             None,
         )
+        protection = self._dataset_protection_meta(dataset_id, payload)
         return DatasetSummaryView(
             dataset_id=dataset_id,
             display_name=display_meta["display_name"],
@@ -4128,6 +5656,10 @@ class ResearchWorkbenchService:
             readiness_status=readiness_status,
             build_status=build_status,
             request_origin=request_origin,
+            is_system_recommended=protection["is_system_recommended"],
+            is_protected=protection["is_protected"],
+            deletion_policy=protection["deletion_policy"],
+            download_available=protection["download_available"],
             links=[
                 DeepLinkView(
                     kind="dataset_detail",
@@ -4147,6 +5679,10 @@ class ResearchWorkbenchService:
             run_id=detail.run_id,
             model_name=detail.model_name,
             dataset_id=detail.dataset_id,
+            dataset_ids=detail.dataset_ids,
+            datasets=detail.datasets,
+            primary_dataset_id=detail.primary_dataset_id,
+            composition=detail.composition,
             family=detail.family,
             backend=detail.backend,
             status=detail.status,
@@ -4184,15 +5720,28 @@ class ResearchWorkbenchService:
             or self._metrics(tracking.get("metrics") or {})
         )
         mae = metrics.get("mae")
+        dataset_id = (
+            self._str((tracking.get("params") or {}).get("dataset_id"))
+            or self._str(manifest.get("dataset_id"))
+        )
+        dataset_ids = self._run_dataset_ids(
+            dataset_id=dataset_id,
+            manifest=manifest,
+            metadata=metadata,
+        )
+        official_template_eligible, official_blocking_reasons = self._official_composition_status(
+            manifest
+        )
         return ExperimentListItem(
             run_id=run_id,
             model_name=model_name,
-            dataset_id=(
-                self._str((tracking.get("params") or {}).get("dataset_id"))
-                or self._str(manifest.get("dataset_id"))
-            ),
-            family=self.model_families.get(model_name),
-            backend=self._backend(model_name),
+            dataset_id=dataset_id,
+            dataset_ids=dataset_ids,
+            datasets=self._dataset_links_from_ids(dataset_ids),
+            primary_dataset_id=dataset_id,
+            composition=self._run_composition(manifest),
+            family=self.model_families.get(model_name) or self._str(metadata.get("model_family")),
+            backend=self._str(metadata.get("backend")) or self._backend(model_name),
             status=(
                 "success"
                 if artifact_format_status == "complete"
@@ -4204,6 +5753,8 @@ class ResearchWorkbenchService:
             metrics=metrics,
             backtest_count=(related_backtest_counts or {}).get(run_id, 0),
             prediction_scopes=prediction_scopes,
+            official_template_eligible=official_template_eligible,
+            official_blocking_reasons=official_blocking_reasons,
             tags={},
         )
 
@@ -4266,6 +5817,7 @@ class ResearchWorkbenchService:
             )
             for name, entry in sorted(self.model_registry_entries.items())
             if bool(self._entry(entry, "enabled", True))
+            and not self._is_multimodal_reference_model(name)
         ]
 
     def _custom_templates(self) -> list[ModelTemplateView]:
@@ -4282,6 +5834,7 @@ class ResearchWorkbenchService:
             name
             for name, entry in self.model_registry_entries.items()
             if bool(self._entry(entry, "enabled", True))
+            and not self._is_multimodal_reference_model(name)
         }
 
     def _entry(self, entry: Any, key: str, default: Any) -> Any:
@@ -4338,8 +5891,10 @@ class ResearchWorkbenchService:
             self._str(ref.get("source")) for ref in input_refs if self._str(ref.get("source"))
         ]
         frequency = frequency_candidates[0] if frequency_candidates else "unknown"
-        source_vendor = self._str(acquisition_profile.get("source_vendor")) or (
-            source_candidates[0] if source_candidates else "unknown_source"
+        source_vendor = self._canonical_sentiment_vendor(
+            self._str(acquisition_profile.get("source_vendor")) or (
+                source_candidates[0] if source_candidates else "unknown_source"
+            )
         )
         entity_scope = self._str(manifest.get("entity_scope")) or (
             "multi_asset" if len(set(symbols)) > 1 else "single_asset"
@@ -4733,7 +6288,6 @@ class ResearchWorkbenchService:
     ) -> dict[str, Any]:
         if not dataset_id:
             return {}
-        detail = self.get_dataset_detail(dataset_id)
         dataset_summary = {
             "dataset_type": self._str(manifest.get("dataset_type")),
             "data_domain": self._str(manifest.get("data_domain")),
@@ -4746,32 +6300,32 @@ class ResearchWorkbenchService:
             "snapshot_version": self._str(manifest.get("snapshot_version")),
             "readiness_status": self._str(manifest.get("dataset_readiness_status")),
         }
-        if detail is None:
+        entry = self._dataset_entry(dataset_id)
+        if entry is None:
             return dataset_summary
-        dataset = detail.dataset
+        payload = entry.payload
+        registry_manifest = entry.manifest or self._dataset_manifest(payload)
+        display_meta = self._dataset_display_meta(payload)
+        acquisition_profile = dict(registry_manifest.get("acquisition_profile") or {})
         dataset_summary.update(
             {
-                "dataset_type": dataset.dataset_type or dataset_summary["dataset_type"],
-                "data_domain": dataset.data_domain or dataset_summary["data_domain"],
-                "data_domains": dataset.data_domains or dataset_summary["data_domains"],
-                "entity_scope": dataset.entity_scope or dataset_summary["entity_scope"],
-                "entity_count": dataset.entity_count or dataset_summary["entity_count"],
-                "feature_schema_hash": detail.schema_profile.get("feature_schema_hash")
+                "dataset_type": entry.dataset_type or dataset_summary["dataset_type"],
+                "data_domain": entry.data_domain or dataset_summary["data_domain"],
+                "data_domains": self._resolved_data_domains(acquisition_profile)
+                or dataset_summary["data_domains"],
+                "entity_scope": entry.entity_scope or dataset_summary["entity_scope"],
+                "entity_count": entry.entity_count or dataset_summary["entity_count"],
+                "feature_schema_hash": self._str(payload.get("feature_schema_hash"))
+                or self._str(registry_manifest.get("feature_schema_hash"))
                 or dataset_summary["feature_schema_hash"],
-                "snapshot_version": dataset.snapshot_version
-                or dataset_summary["snapshot_version"],
-                "readiness_status": dataset.readiness_status
-                or dataset_summary["readiness_status"],
-                "dataset_category": dataset.dataset_category,
-                "sample_count": dataset.sample_count,
-                "feature_count": detail.feature_count,
-                "label_count": detail.label_count,
-                "data_start_time": detail.dataset.freshness.data_start_time.isoformat()
-                if detail.dataset.freshness.data_start_time
-                else None,
-                "data_end_time": detail.dataset.freshness.data_end_time.isoformat()
-                if detail.dataset.freshness.data_end_time
-                else None,
+                "snapshot_version": entry.snapshot_version or dataset_summary["snapshot_version"],
+                "readiness_status": entry.readiness_status or dataset_summary["readiness_status"],
+                "dataset_category": display_meta.get("dataset_category"),
+                "sample_count": entry.usable_row_count,
+                "feature_count": entry.feature_count,
+                "label_count": entry.label_count,
+                "data_start_time": entry.data_start_time,
+                "data_end_time": entry.data_end_time,
             }
         )
         return dataset_summary

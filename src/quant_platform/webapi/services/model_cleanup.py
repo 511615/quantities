@@ -153,6 +153,7 @@ class ModelCleanupService:
             else:
                 path.unlink(missing_ok=True)
             deleted.append(self.repository.display_uri(path))
+        self._remove_run_job_references(run_id)
         return deleted
 
     def normalize_repository(self, *, delete_irreparable: bool = True) -> dict[str, object]:
@@ -255,6 +256,57 @@ class ModelCleanupService:
             "evaluation_summary": model_dir / "evaluation_summary.json",
             "tracking": self.repository.artifact_root / "tracking" / f"{run_id}.json",
         }
+
+    def _remove_run_job_references(self, run_id: str) -> None:
+        jobs_root = self.repository.artifact_root / "webapi" / "jobs"
+        if not jobs_root.exists():
+            return
+        run_href = f"/runs/{run_id}"
+        for path in self.repository.list_paths("webapi/jobs/*.json"):
+            payload = self._load_json(path)
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                continue
+
+            changed = False
+            run_ids = result.get("run_ids")
+            if isinstance(run_ids, list) and any(item == run_id for item in run_ids):
+                result["run_ids"] = [item for item in run_ids if isinstance(item, str) and item != run_id]
+                changed = True
+
+            deeplinks = result.get("deeplinks")
+            if isinstance(deeplinks, dict):
+                detail_href = deeplinks.get("run_detail")
+                if isinstance(detail_href, str) and detail_href.rstrip("/").endswith(run_href):
+                    deeplinks["run_detail"] = None
+                    changed = True
+
+            result_links = result.get("result_links")
+            if isinstance(result_links, list):
+                filtered_links = [
+                    item
+                    for item in result_links
+                    if not (
+                        isinstance(item, dict)
+                        and (
+                            item.get("kind") == "run_detail"
+                            or (
+                                isinstance(item.get("href"), str)
+                                and str(item.get("href")).rstrip("/").endswith(run_href)
+                            )
+                            or (
+                                isinstance(item.get("api_path"), str)
+                                and str(item.get("api_path")).rstrip("/").endswith(run_href)
+                            )
+                        )
+                    )
+                ]
+                if len(filtered_links) != len(result_links):
+                    result["result_links"] = filtered_links
+                    changed = True
+
+            if changed:
+                path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
     def _load_json(self, path: Path) -> dict[str, object]:
         if not path.exists():

@@ -5,6 +5,17 @@ import { App } from "./App";
 import { datasetsFixture, experimentsFixture } from "../test/fixtures";
 import { createFetchMock, jsonResponse } from "../test/mockApi";
 
+function findTrainLink(container: HTMLElement, datasetId: string) {
+  return Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href]')).find((link) => {
+    const href = link.getAttribute("href") ?? "";
+    return (
+      href.startsWith("/models?") &&
+      href.includes("launchTrain=1") &&
+      href.includes(`datasetId=${encodeURIComponent(datasetId)}`)
+    );
+  });
+}
+
 const fetchMock = vi.fn(
   createFetchMock([
     (url) =>
@@ -292,22 +303,29 @@ test("flows from dataset request success CTA into models dataset-aware drawer", 
   fireEvent.click(submitButton as HTMLButtonElement);
 
   await waitFor(() => {
-    const trainLink = container.querySelector(
-      'a[href="/models?launchTrain=1&datasetId=frontend-contract-smoke"]',
+    const urls = fetchMock.mock.calls.map(([input]) =>
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url,
     );
-    expect(trainLink).not.toBeNull();
+    expect(urls.some((url) => url.endsWith("/api/jobs/job-dataset-flow"))).toBe(true);
+  }, { timeout: 5000 });
+
+  const trainLink = await waitFor(() => {
+    const link = findTrainLink(container, "frontend-contract-smoke");
+    expect(link).toBeTruthy();
+    return link as HTMLAnchorElement;
+  }, { timeout: 5000 });
+  fireEvent.click(trainLink);
+
+  await waitFor(() => expect(window.location.pathname).toBe("/models"));
+  await waitFor(() => {
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("launchTrain")).toBe("1");
+    expect(params.get("datasetId")).toBe("frontend-contract-smoke");
   });
-
-  const trainLink = container.querySelector(
-    'a[href="/models?launchTrain=1&datasetId=frontend-contract-smoke"]',
-  );
-  fireEvent.click(trainLink as HTMLAnchorElement);
-
-  await waitFor(() =>
-    expect(window.location.pathname + window.location.search).toBe(
-      "/models?launchTrain=1&datasetId=frontend-contract-smoke",
-    ),
-  );
 
   await waitFor(() => {
     const urls = fetchMock.mock.calls.map(([input]) =>

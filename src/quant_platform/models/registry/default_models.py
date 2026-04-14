@@ -203,7 +203,7 @@ def _default_model_config() -> ModelConfig:
                     "default_hyperparams": {
                         "lookback": 3,
                         "text_feature_prefixes": ["text_", "sentiment_", "news_"],
-                        "text_weight": 0.5,
+                        "fusion_strategy": "late_score_blend",
                     },
                     "aliases": ["multimodal"],
                     "benchmark_eligible": True,

@@ -24,7 +24,7 @@ const COPY = {
   backtestTitle: "\u53d1\u8d77\u56de\u6d4b",
   futureTitle: "\u6570\u636e\u5c42\u4efb\u52a1",
   futureDescription:
-    "\u540e\u7aef\u8fd8\u6ca1\u6709\u5f00\u653e ingestion sync \u548c dataset build \u63a5\u53e3\uff0c\u8fd9\u91cc\u5148\u4fdd\u7559\u53d7\u63a7\u5360\u4f4d\u6309\u94ae\u548c\u7edf\u4e00\u9519\u8bef\u8bed\u4e49\u3002",
+    "\u540e\u7aef\u8fd8\u6ca1\u6709\u5f00\u653e\u6570\u636e\u540c\u6b65\u548c\u6570\u636e\u96c6\u6784\u5efa\u63a5\u53e3\uff0c\u8fd9\u91cc\u5148\u4fdd\u7559\u53d7\u63a7\u5360\u4f4d\u6309\u94ae\u548c\u7edf\u4e00\u9519\u8bef\u8bed\u4e49\u3002",
   trackedTitle: "\u5f53\u524d\u8ddf\u8e2a\u4efb\u52a1",
   resultTitle: "\u7ed3\u679c\u843d\u70b9",
   recentTitle: "\u6700\u8fd1\u4efb\u52a1",
@@ -33,15 +33,15 @@ const COPY = {
   unsupported: "\u8be5\u63a5\u53e3\u672a\u5c31\u7eea\u3002",
   datasetPreset: "\u6570\u636e\u96c6\u9884\u7f6e",
   trainerPreset: "\u8bad\u7ec3\u9884\u7f6e",
-  seed: "Seed",
+  seed: "\u968f\u673a\u79cd\u5b50",
   experimentName: "\u5b9e\u9a8c\u540d\u79f0",
   modelNames: "\u6a21\u578b\u540d\u79f0\uff0c\u9017\u53f7\u5206\u9694",
   modelNamesHint: "\u8bf7\u81f3\u5c11\u8f93\u5165\u4e00\u4e2a\u6a21\u578b\u540d\u79f0\u3002",
-  runId: "Run ID",
+  runId: "\u8fd0\u884c ID",
   predictionScope: "\u9884\u6d4b\u8303\u56f4",
-  benchmarkSymbol: "\u57fa\u51c6 Symbol",
-  runIdHint: "\u8bf7\u8f93\u5165 run_id\u3002",
-  benchmarkHint: "\u8bf7\u8f93\u5165 benchmark symbol\u3002",
+  benchmarkSymbol: "\u57fa\u51c6\u6807\u7684",
+  runIdHint: "\u8bf7\u8f93\u5165\u8fd0\u884c ID\uff08run_id\uff09\u3002",
+  benchmarkHint: "\u8bf7\u8f93\u5165\u57fa\u51c6\u6807\u7684\u3002",
   submitSync: "\u63d0\u4ea4\u884c\u60c5\u540c\u6b65",
   submitBuild: "\u63d0\u4ea4\u6570\u636e\u96c6\u6784\u5efa",
   openRun: "\u8df3\u8f6c\u8fd0\u884c\u8be6\u60c5",
@@ -53,10 +53,28 @@ const COPY = {
   deeplinks: "\u843d\u70b9",
 } as const;
 
+function localizeBacktestOptionLabel(value: string, label?: string | null) {
+  const normalized = (label ?? value).trim().toLowerCase();
+  if (normalized === "smoke") {
+    return "联调样本";
+  }
+  if (normalized === "real_benchmark") {
+    return "真实基准";
+  }
+  if (normalized === "full") {
+    return "全量";
+  }
+  if (normalized === "test") {
+    return "测试集";
+  }
+  return label ?? value;
+}
+
 export function JobsPage() {
   const queryClient = useQueryClient();
   const jobsQuery = useJobs();
   const backtestOptionsQuery = useBacktestOptions();
+  const jobs = jobsQuery.data?.items ?? [];
   const [trackedJobId, setTrackedJobId] = useState<string | null>(null);
   const [runId, setRunId] = useState("");
   const [backtestDatasetPreset, setBacktestDatasetPreset] = useState<"smoke" | "real_benchmark">("smoke");
@@ -67,12 +85,13 @@ export function JobsPage() {
 
   const trackedJobQuery = useJobStatus(trackedJobId);
   const trackedJob = trackedJobQuery.data;
+  const trackedDeeplinks = trackedJob?.result?.deeplinks;
 
   useEffect(() => {
-    if (!trackedJobId && jobsQuery.data?.items[0]?.job_id) {
-      setTrackedJobId(jobsQuery.data.items[0].job_id);
+    if (!trackedJobId && jobs[0]?.job_id) {
+      setTrackedJobId(jobs[0].job_id);
     }
-  }, [jobsQuery.data, trackedJobId]);
+  }, [jobs, trackedJobId]);
 
   useEffect(() => {
     const defaultSymbol = backtestOptionsQuery.data?.default_benchmark_symbol;
@@ -102,8 +121,8 @@ export function JobsPage() {
   });
 
   const failedJobs = useMemo(
-    () => jobsQuery.data?.items.filter((job) => job.error_message) ?? [],
-    [jobsQuery.data?.items],
+    () => jobs.filter((job) => job.error_message),
+    [jobs],
   );
 
   function handleBacktestSubmit() {
@@ -125,20 +144,6 @@ export function JobsPage() {
   }
   if (jobsQuery.isError) {
     return <ErrorState message={(jobsQuery.error as Error).message} />;
-  }
-  if (!jobsQuery.data || jobsQuery.data.items.length === 0) {
-    return (
-      <div className="page-stack">
-        <section className="panel">
-          <PanelHeader
-            eyebrow={I18N.nav.jobs}
-            title={COPY.pageTitle}
-            description={COPY.pageDescription}
-          />
-        </section>
-        <EmptyState title={I18N.state.empty} body={COPY.noJobs} />
-      </div>
-    );
   }
 
   return (
@@ -194,7 +199,7 @@ export function JobsPage() {
                 >
                   {(backtestOptionsQuery.data?.dataset_presets ?? []).map((option) => (
                     <option key={option.value} value={option.value}>
-                      {option.label}
+                      {localizeBacktestOptionLabel(option.value, option.label)}
                     </option>
                   ))}
                 </select>
@@ -208,7 +213,7 @@ export function JobsPage() {
                 >
                   {(backtestOptionsQuery.data?.prediction_scopes ?? []).map((option) => (
                     <option key={option.value} value={option.value}>
-                      {option.label}
+                      {localizeBacktestOptionLabel(option.value, option.label)}
                     </option>
                   ))}
                 </select>
@@ -291,20 +296,22 @@ export function JobsPage() {
                   <p className="form-error">{trackedJob.error_message}</p>
                 ) : null}
               </div>
-            ) : null}
+            ) : (
+              <EmptyState title={I18N.state.empty} body={COPY.noJobs} />
+            )}
           </section>
 
-          {trackedJob?.result?.deeplinks ? (
+          {trackedDeeplinks ? (
             <section className="panel">
               <PanelHeader eyebrow={COPY.resultTitle} title={COPY.resultTitle} />
               <div className="toolbar">
-                {trackedJob.result.deeplinks.run_detail ? (
-                  <Link className="link-button" to={trackedJob.result.deeplinks.run_detail}>
+                {trackedDeeplinks.run_detail ? (
+                  <Link className="link-button" to={trackedDeeplinks.run_detail}>
                     {COPY.openRun}
                   </Link>
                 ) : null}
-                {trackedJob.result.deeplinks.backtest_detail ? (
-                  <Link className="link-button" to={trackedJob.result.deeplinks.backtest_detail}>
+                {trackedDeeplinks.backtest_detail ? (
+                  <Link className="link-button" to={trackedDeeplinks.backtest_detail}>
                     {COPY.openBacktest}
                   </Link>
                 ) : null}
@@ -319,7 +326,7 @@ export function JobsPage() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Job ID</th>
+              <th>任务 ID</th>
               <th>{COPY.type}</th>
               <th>{COPY.updatedAt}</th>
               <th>{COPY.stage}</th>
@@ -328,7 +335,7 @@ export function JobsPage() {
             </tr>
           </thead>
           <tbody>
-            {jobsQuery.data.items.map((job) => (
+            {jobs.map((job) => (
               <tr key={job.job_id} onClick={() => setTrackedJobId(job.job_id)}>
                 <td>{job.job_id}</td>
                 <td>{formatJobTypeLabel(job.job_type)}</td>
@@ -343,13 +350,13 @@ export function JobsPage() {
                 </td>
                 <td>
                   <div className="inline-link-row">
-                    {job.result.deeplinks.run_detail ? (
+                    {job.result?.deeplinks?.run_detail ? (
                       <Link to={job.result.deeplinks.run_detail}>{I18N.nav.runs}</Link>
                     ) : null}
-                    {job.result.deeplinks.backtest_detail ? (
+                    {job.result?.deeplinks?.backtest_detail ? (
                       <Link to={job.result.deeplinks.backtest_detail}>{I18N.nav.backtests}</Link>
                     ) : null}
-                    {job.result.deeplinks.review_detail ? (
+                    {job.result?.deeplinks?.review_detail ? (
                       <Link to={job.result.deeplinks.review_detail}>{"\u5ba1\u9605"}</Link>
                     ) : null}
                   </div>
@@ -358,6 +365,7 @@ export function JobsPage() {
             ))}
           </tbody>
         </table>
+        {jobs.length === 0 ? <EmptyState title={I18N.state.empty} body={COPY.noJobs} /> : null}
       </section>
 
       <section className="panel">

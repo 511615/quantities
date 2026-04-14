@@ -43,8 +43,6 @@ class MarketFeatureBuilder:
         if len(eligible) < 2:
             raise ValueError("at least two eligible bars are required to build features")
         volumes = [bar.volume for bar in eligible]
-        volume_mean = mean(volumes)
-        volume_std = pstdev(volumes) if len(volumes) > 1 else 0.0
         rows: list[FeatureRow] = []
         closes = [bar.close for bar in eligible]
         for index, (previous_bar, current_bar) in enumerate(
@@ -74,6 +72,9 @@ class MarketFeatureBuilder:
                 if current_bar.close == 0.0
                 else (current_bar.high - current_bar.low) / current_bar.close
             )
+            historical_volumes = volumes[: index + 1]
+            volume_mean = mean(historical_volumes)
+            volume_std = pstdev(historical_volumes) if len(historical_volumes) > 1 else 0.0
             volume_zscore = (
                 0.0 if volume_std == 0.0 else (current_bar.volume - volume_mean) / volume_std
             )

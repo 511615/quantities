@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from quant_platform.models.advanced._trainable import (
     AdvancedTrainingArtifacts,
     build_valid_targets,
+    dot_product,
     fit_linear_regressor,
+    normalize_features,
     predict_linear_regressor,
     slice_valid_features,
 )
@@ -31,17 +34,20 @@ class MultimodalFusionModel(BaseModelPlugin):
         super().__init__(spec)
         self._training_sample_count = 0
         self._feature_names = [field.name for field in spec.input_schema]
-        self._weights: list[float] = []
-        self._bias = 0.0
-        self._feature_means: list[float] = []
-        self._feature_stds: list[float] = []
+        self._market_feature_names: list[str] = []
+        self._text_feature_names: list[str] = []
+        self._market_branch: dict[str, Any] | None = None
+        self._text_branch: dict[str, Any] | None = None
+        self._blender_branch: dict[str, Any] | None = None
+        self._legacy_estimator: dict[str, Any] | None = None
         self._train_loss = 0.0
         self._valid_loss = 0.0
         self._best_epoch = 0
         self._trained_steps = 0
         self._residual_scale = 1.0
         self._confidence_source = "fallback_residual"
-        self._backend = "linear_multimodal_fusion"
+        self._fusion_strategy = "late_score_blend"
+        self._backend = "late_score_blend"
 
     def fit(
         self, train_input: TrainInputBundle, valid_input: PredictInputBundle | None = None
@@ -50,28 +56,113 @@ class MultimodalFusionModel(BaseModelPlugin):
         if not targets:
             raise ValueError("training samples cannot be empty")
         self._feature_names = train_input.feature_names
+        self._market_feature_names = list(train_input.blocks.get("market_feature_names", []))
+        self._text_feature_names = list(train_input.blocks.get("text_feature_names", []))
         self._training_sample_count = len(targets)
-        train_features = self._build_feature_matrix(train_input.blocks)
-        valid_features = (
-            self._build_feature_matrix(valid_input.blocks) if valid_input is not None else None
+        train_market_features = self._build_market_feature_matrix(train_input.blocks)
+        train_text_features = self._build_text_feature_matrix(train_input.blocks)
+        valid_market_features = (
+            self._build_market_feature_matrix(valid_input.blocks) if valid_input is not None else None
         )
-        valid_features = slice_valid_features(valid_input, valid_features)
-        training = fit_linear_regressor(
-            train_features,
+        valid_text_features = (
+            self._build_text_feature_matrix(valid_input.blocks) if valid_input is not None else None
+        )
+        valid_market_features = slice_valid_features(valid_input, valid_market_features)
+        valid_text_features = slice_valid_features(valid_input, valid_text_features)
+        valid_targets = build_valid_targets(valid_input)
+
+        market_training = fit_linear_regressor(
+            train_market_features,
             targets,
-            valid_features=valid_features,
-            valid_targets=build_valid_targets(valid_input),
+            valid_features=valid_market_features,
+            valid_targets=valid_targets,
             hyperparams=self.spec.hyperparams,
         )
-        self._apply_training(training)
+        self._market_branch = self._serialize_training(market_training)
+        market_train_predictions = self._predict_with_state(
+            train_market_features,
+            self._market_branch,
+        )
+        market_valid_predictions = (
+            self._predict_with_state(valid_market_features, self._market_branch)
+            if valid_market_features is not None
+            else None
+        )
+
+        text_training: AdvancedTrainingArtifacts | None = None
+        if train_text_features and train_text_features[0]:
+            text_training = fit_linear_regressor(
+                train_text_features,
+                targets,
+                valid_features=valid_text_features,
+                valid_targets=valid_targets,
+                hyperparams=self.spec.hyperparams,
+            )
+            self._text_branch = self._serialize_training(text_training)
+            text_train_predictions = self._predict_with_state(
+                train_text_features,
+                self._text_branch,
+            )
+            text_valid_predictions = (
+                self._predict_with_state(valid_text_features, self._text_branch)
+                if valid_text_features is not None
+                else None
+            )
+        else:
+            self._text_branch = None
+            text_train_predictions = [0.0 for _ in targets]
+            text_valid_predictions = (
+                [0.0 for _ in valid_targets] if valid_targets is not None else None
+            )
+
+        train_text_mask = [bool(value) for value in train_input.blocks.get("text_mask", [])]
+        valid_text_mask = self._slice_valid_list(valid_input, valid_input.blocks.get("text_mask", [])) if valid_input is not None else None
+        blender_train_features = self._build_blender_feature_matrix(
+            market_train_predictions,
+            text_train_predictions,
+            train_text_mask,
+        )
+        blender_valid_features = (
+            self._build_blender_feature_matrix(
+                market_valid_predictions or [],
+                text_valid_predictions or [],
+                [bool(value) for value in (valid_text_mask or [])],
+            )
+            if valid_targets is not None and market_valid_predictions is not None
+            else None
+        )
+        blender_training = fit_linear_regressor(
+            blender_train_features,
+            targets,
+            valid_features=blender_valid_features,
+            valid_targets=valid_targets,
+            hyperparams=self.spec.hyperparams,
+        )
+        self._blender_branch = self._serialize_training(blender_training)
+        self._legacy_estimator = None
+
+        self._train_loss = float(blender_training.train_loss)
+        self._valid_loss = float(blender_training.valid_loss)
+        self._best_epoch = int(blender_training.best_epoch)
+        self._trained_steps = int(
+            market_training.trained_steps
+            + (text_training.trained_steps if text_training is not None else 0)
+            + blender_training.trained_steps
+        )
+        self._residual_scale = float(blender_training.residual_scale)
+        self._confidence_source = blender_training.confidence_source
         return {
-            "mae": training.train_loss,
-            "train_loss": training.train_loss,
-            "valid_mae": training.valid_loss,
-            "valid_loss": training.valid_loss,
-            "best_epoch": float(training.best_epoch),
-            "trained_steps": float(training.trained_steps),
+            "mae": blender_training.train_loss,
+            "train_loss": blender_training.train_loss,
+            "valid_mae": blender_training.valid_loss,
+            "valid_loss": blender_training.valid_loss,
+            "best_epoch": float(blender_training.best_epoch),
+            "trained_steps": float(self._trained_steps),
             "sample_count": float(len(targets)),
+            "market_branch_train_loss": float(market_training.train_loss),
+            "market_branch_valid_loss": float(market_training.valid_loss),
+            "text_branch_train_loss": float(text_training.train_loss) if text_training else 0.0,
+            "text_branch_valid_loss": float(text_training.valid_loss) if text_training else 0.0,
         }
 
     def predict(
@@ -80,15 +171,55 @@ class MultimodalFusionModel(BaseModelPlugin):
         model_run_id: str | None = None,
     ) -> ModelPredictionOutputs:
         _ = model_run_id
-        features = self._build_feature_matrix(predict_input.blocks)
+        if self._blender_branch is not None and self._market_branch is not None:
+            market_features = self._build_market_feature_matrix(predict_input.blocks)
+            text_features = self._build_text_feature_matrix(predict_input.blocks)
+            text_mask = [bool(value) for value in predict_input.blocks.get("text_mask", [])]
+            market_predictions = self._predict_with_state(
+                market_features,
+                self._market_branch,
+            )
+            text_predictions = (
+                self._predict_with_state(text_features, self._text_branch)
+                if self._text_branch is not None and text_features and text_features[0]
+                else [0.0 for _ in market_predictions]
+            )
+            blender_features = self._build_blender_feature_matrix(
+                market_predictions,
+                text_predictions,
+                text_mask,
+            )
+            outputs = predict_linear_regressor(
+                blender_features,
+                weights=list(self._blender_branch.get("weights", [])),
+                bias=float(self._blender_branch.get("bias", 0.0)),
+                feature_means=list(self._blender_branch.get("feature_means", [])),
+                feature_stds=list(self._blender_branch.get("feature_stds", [])),
+                residual_scale=self._residual_scale,
+                confidence_source=self._confidence_source,
+            )
+            metadata = dict(outputs.metadata or {})
+            metadata["fusion_strategy"] = self._fusion_strategy
+            metadata["market_branch_present"] = True
+            metadata["text_branch_present"] = self._text_branch is not None
+            return ModelPredictionOutputs(
+                predictions=list(outputs.predictions),
+                confidences=list(outputs.confidences),
+                metadata=metadata,
+            )
+
+        legacy = self._legacy_estimator
+        if legacy is None:
+            raise ValueError("multimodal model has not been trained")
+        features = self._build_legacy_feature_matrix(predict_input.blocks)
         return predict_linear_regressor(
             features,
-            weights=self._weights,
-            bias=self._bias,
-            feature_means=self._feature_means,
-            feature_stds=self._feature_stds,
-            residual_scale=self._residual_scale,
-            confidence_source=self._confidence_source,
+            weights=list(legacy.get("weights", [])),
+            bias=float(legacy.get("bias", 0.0)),
+            feature_means=list(legacy.get("feature_means", [])),
+            feature_stds=list(legacy.get("feature_stds", [])),
+            residual_scale=float(legacy.get("residual_scale", self._residual_scale)),
+            confidence_source=str(legacy.get("confidence_source", self._confidence_source)),
         )
 
     def save(self, artifact_dir: Path):
@@ -99,12 +230,13 @@ class MultimodalFusionModel(BaseModelPlugin):
             advanced_kind=self.advanced_kind,
             state={
                 "estimator": {
-                    "weights": self._weights,
-                    "bias": self._bias,
-                    "feature_means": self._feature_means,
-                    "feature_stds": self._feature_stds,
-                    "residual_scale": self._residual_scale,
-                    "confidence_source": self._confidence_source,
+                    "fusion_strategy": self._fusion_strategy,
+                    "market_feature_names": self._market_feature_names,
+                    "text_feature_names": self._text_feature_names,
+                    "market_branch": self._market_branch,
+                    "text_branch": self._text_branch,
+                    "blender_branch": self._blender_branch,
+                    "legacy_estimator": self._legacy_estimator,
                     "feature_names": self._feature_names,
                 }
             },
@@ -119,34 +251,74 @@ class MultimodalFusionModel(BaseModelPlugin):
             best_epoch=self._best_epoch,
             trained_steps=self._trained_steps,
             checkpoint_tag="best_validation",
-            input_metadata={"lookback": int(self.spec.hyperparams.get("lookback", 1))},
-            prediction_metadata={"confidence_source": self._confidence_source},
+            input_metadata={
+                "lookback": int(self.spec.hyperparams.get("lookback", 1)),
+                "market_feature_names": list(self._market_feature_names),
+                "text_feature_names": list(self._text_feature_names),
+            },
+            prediction_metadata={
+                "confidence_source": self._confidence_source,
+                "fusion_strategy": self._fusion_strategy,
+            },
         )
 
     @classmethod
     def load(cls, spec, artifact_dir: Path):
         state = load_saved_state(artifact_dir)["estimator"]
         model = cls(spec)
-        model._weights = [float(value) for value in state.get("weights", [])]
-        model._bias = float(state.get("bias", 0.0))
-        model._feature_means = [float(value) for value in state.get("feature_means", [])]
-        model._feature_stds = [float(value) for value in state.get("feature_stds", [])]
-        model._residual_scale = float(state.get("residual_scale", 1.0))
-        model._confidence_source = str(state.get("confidence_source", model._confidence_source))
+        model._fusion_strategy = str(state.get("fusion_strategy", model._fusion_strategy))
+        model._market_feature_names = list(state.get("market_feature_names", []))
+        model._text_feature_names = list(state.get("text_feature_names", []))
         model._feature_names = list(state.get("feature_names", model._feature_names))
+        if "market_branch" in state or "blender_branch" in state:
+            model._market_branch = cls._deserialize_branch(state.get("market_branch"))
+            model._text_branch = cls._deserialize_branch(state.get("text_branch"))
+            model._blender_branch = cls._deserialize_branch(state.get("blender_branch"))
+            model._legacy_estimator = cls._deserialize_branch(state.get("legacy_estimator"))
+            if model._blender_branch is not None:
+                model._residual_scale = float(model._blender_branch.get("residual_scale", 1.0))
+                model._confidence_source = str(
+                    model._blender_branch.get("confidence_source", model._confidence_source)
+                )
+            return model
+        model._legacy_estimator = {
+            "weights": [float(value) for value in state.get("weights", [])],
+            "bias": float(state.get("bias", 0.0)),
+            "feature_means": [float(value) for value in state.get("feature_means", [])],
+            "feature_stds": [float(value) for value in state.get("feature_stds", [])],
+            "residual_scale": float(state.get("residual_scale", 1.0)),
+            "confidence_source": str(state.get("confidence_source", model._confidence_source)),
+        }
+        model._residual_scale = float(model._legacy_estimator["residual_scale"])
+        model._confidence_source = str(model._legacy_estimator["confidence_source"])
         return model
 
-    def _build_feature_matrix(self, blocks: dict[str, object]) -> list[list[float]]:
+    def _build_market_feature_matrix(self, blocks: dict[str, object]) -> list[list[float]]:
+        market_block = blocks.get("market_block", [])
+        return [flatten_numeric(row) for row in market_block]
+
+    def _build_text_feature_matrix(self, blocks: dict[str, object]) -> list[list[float]]:
+        text_block = blocks.get("text_block", [])
+        text_mask = [bool(value) for value in blocks.get("text_mask", [])]
         feature_rows: list[list[float]] = []
-        market_block = blocks["market_block"]
-        text_block = blocks["text_block"]
-        text_mask = blocks["text_mask"]
+        for index in range(len(text_block)):
+            raw_text_values = flatten_numeric(text_block[index])
+            feature_rows.append(
+                raw_text_values if index < len(text_mask) and text_mask[index] else [0.0 for _ in raw_text_values]
+            )
+        return feature_rows
+
+    def _build_legacy_feature_matrix(self, blocks: dict[str, object]) -> list[list[float]]:
+        market_block = blocks.get("market_block", [])
+        text_block = blocks.get("text_block", [])
+        text_mask = [bool(value) for value in blocks.get("text_mask", [])]
+        feature_rows: list[list[float]] = []
         for index in range(len(market_block)):
             market_values = flatten_numeric(market_block[index])
-            raw_text_values = flatten_numeric(text_block[index])
+            raw_text_values = flatten_numeric(text_block[index]) if index < len(text_block) else []
             text_values = (
                 raw_text_values
-                if text_mask[index]
+                if index < len(text_mask) and text_mask[index]
                 else [0.0 for _ in raw_text_values]
             )
             feature_rows.append(
@@ -155,20 +327,93 @@ class MultimodalFusionModel(BaseModelPlugin):
                 + [
                     average(market_values),
                     average(text_values),
-                    1.0 if text_mask[index] else 0.0,
+                    1.0 if index < len(text_mask) and text_mask[index] else 0.0,
                     float(len(text_values)),
                 ]
             )
         return feature_rows
 
-    def _apply_training(self, training: AdvancedTrainingArtifacts) -> None:
-        self._weights = list(training.weights)
-        self._bias = float(training.bias)
-        self._feature_means = list(training.feature_means)
-        self._feature_stds = list(training.feature_stds)
-        self._train_loss = float(training.train_loss)
-        self._valid_loss = float(training.valid_loss)
-        self._best_epoch = int(training.best_epoch)
-        self._trained_steps = int(training.trained_steps)
-        self._residual_scale = float(training.residual_scale)
-        self._confidence_source = training.confidence_source
+    def _build_blender_feature_matrix(
+        self,
+        market_predictions: list[float],
+        text_predictions: list[float],
+        text_mask: list[bool],
+    ) -> list[list[float]]:
+        feature_rows: list[list[float]] = []
+        for index in range(len(market_predictions)):
+            market_prediction = float(market_predictions[index])
+            text_prediction = (
+                float(text_predictions[index]) if index < len(text_predictions) else 0.0
+            )
+            text_present = bool(text_mask[index]) if index < len(text_mask) else False
+            gap = text_prediction - market_prediction
+            feature_rows.append(
+                [
+                    market_prediction,
+                    text_prediction,
+                    gap,
+                    abs(gap),
+                    1.0 if text_present else 0.0,
+                ]
+            )
+        return feature_rows
+
+    def _predict_with_state(
+        self,
+        features: list[list[float]] | None,
+        state: dict[str, Any] | None,
+    ) -> list[float]:
+        if features is None:
+            return []
+        if state is None:
+            return [0.0 for _ in features]
+        weights = list(state.get("weights", []))
+        feature_means = list(state.get("feature_means", []))
+        feature_stds = list(state.get("feature_stds", []))
+        if not features:
+            return []
+        normalized = normalize_features(features, feature_means, feature_stds)
+        bias = float(state.get("bias", 0.0))
+        return [dot_product(weights, row) + bias for row in normalized]
+
+    def _slice_valid_list(
+        self,
+        valid_input: PredictInputBundle | None,
+        values: object,
+    ) -> list[object] | None:
+        if valid_input is None or not isinstance(values, list):
+            return None
+        start_index = int(valid_input.metadata.get("target_start_index", 0))
+        return values[start_index:]
+
+    @staticmethod
+    def _serialize_training(training: AdvancedTrainingArtifacts) -> dict[str, Any]:
+        return {
+            "weights": list(training.weights),
+            "bias": float(training.bias),
+            "feature_means": list(training.feature_means),
+            "feature_stds": list(training.feature_stds),
+            "train_loss": float(training.train_loss),
+            "valid_loss": float(training.valid_loss),
+            "best_epoch": int(training.best_epoch),
+            "trained_steps": int(training.trained_steps),
+            "residual_scale": float(training.residual_scale),
+            "confidence_source": training.confidence_source,
+        }
+
+    @staticmethod
+    def _deserialize_branch(value: object) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            "weights": [float(item) for item in value.get("weights", [])],
+            "bias": float(value.get("bias", 0.0)),
+            "feature_means": [float(item) for item in value.get("feature_means", [])],
+            "feature_stds": [float(item) for item in value.get("feature_stds", [])],
+            "train_loss": float(value.get("train_loss", 0.0)),
+            "valid_loss": float(value.get("valid_loss", 0.0)),
+            "best_epoch": int(value.get("best_epoch", 0)),
+            "trained_steps": int(value.get("trained_steps", 0)),
+            "residual_scale": float(value.get("residual_scale", 1.0)),
+            "confidence_source": str(value.get("confidence_source", "fallback_residual")),
+        }

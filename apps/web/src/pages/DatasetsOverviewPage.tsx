@@ -184,7 +184,7 @@ export function DatasetsOverviewPage() {
             {newestDataset ? (
               <div className="stack-list">
                 <div className="stack-item align-start">
-                  <Link to={`/datasets/${newestDataset.datasetId}`}>{newestDataset.title}</Link>
+                      <Link to={`/datasets/${encodeURIComponent(newestDataset.datasetId)}`}>{newestDataset.title}</Link>
                   <span>{newestDataset.subtitle}</span>
                   <span>更新时间：{formatDate(newestDataset.asOfTime)}</span>
                 </div>
@@ -216,7 +216,7 @@ export function DatasetsOverviewPage() {
               <div className="stack-list">
                 {trainingItems.slice(0, 4).map((item) => (
                   <div className="stack-item align-start" key={item.datasetId}>
-                    <Link to={`/datasets/${item.datasetId}`}>{item.title}</Link>
+                    <Link to={`/datasets/${encodeURIComponent(item.datasetId)}`}>{item.title}</Link>
                     <span>{describeDatasetType(item.datasetType)}</span>
                     <span>
                       {item.rowCountLabel} 条 / {item.featureCountLabel} 维 / {item.labelHorizonLabel}

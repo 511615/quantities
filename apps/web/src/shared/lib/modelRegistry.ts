@@ -30,13 +30,13 @@ export type TemplateDraft = {
 
 const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
   elastic_net: {
-    label: "Elastic Net",
+    label: "弹性网络",
     category: "线性模型",
     suitableData: "中低维度连续型特征",
     defaultHyperparams: { alpha: 0.001, l1_ratio: 0.5 },
     parameterFields: [
-      { key: "alpha", label: "Alpha", defaultValue: 0.001, step: "0.0001", glossaryKey: "regularization" },
-      { key: "l1_ratio", label: "L1 Ratio", defaultValue: 0.5, step: "0.01", glossaryKey: "regularization" },
+      { key: "alpha", label: "正则强度", defaultValue: 0.001, step: "0.0001", glossaryKey: "regularization" },
+      { key: "l1_ratio", label: "L1 占比", defaultValue: 0.5, step: "0.01", glossaryKey: "regularization" },
     ],
   },
   lightgbm: {
@@ -55,17 +55,17 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     category: "时序神经网络",
     suitableData: "需要 lookback 的时序特征",
     defaultHyperparams: { lookback: 2 },
-    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 2, step: "1" }],
+    parameterFields: [{ key: "lookback", label: "回看窗口", defaultValue: 2, step: "1" }],
   },
   lstm: {
     label: "LSTM",
     category: "时序神经网络",
     suitableData: "需要更长上下文的时序特征",
     defaultHyperparams: { lookback: 3 },
-    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 3, step: "1" }],
+    parameterFields: [{ key: "lookback", label: "回看窗口", defaultValue: 3, step: "1" }],
   },
   mean_baseline: {
-    label: "Mean Baseline",
+    label: "均值基线",
     category: "基线模型",
     suitableData: "快速 smoke / 基线对照",
     defaultHyperparams: {},
@@ -79,7 +79,7 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     parameterFields: [],
   },
   multimodal_reference: {
-    label: "Multimodal Reference",
+    label: "多模态参考模型",
     category: "多模态参考模型",
     suitableData: "市场 + 文本特征的参考组合",
     defaultHyperparams: {
@@ -88,34 +88,34 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
       text_weight: 0.5,
     },
     parameterFields: [
-      { key: "lookback", label: "Lookback", defaultValue: 3, step: "1" },
-      { key: "text_weight", label: "Text Weight", defaultValue: 0.5, step: "0.1" },
-      { key: "text_feature_prefixes", label: "Text Prefixes", defaultValue: "text_,sentiment_,news_", advanced: true },
+      { key: "lookback", label: "回看窗口", defaultValue: 3, step: "1" },
+      { key: "text_weight", label: "文本权重", defaultValue: 0.5, step: "0.1" },
+      { key: "text_feature_prefixes", label: "文本前缀", defaultValue: "text_,sentiment_,news_", advanced: true },
     ],
   },
   patch_mixer_reference: {
-    label: "Patch Mixer Reference",
+    label: "补丁混合参考模型",
     category: "时序参考模型",
     suitableData: "序列 patch 化后的参考建模",
     defaultHyperparams: { lookback: 4, patch_size: 2 },
     parameterFields: [
-      { key: "lookback", label: "Lookback", defaultValue: 4, step: "1" },
-      { key: "patch_size", label: "Patch Size", defaultValue: 2, step: "1" },
+      { key: "lookback", label: "回看窗口", defaultValue: 4, step: "1" },
+      { key: "patch_size", label: "切片大小", defaultValue: 2, step: "1" },
     ],
   },
   temporal_fusion_reference: {
-    label: "Temporal Fusion Reference",
+    label: "时序融合参考模型",
     category: "时序参考模型",
     suitableData: "多变量时序融合参考",
     defaultHyperparams: { lookback: 3 },
-    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 3, step: "1" }],
+    parameterFields: [{ key: "lookback", label: "回看窗口", defaultValue: 3, step: "1" }],
   },
   transformer_reference: {
-    label: "Transformer Reference",
+    label: "Transformer 参考模型",
     category: "时序参考模型",
     suitableData: "长上下文时序参考",
     defaultHyperparams: { lookback: 3 },
-    parameterFields: [{ key: "lookback", label: "Lookback", defaultValue: 3, step: "1" }],
+    parameterFields: [{ key: "lookback", label: "回看窗口", defaultValue: 3, step: "1" }],
   },
 };
 

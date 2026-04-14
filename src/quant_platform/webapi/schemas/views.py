@@ -106,6 +106,38 @@ class DataFreshnessView(ApiModel):
     source: str | None = None
 
 
+class DatasetLinkView(ApiModel):
+    dataset_id: str
+    label: str
+    href: str
+    api_path: str | None = None
+    role: str | None = None
+    modality: str | None = None
+
+
+class RunCompositionSourceView(ApiModel):
+    run_id: str
+    model_name: str
+    modality: str | None = None
+    weight: float | None = None
+    dataset_ids: list[str] = Field(default_factory=list)
+    datasets: list[DatasetLinkView] = Field(default_factory=list)
+
+
+class RunCompositionView(ApiModel):
+    fusion_strategy: str
+    source_runs: list[RunCompositionSourceView] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)
+
+
+class BacktestAlignmentView(ApiModel):
+    fusion_strategy: str | None = None
+    dataset_ids: list[str] = Field(default_factory=list)
+    datasets: list[DatasetLinkView] = Field(default_factory=list)
+    alignment_status: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
 class DatasetSummaryView(ApiModel):
     dataset_id: str
     display_name: str | None = None
@@ -138,6 +170,10 @@ class DatasetSummaryView(ApiModel):
     readiness_status: str | None = None
     build_status: str | None = None
     request_origin: str | None = None
+    is_system_recommended: bool = False
+    is_protected: bool = False
+    deletion_policy: str | None = None
+    download_available: bool = True
     links: list[DeepLinkView] = Field(default_factory=list)
 
 
@@ -155,6 +191,10 @@ class ExperimentListItem(ApiModel):
     run_id: str
     model_name: str
     dataset_id: str | None = None
+    dataset_ids: list[str] = Field(default_factory=list)
+    datasets: list[DatasetLinkView] = Field(default_factory=list)
+    primary_dataset_id: str | None = None
+    composition: RunCompositionView | None = None
     family: str | None = None
     backend: str | None = None
     status: str
@@ -164,6 +204,8 @@ class ExperimentListItem(ApiModel):
     metrics: dict[str, float] = Field(default_factory=dict)
     backtest_count: int = 0
     prediction_scopes: list[str] = Field(default_factory=list)
+    official_template_eligible: bool | None = None
+    official_blocking_reasons: list[str] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
 
 
@@ -181,6 +223,10 @@ class RunDetailView(ApiModel):
     run_id: str
     model_name: str
     dataset_id: str | None = None
+    dataset_ids: list[str] = Field(default_factory=list)
+    datasets: list[DatasetLinkView] = Field(default_factory=list)
+    primary_dataset_id: str | None = None
+    composition: RunCompositionView | None = None
     task_type: str | None = None
     artifact_format_status: str = "legacy"
     missing_artifacts: list[str] = Field(default_factory=list)
@@ -202,6 +248,8 @@ class RunDetailView(ApiModel):
     related_backtests: list[RelatedBacktestView] = Field(default_factory=list)
     artifacts: list[ArtifactView] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    official_template_eligible: bool | None = None
+    official_blocking_reasons: list[str] = Field(default_factory=list)
     summary: StableSummaryView | None = None
     pipeline_summary: PipelineSummaryView | None = None
     review_summary: ReviewSummaryView | None = None
@@ -263,6 +311,20 @@ class BacktestProtocolResultView(ApiModel):
     slice_coverage: list[str] = Field(default_factory=list)
     lookback_bucket: str | None = None
     metadata_summary: dict[str, str | None] = Field(default_factory=dict)
+    actual_market_start_time: datetime | None = None
+    actual_market_end_time: datetime | None = None
+    actual_backtest_start_time: datetime | None = None
+    actual_backtest_end_time: datetime | None = None
+    actual_nlp_start_time: datetime | None = None
+    actual_nlp_end_time: datetime | None = None
+    nlp_gate_status: str | None = None
+    nlp_gate_reasons: list[str] = Field(default_factory=list)
+    official_benchmark_version: str | None = None
+    official_window_days: int | None = None
+    official_window_start_time: datetime | None = None
+    official_window_end_time: datetime | None = None
+    official_market_dataset_id: str | None = None
+    official_multimodal_dataset_id: str | None = None
 
 
 class BenchmarkListItemView(ApiModel):
@@ -297,6 +359,10 @@ class BacktestListItemView(ApiModel):
     backtest_id: str
     run_id: str | None = None
     model_name: str | None = None
+    dataset_id: str | None = None
+    dataset_ids: list[str] = Field(default_factory=list)
+    datasets: list[DatasetLinkView] = Field(default_factory=list)
+    primary_dataset_id: str | None = None
     status: str
     template_id: str | None = None
     official: bool = False
@@ -344,6 +410,11 @@ class BacktestReportView(ApiModel):
     backtest_id: str
     model_name: str | None = None
     run_id: str | None = None
+    dataset_id: str | None = None
+    dataset_ids: list[str] = Field(default_factory=list)
+    datasets: list[DatasetLinkView] = Field(default_factory=list)
+    primary_dataset_id: str | None = None
+    alignment: BacktestAlignmentView | None = None
     template_id: str | None = None
     official: bool = False
     protocol_version: str | None = None
@@ -419,6 +490,7 @@ class ModelComparisonView(ApiModel):
 
 class JobResultView(ApiModel):
     dataset_id: str | None = None
+    dataset_ids: list[str] = Field(default_factory=list)
     base_dataset_id: str | None = None
     fusion_dataset_id: str | None = None
     run_ids: list[str] = Field(default_factory=list)
@@ -542,6 +614,8 @@ class TrainedModelSummaryView(ApiModel):
     metrics: dict[str, float] = Field(default_factory=dict)
     note: str | None = None
     is_deleted: bool = False
+    official_template_eligible: bool | None = None
+    official_blocking_reasons: list[str] = Field(default_factory=list)
     links: list[DeepLinkView] = Field(default_factory=list)
 
 
@@ -555,6 +629,8 @@ class TrainedModelDetailView(ApiModel):
     metrics: dict[str, float] = Field(default_factory=dict)
     note: str | None = None
     is_deleted: bool = False
+    official_template_eligible: bool | None = None
+    official_blocking_reasons: list[str] = Field(default_factory=list)
     artifacts: list[ArtifactView] = Field(default_factory=list)
     tracking_params: dict[str, str] = Field(default_factory=dict)
     model_spec: dict[str, Any] = Field(default_factory=dict)
@@ -618,6 +694,7 @@ class DatasetDetailView(ApiModel):
     schema_profile: dict[str, Any] = Field(default_factory=dict)
     readiness_profile: dict[str, Any] = Field(default_factory=dict)
     training_profile: dict[str, Any] = Field(default_factory=dict)
+    download_href: str | None = None
     links: list[DeepLinkView] = Field(default_factory=list)
 
 
@@ -669,6 +746,19 @@ class DatasetNlpInspectionView(ApiModel):
     sentiment_distribution: list[TimeValuePoint] = Field(default_factory=list)
     recent_event_previews: list[DatasetNlpEventPreviewView] = Field(default_factory=list)
     sample_feature_preview: dict[str, float | None] = Field(default_factory=dict)
+    official_template_gate_status: str | None = None
+    official_template_gate_reasons: list[str] = Field(default_factory=list)
+    official_template_eligible: bool | None = None
+    archival_source_only: bool | None = None
+    coverage_ratio: float | None = None
+    test_coverage_ratio: float | None = None
+    max_consecutive_empty_bars: int | None = None
+    duplicate_ratio: float | None = None
+    entity_link_coverage_ratio: float | None = None
+    market_window_start_time: datetime | None = None
+    market_window_end_time: datetime | None = None
+    official_backtest_start_time: datetime | None = None
+    official_backtest_end_time: datetime | None = None
 
 
 class DatasetRequestOptionView(ApiModel):
@@ -865,6 +955,23 @@ class DatasetReadinessSummaryView(ApiModel):
     temporal_safety_status: str | None = None
     freshness_status: str | None = None
     recommended_next_actions: list[str] = Field(default_factory=list)
+    official_template_eligible: bool | None = None
+    official_nlp_gate_status: str | None = None
+    official_nlp_gate_reasons: list[str] = Field(default_factory=list)
+    archival_nlp_source_only: bool | None = None
+    nlp_requested_start_time: datetime | None = None
+    nlp_requested_end_time: datetime | None = None
+    nlp_actual_start_time: datetime | None = None
+    nlp_actual_end_time: datetime | None = None
+    market_window_start_time: datetime | None = None
+    market_window_end_time: datetime | None = None
+    official_backtest_start_time: datetime | None = None
+    official_backtest_end_time: datetime | None = None
+    nlp_coverage_ratio: float | None = None
+    nlp_test_coverage_ratio: float | None = None
+    nlp_max_consecutive_empty_bars: int | None = None
+    nlp_duplicate_ratio: float | None = None
+    nlp_entity_link_coverage_ratio: float | None = None
 
 
 class TrainingDatasetSummaryView(ApiModel):
@@ -993,6 +1100,7 @@ class DatasetDependenciesResponse(ApiModel):
     dataset_id: str
     items: list[DatasetDependencyView] = Field(default_factory=list)
     can_delete: bool = True
+    deletion_reason: str | None = None
     blocking_items: list[DatasetDependencyView] = Field(default_factory=list)
 
 

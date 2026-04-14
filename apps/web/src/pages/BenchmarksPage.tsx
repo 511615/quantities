@@ -7,6 +7,23 @@ import { GlossaryHint } from "../shared/ui/GlossaryHint";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 
+function localizeTemplateName(name?: string | null, templateId?: string | null) {
+  if (templateId === "system::official_backtest_protocol_v1") {
+    return "官方回测协议 v1";
+  }
+  return name ?? "--";
+}
+
+function localizeTemplateDescription(description?: string | null) {
+  if (!description) {
+    return "平台统一回测模板。";
+  }
+  if (description.trim().toLowerCase() === "official protocol") {
+    return "平台统一回测模板。";
+  }
+  return description;
+}
+
 export function BenchmarksPage() {
   const query = useBenchmarks();
   const optionsQuery = useBacktestOptions();
@@ -19,9 +36,9 @@ export function BenchmarksPage() {
       {officialTemplate ? (
         <section className="panel">
           <PanelHeader
-            eyebrow={"Official Protocol"}
-            title={officialTemplate.name}
-            description={officialTemplate.description ?? "\u5e73\u53f0\u7edf\u4e00\u56de\u6d4b\u6a21\u677f\u3002"}
+            eyebrow={"官方协议"}
+            title={localizeTemplateName(officialTemplate.name, officialTemplate.template_id)}
+            description={localizeTemplateDescription(officialTemplate.description)}
             action={
               <Link
                 className="link-button"
@@ -37,7 +54,7 @@ export function BenchmarksPage() {
               <strong>{officialTemplate.template_id}</strong>
             </div>
             <div className="metric-tile">
-              <span>{"Protocol"}</span>
+              <span>{"协议版本"}</span>
               <strong>{officialTemplate.protocol_version ?? "--"}</strong>
             </div>
             <div className="metric-tile">
@@ -49,7 +66,7 @@ export function BenchmarksPage() {
             {officialTemplate.scenario_bundle.slice(0, 4).map((item) => (
               <div className="stack-item" key={item}>
                 <strong>{item}</strong>
-                <span>{"\u5b98\u65b9 stress bundle \u56fa\u5b9a\u7ec4\u6210\u90e8\u5206"}</span>
+                <span>{"官方压力场景包的固定组成部分"}</span>
               </div>
             ))}
           </div>
@@ -84,7 +101,7 @@ export function BenchmarksPage() {
                 {query.data.map((item) => (
                   <tr key={item.benchmark_name}>
                     <td>
-                      <Link to={`/benchmarks/${item.benchmark_name}`}>{item.benchmark_name}</Link>
+                      <Link to={`/benchmarks/${encodeURIComponent(item.benchmark_name)}`}>{item.benchmark_name}</Link>
                     </td>
                     <td>{item.dataset_id}</td>
                     <td>{item.top_model_name ?? "--"}</td>

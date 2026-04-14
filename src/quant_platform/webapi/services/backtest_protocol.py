@@ -30,6 +30,10 @@ from quant_platform.webapi.schemas.views import (
 OFFICIAL_BACKTEST_TEMPLATE_ID = "system::official_backtest_protocol_v1"
 OFFICIAL_PROTOCOL_VERSION = "v1"
 OFFICIAL_OUTPUT_CONTRACT_VERSION = "prediction_frame_v1"
+OFFICIAL_DEFAULT_WINDOW_DAYS = 180
+OFFICIAL_WINDOW_OPTIONS = (30, 90, 180, 365)
+OFFICIAL_MARKET_BENCHMARK_DATASET_ID = "baseline_real_benchmark_dataset"
+OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID = "official_reddit_pullpush_multimodal_v2_fusion"
 OFFICIAL_SCENARIO_BUNDLE = (
     "BASELINE",
     "COST_X2",
@@ -40,24 +44,36 @@ OFFICIAL_SCENARIO_BUNDLE = (
     "STALE_SIGNAL",
     "BROKEN_DATA_GUARD",
 )
+OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO = 0.60
+OFFICIAL_NLP_MAX_TEST_EMPTY_BARS = 168
+OFFICIAL_NLP_MAX_DUPLICATE_RATIO = 0.05
+OFFICIAL_NLP_MIN_ENTITY_LINK_COVERAGE_RATIO = 0.95
+OFFICIAL_NLP_ARCHIVAL_VENDORS = (
+    "news_archive",
+    "reddit_archive",
+    "gdelt",
+)
 
 
 def custom_backtest_template() -> BacktestTemplateView:
     return BacktestTemplateView(
         template_id="custom::interactive",
         name="Custom Interactive Backtest",
-        description="保留当前 workbench 自由回测能力，允许用户自行选择预测范围和数据预置。",
+        description=(
+            "Flexible backtest mode. It preserves the existing workbench freedom to choose the "
+            "dataset, prediction scope, and portfolio controls interactively."
+        ),
         source="custom",
         read_only=False,
         official=False,
         protocol_version="interactive",
         output_contract_version=OFFICIAL_OUTPUT_CONTRACT_VERSION,
-        ranking_policy="不做官方 slice/rank 约束，按用户当前自定义配置返回结果。",
+        ranking_policy="No same-template ranking contract is enforced in custom mode.",
         slice_policy="custom",
         scenario_bundle=["BASELINE"],
-        eligibility_rules=["任意兼容 run 都可以发起自定义回测。"],
+        eligibility_rules=["Any compatible run can be launched in custom mode."],
         required_metadata=[],
-        notes=["custom 模式不进入官方榜单，但结果仍可查看和复盘。"],
+        notes=["Custom mode stays visible for inspection but is excluded from official ranking."],
     )
 
 
@@ -66,8 +82,9 @@ def official_backtest_template(*, default_benchmark_symbol: str = "BTCUSDT") -> 
         template_id=OFFICIAL_BACKTEST_TEMPLATE_ID,
         name="Official Backtest Protocol v1",
         description=(
-            "平台级官方回测模板。采用统一预测输出比较、固定压力场景、固定披露要求，"
-            "用于跨模型做更公平的能力与鲁棒性评估。"
+            "System template for current-market evaluation. It fixes prediction scope, stress "
+            "bundle, and disclosure requirements while binding each launch to the newest "
+            "official rolling benchmark version."
         ),
         source="system",
         read_only=True,
@@ -76,33 +93,53 @@ def official_backtest_template(*, default_benchmark_symbol: str = "BTCUSDT") -> 
         output_contract_version=OFFICIAL_OUTPUT_CONTRACT_VERSION,
         fixed_prediction_scope="test",
         ranking_policy=(
-            "先做合规 gate，再在相同 benchmark slice 内比较能力、经济性与鲁棒性指标；"
-            "单次回测详情页展示原始组件，跨模型排名在 comparison 中计算。"
+            "Run gate checks first, then compare only inside the same official rolling "
+            "benchmark version and window size."
         ),
         slice_policy=(
-            "同一 dataset_snapshot × frequency × target_name × horizon × prediction_scope "
-            "内比较，避免不同时间范围和不同任务尺度直接裸比。"
+            "Compare only within the same official rolling benchmark version, window size, "
+            "frequency, target, horizon, and prediction scope."
         ),
         scenario_bundle=list(OFFICIAL_SCENARIO_BUNDLE),
         eligibility_rules=[
-            "模型必须能输出标准 prediction frame，才能进入官方模板。",
-            "训练数据范围不设硬门槛，但必须披露训练窗口与关键训练元数据。",
-            "未完成披露的模型允许跑出官方回测结果，但 gate 会标记为 metadata_incomplete。",
+            "Model output must follow the prediction_frame_v1 contract.",
+            "Training-time disclosure fields must be populated before official comparison is trusted.",
+            "Official mode binds to the newest official rolling benchmark and ignores dataset overrides.",
+            "Official mode allows only fixed window presets: 30, 90, 180, and 365 days.",
+            "Official ranking compares runs only when the official benchmark version and window size match.",
+            "If NLP is used, the requested NLP collection window must match the market template window.",
+            "If NLP is used, only archival NLP sources are eligible for official same-template comparison.",
+            (
+                "If NLP is used, the official gate requires test-window coverage >= "
+                f"{OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO:.0%}, max empty gap <= "
+                f"{OFFICIAL_NLP_MAX_TEST_EMPTY_BARS} bars, duplicate ratio <= "
+                f"{OFFICIAL_NLP_MAX_DUPLICATE_RATIO:.0%}, and entity link coverage >= "
+                f"{OFFICIAL_NLP_MIN_ENTITY_LINK_COVERAGE_RATIO:.0%}."
+            ),
         ],
         required_metadata=[
-            "训练数据起止时间",
-            "lookback window / context length",
-            "label horizon",
-            "模态列表与融合方式摘要",
-            "随机种子",
-            "调参试验次数",
-            "是否使用外部预训练",
-            "是否使用合成数据",
+            "Training dataset start/end time",
+            "Lookback window / context length",
+            "Label horizon",
+            "Modalities and fusion summary",
+            "Random seed",
+            "Tuning trial count",
+            "External pretraining flag",
+            "Synthetic data flag",
+            "Actual market dataset window",
+            "Actual official backtest test window",
+            "Actual NLP coverage window and official NLP gate result when NLP is present",
+            "Official rolling benchmark version",
+            "Official rolling window size and actual window start/end time",
+            "Official market benchmark dataset id",
+            "Official multimodal benchmark dataset id when text signals are used",
         ],
         notes=[
-            "官方模板不可删除，和自定义回测并存。",
-            f"官方模板默认预测范围固定为 test，基准符号默认回落到 {default_benchmark_symbol}。",
-            "custom 模式仍保留 dataset preset、prediction scope、strategy、portfolio、cost 等自由参数。",
+            "The official template is read-only and cannot be deleted.",
+            f"The official template locks prediction scope to test and defaults the benchmark to {default_benchmark_symbol}.",
+            "The official template always uses the newest available market environment instead of the training dataset window.",
+            "Window size is user-selectable, but official rankings only compare results that use the same window preset.",
+            "Custom mode keeps dataset preset, scope, strategy, portfolio, and cost controls flexible.",
         ],
     )
 
@@ -166,18 +203,32 @@ def build_protocol_metadata(
     label_horizon: int | None,
     lookback_bucket: str | None,
     metadata_summary: dict[str, str | None],
+    official_benchmark_version: str | None = None,
+    official_window_days: int | None = None,
+    official_window_start_time: str | None = None,
+    official_window_end_time: str | None = None,
+    official_market_dataset_id: str | None = None,
+    official_multimodal_dataset_id: str | None = None,
 ) -> dict[str, object]:
-    slice_coverage = [
-        part
-        for part in [
+    slice_candidates = (
+        [
+            official_benchmark_version,
+            str(official_window_days) if official_window_days is not None else None,
+            dataset_frequency,
+            target_name,
+            str(label_horizon) if label_horizon is not None else None,
+            prediction_scope,
+        ]
+        if template.official
+        else [
             dataset_id,
             dataset_frequency,
             target_name,
             str(label_horizon) if label_horizon is not None else None,
             prediction_scope,
         ]
-        if part
-    ]
+    )
+    slice_coverage = [part for part in slice_candidates if part]
     return {
         "template_id": template.template_id,
         "template_name": template.name,
@@ -195,6 +246,12 @@ def build_protocol_metadata(
         "metadata_summary": metadata_summary,
         "lookback_bucket": lookback_bucket,
         "slice_coverage": slice_coverage,
+        "official_benchmark_version": official_benchmark_version,
+        "official_window_days": official_window_days,
+        "official_window_start_time": official_window_start_time,
+        "official_window_end_time": official_window_end_time,
+        "official_market_dataset_id": official_market_dataset_id,
+        "official_multimodal_dataset_id": official_multimodal_dataset_id,
         "slice_id": stable_digest({"template_id": template.template_id, "slice": slice_coverage}),
     }
 
@@ -232,81 +289,91 @@ def compute_protocol_result(
         for key, value in dict(protocol_metadata.get("metadata_summary") or {}).items()
     }
     metadata_complete = all(metadata_summary.get(key) for key in metadata_summary)
+    nlp_gate_status = _str(protocol_metadata.get("nlp_gate_status"))
+    nlp_gate_reasons = _str_list(protocol_metadata.get("nlp_gate_reasons"))
     gate_results = [
         GateResultView(
             key="metadata_complete",
-            label="披露信息完整",
+            label="Metadata Complete",
             passed=metadata_complete,
             severity="warning",
-            detail="官方模板要求披露训练时间范围、lookback、模态、种子和预训练信息。",
+            detail="Official comparison requires the training and backtest disclosure fields to be populated.",
         ),
         GateResultView(
             key="consistency_checks",
-            label="研究/仿真一致性",
+            label="Research / Simulation Consistency",
             passed=bool(passed_consistency_checks),
             severity="error",
-            detail="要求研究引擎与仿真引擎不存在异常优于关系。",
+            detail="Research and simulation outputs must not show an abnormal inversion relationship.",
         ),
         GateResultView(
             key="stress_bundle_complete",
-            label="官方压力场景齐备",
+            label="Stress Bundle Complete",
             passed=_stress_bundle_complete(protocol_metadata, scenario_metrics),
             severity="error",
-            detail="官方模板至少要求完整跑完固定 stress bundle。",
+            detail="Official comparison requires the fixed stress bundle to be present.",
         ),
         GateResultView(
             key="risk_limits",
-            label="基础风险阈值",
+            label="Risk Limits",
             passed=_risk_limits_passed(simulation_metrics, divergence_metrics, scenario_metrics),
             severity="error",
             detail=(
-                f"要求 max_drawdown <= {DEFAULT_MAX_DRAWDOWN:.2f}, "
+                f"Requires max_drawdown <= {DEFAULT_MAX_DRAWDOWN:.2f}, "
                 f"turnover_total <= {DEFAULT_MAX_TURNOVER:.2f}, "
-                f"stress_fail_count <= {DEFAULT_MAX_STRESS_FAILS:.0f}。"
+                f"stress_fail_count <= {DEFAULT_MAX_STRESS_FAILS:.0f}."
             ),
         ),
     ]
-    gate_status = (
-        "passed"
-        if all(item.passed is not False for item in gate_results) and not comparison_warnings
-        else "warning"
-    )
+    if nlp_gate_status:
+        gate_results.append(
+            GateResultView(
+                key="official_nlp_quality_gate",
+                label="Official NLP Quality Gate",
+                passed=(nlp_gate_status == "passed"),
+                severity="error" if nlp_gate_status == "failed" else "warning",
+                detail="; ".join(nlp_gate_reasons) if nlp_gate_reasons else "NLP gate did not report details.",
+            )
+        )
+    has_error_failure = any(item.passed is False and item.severity == "error" for item in gate_results)
+    has_warning = bool(comparison_warnings) or any(item.passed is False for item in gate_results)
+    gate_status = "failed" if has_error_failure else ("warning" if has_warning else "passed")
     rank_components = [
         RankComponentView(
             key="annual_return",
             label="Annual Return",
             value=_float(simulation_metrics.get("annual_return")),
-            detail="单次结果展示原始指标；跨模型百分位在 comparison 中再算。",
+            detail="Raw component shown before same-template ranking.",
         ),
         RankComponentView(
             key="information_ratio",
             label="Information Ratio",
             value=_float(simulation_metrics.get("information_ratio")),
-            detail="能力组件原始值。",
+            detail="Capability component.",
         ),
         RankComponentView(
             key="max_drawdown",
             label="Max Drawdown",
             value=_float(simulation_metrics.get("max_drawdown")),
-            detail="经济与风险组件原始值。",
+            detail="Risk component.",
         ),
         RankComponentView(
             key="implementation_shortfall",
             label="Implementation Shortfall",
             value=_float(simulation_metrics.get("implementation_shortfall")),
-            detail="执行成本组件原始值。",
+            detail="Execution cost component.",
         ),
         RankComponentView(
             key="worst_scenario_return_delta",
             label="Worst Scenario Delta",
             value=_float(scenario_metrics.get("worst_scenario_return_delta")),
-            detail="鲁棒性组件原始值。",
+            detail="Robustness component.",
         ),
         RankComponentView(
             key="simulation_minus_research_cumulative_return",
             label="Research/Simulation Divergence",
             value=_float(divergence_metrics.get("simulation_minus_research_cumulative_return")),
-            detail="越接近 0 越可信。",
+            detail="Closer to 0 is more trustworthy.",
         ),
     ]
     return BacktestProtocolResultView(
@@ -318,6 +385,20 @@ def compute_protocol_result(
         slice_coverage=_str_list(protocol_metadata.get("slice_coverage")),
         lookback_bucket=_str(protocol_metadata.get("lookback_bucket")),
         metadata_summary=metadata_summary,
+        actual_market_start_time=_dt(protocol_metadata.get("actual_market_start_time")),
+        actual_market_end_time=_dt(protocol_metadata.get("actual_market_end_time")),
+        actual_backtest_start_time=_dt(protocol_metadata.get("actual_backtest_start_time")),
+        actual_backtest_end_time=_dt(protocol_metadata.get("actual_backtest_end_time")),
+        actual_nlp_start_time=_dt(protocol_metadata.get("actual_nlp_start_time")),
+        actual_nlp_end_time=_dt(protocol_metadata.get("actual_nlp_end_time")),
+        nlp_gate_status=nlp_gate_status,
+        nlp_gate_reasons=nlp_gate_reasons,
+        official_benchmark_version=_str(protocol_metadata.get("official_benchmark_version")),
+        official_window_days=_int(protocol_metadata.get("official_window_days")),
+        official_window_start_time=_dt(protocol_metadata.get("official_window_start_time")),
+        official_window_end_time=_dt(protocol_metadata.get("official_window_end_time")),
+        official_market_dataset_id=_str(protocol_metadata.get("official_market_dataset_id")),
+        official_multimodal_dataset_id=_str(protocol_metadata.get("official_multimodal_dataset_id")),
     )
 
 
@@ -376,6 +457,33 @@ def _float(value: Any) -> float | None:
 
 def _str(value: Any) -> str | None:
     return str(value) if isinstance(value, (int, float, str)) else None
+
+
+def _int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _dt(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _str_list(value: Any) -> list[str]:

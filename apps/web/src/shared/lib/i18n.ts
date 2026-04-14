@@ -91,7 +91,7 @@ export const I18N = {
       definition:
         "\u5e73\u5747\u7edd\u5bf9\u8bef\u5dee\uff0c\u7528\u6765\u8861\u91cf\u9884\u6d4b\u503c\u4e0e\u771f\u5b9e\u503c\u7684\u5e73\u5747\u504f\u5dee\u3002",
       howToRead:
-        "\u540c\u4e00\u6570\u636e\u96c6\u548c\u6807\u7b7e\u5c3a\u5ea6\u4e0b\uff0c\u901a\u5e38\u662f\u8d8a\u4f4e\u8d8a\u597d\uff0c\u8981\u7ed3\u5408 benchmark \u6216\u57fa\u51c6\u6a21\u578b\u4e00\u8d77\u770b\u3002",
+        "\u540c\u4e00\u6570\u636e\u96c6\u548c\u6807\u7b7e\u5c3a\u5ea6\u4e0b\uff0c\u901a\u5e38\u662f\u8d8a\u4f4e\u8d8a\u597d\uff0c\u8981\u7ed3\u5408\u57fa\u51c6\u6216\u57fa\u51c6\u6a21\u578b\u4e00\u8d77\u770b\u3002",
       watchout:
         "\u5982\u679c MAE \u5f88\u4f4e\u4f46\u56de\u6d4b\u8868\u73b0\u5e76\u4e0d\u597d\uff0c\u8bf4\u660e\u76ee\u6807\u53ef\u80fd\u4e0e\u4ea4\u6613\u7ed3\u679c\u8fde\u63a5\u4e0d\u591f\u76f4\u63a5\u3002",
     },
@@ -147,7 +147,7 @@ export const I18N = {
       howToRead:
         "\u5b83\u7528\u6765\u770b\u6a21\u578b\u4e4b\u95f4\u8c01\u66f4\u7a33\u5b9a\uff0c\u4e0d\u8981\u53ea\u770b\u51a0\u519b\u6a21\u578b\uff0c\u4e5f\u8981\u770b\u6574\u4f53\u6392\u540d\u548c\u6ce2\u52a8\u3002",
       watchout:
-        "\u5982\u679c benchmark \u5e38\u5e38\u6362\u51a0\u519b\uff0c\u800c\u6307\u6807\u5dee\u8ddd\u53c8\u5f88\u5c0f\uff0c\u8bf4\u660e\u5f53\u524d\u7ed3\u8bba\u53ef\u80fd\u4e0d\u592a\u7a33\u3002",
+        "\u5982\u679c\u57fa\u51c6\u6392\u884c\u699c\u5e38\u5e38\u6362\u51a0\u519b\uff0c\u800c\u6307\u6807\u5dee\u8ddd\u53c8\u5f88\u5c0f\uff0c\u8bf4\u660e\u5f53\u524d\u7ed3\u8bba\u53ef\u80fd\u4e0d\u592a\u7a33\u3002",
     },
     epochs: {
       term: "\u8bad\u7ec3\u8f6e\u6b21",
@@ -298,7 +298,7 @@ export const I18N = {
       definition:
         "指这份数据首先属于市场、衍生品、链上、宏观还是情绪 / 事件中的哪一类业务域。",
       howToRead:
-        "先看数据域，再看 source、exchange、symbol 和 frequency，能更快判断它应该放在哪条研究链路里。",
+        "先看数据域，再看来源、交易所、标的和频率，能更快判断它应该放在哪条研究链路里。",
       watchout:
         "把不同数据域当成同一种数据去看，最容易误读字段含义、刷新节奏和可训练性。",
     },
@@ -336,7 +336,7 @@ export const I18N = {
       howToRead:
         "它决定 universe 是显式指定出来的，还是由筛选规则动态生成出来的。",
       watchout:
-        "如果选择方式和 symbol_count、tags、symbols 不匹配，实际拿到的研究对象可能和预期不同。",
+        "如果选择方式和标的数量、标签、标的不匹配，实际拿到的研究对象可能和预期不同。",
     },
     alignment_policy: {
       term: "对齐策略",
@@ -363,7 +363,7 @@ export const I18N = {
       howToRead:
         "它能帮助你快速判断是做单标的切片分析，还是做跨实体统一面板。",
       watchout:
-        "实体范围看错时，常常会误解样本条数、symbol 预览和训练结果的可泛化边界。",
+        "实体范围看错时，常常会误解样本条数、标的预览和训练结果的可泛化边界。",
     },
     snapshot_version: {
       term: "快照版本",

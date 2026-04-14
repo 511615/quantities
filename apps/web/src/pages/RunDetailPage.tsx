@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { type ReactNode, useState } from "react";
 import type { EChartsOption } from "echarts";
 import { Link, useParams } from "react-router-dom";
 
@@ -58,7 +58,7 @@ function metricLabel(key: string): string {
     mae: "MAE",
     rmse: "RMSE",
     r2: "R2",
-    bias: "Bias",
+    bias: "偏差",
     sign_hit_rate: "方向命中率",
     valid_mae: "验证集 MAE",
     mean_prediction: "预测均值",
@@ -106,6 +106,11 @@ function combineArtifacts(detail: RunDetailView): ArtifactView[] {
     }
   }
   return merged;
+}
+
+function deriveDatasetIds(detail: RunDetailView) {
+  const rawIds = detail.dataset_ids?.length ? detail.dataset_ids : detail.dataset_id ? [detail.dataset_id] : [];
+  return Array.from(new Set(rawIds.map((item) => item.trim()).filter(Boolean)));
 }
 
 function lineChartOption(
@@ -239,7 +244,7 @@ function histogramChartOption(points: HistogramPoint[]): EChartsOption {
 function SummaryList({
   items,
 }: {
-  items: Array<{ label: string; value: string }>;
+  items: Array<{ label: string; value: ReactNode }>;
 }) {
   return (
     <div className="stack-list">
@@ -281,20 +286,22 @@ export function RunDetailPage() {
   const histogramSeries = asHistogram(series.residual_histogram);
   const evaluationArtifacts = asArtifacts(detail.evaluation_artifacts);
   const artifacts = combineArtifacts(detail);
-  const contextItems = [
+  const datasetIds = deriveDatasetIds(detail);
+  const compositionSources = detail.composition?.source_runs ?? [];
+  const displayContextItems = [
     { label: "任务类型", value: stringValue(detail.task_type) },
     { label: "数据集类型", value: stringValue(datasetSummary.dataset_type) },
     { label: "数据域", value: stringValue(datasetSummary.data_domains ?? datasetSummary.data_domain) },
     { label: "实体范围", value: stringValue(datasetSummary.entity_scope) },
-    { label: "Feature Schema", value: stringValue(datasetSummary.feature_schema_hash) },
-    { label: "Snapshot", value: stringValue(datasetSummary.snapshot_version) },
+    { label: "特征模式", value: stringValue(datasetSummary.feature_schema_hash) },
+    { label: "快照版本", value: stringValue(datasetSummary.snapshot_version) },
     { label: "训练参数", value: stringValue(detail.tracking_params) },
     { label: "复现实验上下文", value: stringValue(detail.repro_context) },
   ];
-  const summaryMetrics = [
+  const displaySummaryMetrics = [
     { label: "模型", value: detail.model_name },
     { label: "模型家族", value: detail.family ?? "--" },
-    { label: "数据集", value: detail.dataset_id ?? "--" },
+    { label: "数据集数量", value: datasetIds.length > 0 ? String(datasetIds.length) : "--" },
     {
       label: "时间范围",
       value: `${stringValue(timeRange.start_time)} 至 ${stringValue(timeRange.end_time)}`,
@@ -303,17 +310,20 @@ export function RunDetailPage() {
     { label: "训练后端", value: detail.backend ?? "--" },
     { label: "产物格式", value: detail.artifact_format_status ?? "--" },
   ];
-  const coreMetrics = [
+  const displayCoreMetrics = [
     { label: "MAE", value: formatMetricValue("mae", regressionMetrics.mae) },
     { label: "RMSE", value: formatMetricValue("rmse", regressionMetrics.rmse) },
     { label: "R2", value: formatMetricValue("r2", regressionMetrics.r2) },
-    { label: "Bias", value: formatMetricValue("bias", regressionMetrics.bias) },
+    { label: "偏差", value: formatMetricValue("bias", regressionMetrics.bias) },
     {
       label: "方向命中率",
       value: formatMetricValue("sign_hit_rate", regressionMetrics.sign_hit_rate),
     },
     { label: "验证集 MAE", value: formatMetricValue("valid_mae", regressionMetrics.valid_mae) },
   ];
+  const contextItems = displayContextItems;
+  const summaryMetrics = displaySummaryMetrics;
+  const coreMetrics = displayCoreMetrics;
 
   return (
     <div className="page-stack">
@@ -321,39 +331,106 @@ export function RunDetailPage() {
         <PanelHeader
           eyebrow={I18N.nav.trainedModels}
           title={detail.run_id}
-          description="这里汇总训练完成后的核心评估、回归曲线、训练上下文、产物预览和回测入口，确保新产物格式的模型能直接被研究页面消费。"
+          description="这里汇总训练后的模型摘要、组合来源、评估产物和回测入口，方便快速确认这个 run 能否按预期工作。"
           action={
             <div className="table-actions">
               <Link className="link-button" to="/models?tab=trained">
                 {I18N.nav.trainedModels}
               </Link>
               <StatusPill status={detail.status} />
-              <LaunchBacktestDrawer initialRunId={detail.run_id} initialDatasetId={detail.dataset_id} />
+              <LaunchBacktestDrawer
+                initialRunId={detail.run_id}
+                initialDatasetId={detail.dataset_id}
+                initialDatasetIds={datasetIds}
+              />
             </div>
           }
         />
-        <MetricGrid items={summaryMetrics} />
+        <MetricGrid items={displaySummaryMetrics} />
+      </section>
+
+      <section className="panel">
+        <PanelHeader
+          eyebrow="组合来源"
+            title="多模态来源运行"
+            description="这里列出参与融合的源运行、模态、权重和各自数据集，方便确认组合是否符合预期。"
+          />
+        {datasetIds.length > 0 ? (
+          <SummaryList
+            items={[
+              {
+                label: "数据集 IDs",
+                value: (
+                  <div className="table-title-cell">
+                    {datasetIds.map((datasetId) => (
+                      <Link key={datasetId} to={`/datasets/${encodeURIComponent(datasetId)}`}>
+                        {datasetId}
+                      </Link>
+                    ))}
+                  </div>
+                ),
+              },
+            ]}
+          />
+        ) : (
+          <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
+        )}
       </section>
 
       <section className="panel">
         <PanelHeader
           eyebrow="核心评估"
           title="回归指标总览"
-          description={`主展示范围：${stringValue(evaluation.selected_scope)}。若这是旧 run，图表和评估快照可能不完整。`}
+          description={`主展示范围：${stringValue(evaluation.selected_scope)}。如果这是组合 run，训练阶段本身可能不产出完整评估快照。`}
         />
-        <MetricGrid items={coreMetrics} />
+        <MetricGrid items={displayCoreMetrics} />
+        {compositionSources.length > 0 && Object.keys(regressionMetrics).length === 0 ? (
+          <EmptyState
+            title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
+        ) : null}
       </section>
+
+      {compositionSources.length > 0 ? (
+        <section className="panel">
+          <PanelHeader
+            eyebrow="组合来源"
+            title="多模态来源运行"
+            description="这里列出参与融合的源运行、模态、权重和各自数据集，方便确认组合是否符合预期。"
+          />
+          <div className="stack-list">
+            {compositionSources.map((source) => (
+              <div className="stack-item align-start" key={`${source.run_id}-${source.modality}`}>
+                <strong>{source.run_id}</strong>
+                <span>{`模态：${source.modality || "--"} / 权重：${source.weight ?? "--"} / 模型：${source.model_name || "--"}`}</span>
+                <span className="table-title-cell">
+                  {(source.dataset_ids ?? []).length > 0
+                    ? (source.dataset_ids ?? []).map((datasetId) => (
+                        <Link key={datasetId} to={`/datasets/${encodeURIComponent(datasetId)}`}>
+                          {datasetId}
+                        </Link>
+                      ))
+                    : "--"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
-          <PanelHeader eyebrow="回归曲线" title="预测 vs 真实" />
+          <PanelHeader eyebrow="回归曲线" title="预测与真实对比" />
           {predictionVsTarget.length > 0 ? (
             <WorkbenchChart option={compareChartOption(predictionVsTarget)} style={{ height: 320 }} />
           ) : (
             <EmptyState
-              title="暂无评估曲线"
-              body="该 run 生成于评估快照增强前，暂时没有预测值与真实值时间序列。"
-            />
+              title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
           )}
         </section>
 
@@ -362,7 +439,9 @@ export function RunDetailPage() {
           {histogramSeries.length > 0 ? (
             <WorkbenchChart option={histogramChartOption(histogramSeries)} style={{ height: 320 }} />
           ) : (
-            <EmptyState title="暂无残差分布" body="当前没有可供展示的残差统计。" />
+            <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
           )}
         </section>
       </div>
@@ -373,7 +452,9 @@ export function RunDetailPage() {
           {scatterSeries.length > 0 ? (
             <WorkbenchChart option={scatterChartOption(scatterSeries)} style={{ height: 320 }} />
           ) : (
-            <EmptyState title="暂无散点图" body="当前没有预测值与真实值散点样本。" />
+            <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
           )}
         </section>
 
@@ -385,7 +466,9 @@ export function RunDetailPage() {
               style={{ height: 320 }}
             />
           ) : (
-            <EmptyState title="暂无残差时间线" body="当前没有可供展示的残差时间序列。" />
+            <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
           )}
         </section>
       </div>
@@ -393,7 +476,7 @@ export function RunDetailPage() {
       <div className="detail-grid wide-secondary">
         <section className="panel">
           <PanelHeader eyebrow="训练上下文" title="数据与配置线索" />
-          <SummaryList items={contextItems} />
+          <SummaryList items={displayContextItems} />
         </section>
 
         <section className="panel">
@@ -410,7 +493,9 @@ export function RunDetailPage() {
                 ))}
             </div>
           ) : (
-            <EmptyState title="暂无特征解释" body="当前模型没有输出特征重要性摘要。" />
+            <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
           )}
           {evaluationArtifacts.length > 0 ? (
             <p className="drawer-copy">评估摘要和特征解释工件已经落盘，可在下方工件区继续预览。</p>
@@ -436,7 +521,9 @@ export function RunDetailPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="暂无预测产物" body="当前 run 还没有生成预测产物。" />
+            <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
           )}
         </section>
 
@@ -448,7 +535,7 @@ export function RunDetailPage() {
                 <div className="stack-item align-start" key={backtest.backtest_id}>
                   <div>
                     <strong>
-                      <Link to={`/backtests/${backtest.backtest_id}`}>{backtest.backtest_id}</Link>
+                      <Link to={`/backtests/${encodeURIComponent(backtest.backtest_id)}`}>{backtest.backtest_id}</Link>
                     </strong>
                     <div>{`年化收益 ${formatPercent(backtest.annual_return)}`}</div>
                     <div>
@@ -460,7 +547,9 @@ export function RunDetailPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="暂无关联回测" body="可以直接从当前 run 发起回测。" />
+            <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
           )}
         </section>
       </div>
@@ -485,7 +574,9 @@ export function RunDetailPage() {
             </tbody>
           </table>
         ) : (
-          <EmptyState title="暂无指标明细" body="当前 run 还没有完整的回归评估指标。" />
+          <EmptyState title="组合模型暂无独立训练评估"
+            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          />
         )}
       </section>
 
@@ -539,3 +630,4 @@ export function RunDetailPage() {
     </div>
   );
 }
+

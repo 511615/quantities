@@ -37,9 +37,9 @@ export function DatasetCandlestickChart({
       textStyle: { color: "#b8b09e" },
       data: [
         "\u4ef7\u683c",
-        ...(showMA5 ? ["MA5"] : []),
-        ...(showMA10 ? ["MA10"] : []),
-        ...(showVolume ? ["Volume"] : []),
+        ...(showMA5 ? ["5日均线"] : []),
+        ...(showMA10 ? ["10日均线"] : []),
+        ...(showVolume ? ["成交量"] : []),
       ],
     },
     grid: [
@@ -103,7 +103,7 @@ export function DatasetCandlestickChart({
       ...(showMA5
         ? [
             {
-              name: "MA5",
+              name: "5日均线",
               type: "line" as const,
               data: movingAverage(closes, 5),
               smooth: true,
@@ -115,7 +115,7 @@ export function DatasetCandlestickChart({
       ...(showMA10
         ? [
             {
-              name: "MA10",
+              name: "10日均线",
               type: "line" as const,
               data: movingAverage(closes, 10),
               smooth: true,
@@ -127,7 +127,7 @@ export function DatasetCandlestickChart({
       ...(showVolume
         ? [
             {
-              name: "Volume",
+              name: "成交量",
               type: "bar" as const,
               xAxisIndex: 1,
               yAxisIndex: 1,

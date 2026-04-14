@@ -133,7 +133,7 @@ test("submits template-driven train launch and shows run deeplink button", async
   renderWithProviders(<LaunchTrainDrawer />);
 
   fireEvent.click(screen.getByText("发起训练"));
-  await waitFor(() => expect(screen.getByText("Elastic Net default")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText("弹性网络默认模板")).toBeInTheDocument());
   fireEvent.click(screen.getByText("提交"));
 
   await waitFor(() =>
@@ -202,6 +202,7 @@ test("renders dataset-aware train launch without preset selector", async () => {
   const drawerQueries = within(drawer as HTMLElement);
   expect(drawerQueries.queryByText("数据集预置")).not.toBeInTheDocument();
   expect(drawerQueries.getByText("模型模板")).toBeInTheDocument();
+  expect(drawerQueries.getByText("随机种子")).toBeInTheDocument();
 });
 
 test("blocks dataset-aware train launch when readiness is not_ready", async () => {

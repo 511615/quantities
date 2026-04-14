@@ -53,7 +53,7 @@ export function BacktestsPage() {
           <input
             className="field"
             onChange={(event) => setSearch(event.target.value)}
-            placeholder={"\u641c\u7d22 backtest_id / \u8bad\u7ec3\u5b9e\u4f8b ID"}
+            placeholder={"\u641c\u7d22\u56de\u6d4b ID / \u8bad\u7ec3\u5b9e\u4f8b ID"}
             value={search}
           />
           <select
@@ -89,18 +89,20 @@ export function BacktestsPage() {
                 {query.data.items.map((item) => (
                   <tr key={item.backtest_id}>
                     <td>
-                      <Link to={`/backtests/${item.backtest_id}`}>{item.backtest_id}</Link>
+                      <Link to={`/backtests/${encodeURIComponent(item.backtest_id)}`}>{item.backtest_id}</Link>
                     </td>
                     <td>{item.run_id ?? "--"}</td>
                     <td>{formatNumber(item.max_drawdown)}</td>
                     <td>{formatNumber(item.annual_return)}</td>
-                    <td>{item.warning_count}</td>
-                    <td>
-                      <StatusPill status={item.status} />
+                    <td>{Math.max(item.warning_count, item.official && item.gate_status === "failed" ? 1 : 0)}</td>
+                    <td title={item.official && item.gate_status === "failed" ? "官方协议门禁未通过，结果仅可用于排错，不参与官方比较。" : undefined}>
+                      <StatusPill
+                        status={item.official && item.gate_status === "failed" ? "failed" : item.status}
+                      />
                     </td>
                     <td>
                       <div className="table-actions">
-                        <Link className="link-button" to={`/backtests/${item.backtest_id}`}>
+                        <Link className="link-button" to={`/backtests/${encodeURIComponent(item.backtest_id)}`}>
                           {"\u8be6\u60c5"}
                         </Link>
                         <button
@@ -145,7 +147,7 @@ export function BacktestsPage() {
         confirmLabel={deleteMutation.isPending ? "\u5220\u9664\u4e2d..." : "\u786e\u8ba4\u5220\u9664"}
         message={
           pendingDelete
-            ? `\u5c06\u6c38\u4e45\u5220\u9664\u56de\u6d4b ${pendingDelete.backtest_id}\uff0c\u5e76\u6e05\u7406\u5bf9\u5e94\u62a5\u544a\u4ea7\u7269\u3002\u5bf9\u5e94\u7684\u8bad\u7ec3 run \u4f1a\u4fdd\u7559\uff0c\u4f46\u4e0d\u518d\u663e\u793a\u8fd9\u6761\u56de\u6d4b\u8bb0\u5f55\u3002`
+            ? `\u5c06\u6c38\u4e45\u5220\u9664\u56de\u6d4b ${pendingDelete.backtest_id}\uff0c\u5e76\u6e05\u7406\u5bf9\u5e94\u62a5\u544a\u4ea7\u7269\u3002\u5bf9\u5e94\u7684\u8bad\u7ec3\u5b9e\u4f8b\u4f1a\u4fdd\u7559\uff0c\u4f46\u4e0d\u518d\u663e\u793a\u8fd9\u6761\u56de\u6d4b\u8bb0\u5f55\u3002`
             : ""
         }
         onCancel={() => {

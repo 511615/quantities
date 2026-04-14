@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+﻿import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { LaunchBacktestDrawer } from "../features/launch-backtest/LaunchBacktestDrawer";
@@ -7,6 +7,8 @@ import {
   useCreateModelTemplateMutation,
   useDatasetDetail,
   useDeleteModelTemplateMutation,
+  useJobStatus,
+  useLaunchModelCompositionMutation,
   useModelTemplates,
   useRuns,
   useTrainOptions,
@@ -60,7 +62,7 @@ function duplicateDraft(template: TemplateDraft): TemplateDraft {
   return {
     ...template,
     template_id: undefined,
-    name: `${template.name} 副本`,
+    name: `${template.name} 鍓湰`,
     read_only: false,
   };
 }
@@ -72,6 +74,61 @@ function applyModelDefaults(current: TemplateDraft, modelName: string): Template
     model_name: modelName,
     hyperparams: next.hyperparams,
   };
+}
+
+function localizeTemplateDisplayText(value?: string | null) {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "elastic net default") {
+    return "Elastic Net Default";
+  }
+  if (normalized === "smoke") {
+    return "Smoke";
+  }
+  if (normalized === "real_benchmark") {
+    return "Real Benchmark";
+  }
+  if (normalized === "fast") {
+    return "Fast";
+  }
+  return value ?? "--";
+}
+
+function isInternalHelperDatasetId(datasetId: string) {
+  return datasetId.endsWith("_market_anchor");
+}
+
+function datasetIdsForRun(run: {
+  dataset_id: string | null;
+  dataset_ids?: string[];
+  datasets?: Array<{ dataset_id: string }>;
+  primary_dataset_id?: string | null;
+  composition?: Record<string, unknown> | null;
+  tags?: Record<string, string>;
+}) {
+  const rawIds = run.datasets?.length
+    ? run.datasets.map((item) => item.dataset_id)
+    : run.dataset_ids?.length
+      ? run.dataset_ids
+      : run.tags?.dataset_ids
+        ? run.tags.dataset_ids.split(",")
+        : run.dataset_id
+          ? [run.dataset_id]
+          : [];
+  const deduped = Array.from(new Set(rawIds.map((item) => item.trim()).filter(Boolean)));
+  if (run.composition) {
+    return deduped;
+  }
+  const visibleIds = deduped.filter((item) => !isInternalHelperDatasetId(item));
+  return visibleIds.length > 0 ? visibleIds : deduped;
+}
+
+function singleDatasetIdForRun(run: {
+  dataset_id: string | null;
+  dataset_ids?: string[];
+  tags?: Record<string, string>;
+}) {
+  const ids = datasetIdsForRun(run);
+  return ids.length === 1 ? ids[0] : null;
 }
 
 export function ModelsPage() {
@@ -88,6 +145,10 @@ export function ModelsPage() {
   const [runSearch, setRunSearch] = useState("");
   const deferredRunSearch = useDeferredValue(runSearch);
   const [selectedRunIdForBacktest, setSelectedRunIdForBacktest] = useState<string | null>(null);
+  const [selectedRunIdsForComposition, setSelectedRunIdsForComposition] = useState<string[]>([]);
+  const [compositionName, setCompositionName] = useState("Multimodal Composite");
+  const [compositionError, setCompositionError] = useState<string | null>(null);
+  const [compositionJobId, setCompositionJobId] = useState<string | null>(null);
 
   const activeTab = searchParams.get("tab") === "trained" ? "trained" : "templates";
   const launchTrainRequested = searchParams.get("launchTrain") === "1";
@@ -115,6 +176,8 @@ export function ModelsPage() {
   const createTemplateMutation = useCreateModelTemplateMutation();
   const updateTemplateMutation = useUpdateModelTemplateMutation();
   const deleteTemplateMutation = useDeleteModelTemplateMutation();
+  const compositionMutation = useLaunchModelCompositionMutation();
+  const compositionJobQuery = useJobStatus(compositionJobId);
 
   useEffect(() => {
     window.localStorage.setItem(TRAINED_MODELS_STORAGE_KEY, JSON.stringify(runMeta));
@@ -171,11 +234,11 @@ export function ModelsPage() {
       return;
     }
     if (!templateDraft.name.trim()) {
-      setTemplateError("请输入模板名称。");
+      setTemplateError("Please enter a template name.");
       return;
     }
     if (!templateDraft.model_name.trim()) {
-      setTemplateError("请选择模型类型。");
+      setTemplateError("Please choose a model type.");
       return;
     }
 
@@ -187,7 +250,7 @@ export function ModelsPage() {
       }
       parsedHyperparams = parsed as Record<string, unknown>;
     } catch {
-      setTemplateError("超参数 JSON 解析失败，请输入合法对象。");
+      setTemplateError("Hyperparameters must be valid JSON.");
       return;
     }
 
@@ -271,6 +334,52 @@ export function ModelsPage() {
 
   const visibleRuns = (runsQuery.data?.items ?? []).filter((item) => !runMeta[item.run_id]?.hidden);
   const templateSavePending = createTemplateMutation.isPending || updateTemplateMutation.isPending;
+  const selectedRuns = visibleRuns.filter((run) => selectedRunIdsForComposition.includes(run.run_id));
+  const selectedRunDatasetIds = selectedRuns.flatMap((run) => datasetIdsForRun(run));
+  const uniqueSelectedDatasetIds = Array.from(new Set(selectedRunDatasetIds));
+  const selectedRunsHaveOnlySingleDataset = selectedRuns.every(
+    (run) => datasetIdsForRun(run).length === 1,
+  );
+  const compositionReady =
+    selectedRuns.length >= 2 &&
+    selectedRunsHaveOnlySingleDataset &&
+    uniqueSelectedDatasetIds.length >= 2;
+
+  function toggleRunSelection(runId: string, checked: boolean) {
+    setSelectedRunIdsForComposition((current) =>
+      checked ? Array.from(new Set([...current, runId])) : current.filter((value) => value !== runId),
+    );
+  }
+
+  async function handleLaunchComposition() {
+    if (selectedRuns.length < 2) {
+      setCompositionError("Select at least two single-modality runs.");
+      return;
+    }
+    if (!selectedRunsHaveOnlySingleDataset) {
+      setCompositionError("Only single-dataset runs can be composed right now.");
+      return;
+    }
+    if (uniqueSelectedDatasetIds.length < 2) {
+      setCompositionError("Select runs backed by at least two different datasets.");
+      return;
+    }
+    if (!compositionName.trim()) {
+      setCompositionError("Please enter a composition name.");
+      return;
+    }
+    try {
+      const result = await compositionMutation.mutateAsync({
+        source_run_ids: selectedRuns.map((run) => run.run_id),
+        composition_name: compositionName.trim(),
+        dataset_ids: uniqueSelectedDatasetIds,
+      });
+      setCompositionError(null);
+      setCompositionJobId(result.job_id);
+    } catch (error) {
+      setCompositionError((error as Error).message);
+    }
+  }
 
   return (
     <div className="page-stack">
@@ -278,7 +387,7 @@ export function ModelsPage() {
         <PanelHeader
           eyebrow={I18N.nav.models}
           title={I18N.nav.models}
-          description={"把模板设计、已训练产物管理和回测发起收在同一工作面里。"}
+          description={"Manage templates, trained models, and backtest launches in one place."}
           action={
             <div className="table-actions">
               <LaunchTrainDrawer
@@ -294,17 +403,17 @@ export function ModelsPage() {
                 }
                 description={
                   launchTrainRequested && requestedDatasetId
-                    ? "当前是从数据集页跳过来的 dataset-aware 训练模式，会直接以 dataset_id 作为训练入口。"
+                    ? "This launch was opened from a dataset page and will use that dataset directly."
                     : undefined
                 }
                 title={
                   launchTrainRequested && requestedDatasetId
-                    ? "基于当前数据集发起训练"
+                    ? "Launch training from this dataset"
                     : undefined
                 }
                 triggerLabel={
                   launchTrainRequested && requestedDatasetId
-                    ? "继续这份数据集训练"
+                    ? "Continue training"
                     : undefined
                 }
               />
@@ -333,10 +442,10 @@ export function ModelsPage() {
       {activeTab === "templates" ? (
         <section className="page-stack">
           <section className="panel">
-            <PanelHeader
-              eyebrow={I18N.nav.modelTemplates}
-              title={I18N.nav.modelTemplates}
-              description={"模板直接来自后端注册与存储，可直接作为训练入口使用。"}
+              <PanelHeader
+                eyebrow={I18N.nav.modelTemplates}
+                title={I18N.nav.modelTemplates}
+                description={"Templates come directly from backend registration and storage."}
               action={
                 <button
                   className="action-button"
@@ -357,21 +466,21 @@ export function ModelsPage() {
                 <table className="data-table trained-models-table">
                   <thead>
                     <tr>
-                      <th>{"模板名称"}</th>
-                      <th>{"算法类型"}</th>
-                      <th>{"默认参数"}</th>
-                      <th>{"默认训练入口"}</th>
-                      <th>{"启用状态"}</th>
-                      <th>{"操作"}</th>
+                      <th>{"Template"}</th>
+                      <th>{"Model"}</th>
+                      <th>{"Defaults"}</th>
+                      <th>{"Training Entry"}</th>
+                      <th>{"Enabled"}</th>
+                      <th>{"Actions"}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {templates.map((template) => (
                       <tr key={template.template_id}>
-                        <td>{template.name}</td>
+                        <td>{localizeTemplateDisplayText(template.name)}</td>
                         <td>{modelLabel(template.model_name)}</td>
                         <td>{summarizeTemplateParameters(template)}</td>
-                        <td>{`${template.dataset_preset} / ${template.trainer_preset}`}</td>
+                        <td>{`${localizeTemplateDisplayText(template.dataset_preset)} / ${localizeTemplateDisplayText(template.trainer_preset)}`}</td>
                         <td>
                           <StatusPill status={template.model_registered ? "success" : "partial"} />
                         </td>
@@ -379,8 +488,8 @@ export function ModelsPage() {
                           <div className="table-actions template-actions">
                             <LaunchTrainDrawer
                               triggerLabel={I18N.action.trainWithTemplate}
-                              title={`基于 ${template.name} 发起训练`}
-                              description={"这个入口会直接把当前模板的 model_name 与 hyperparams 交给训练后端。"}
+                              title={`Launch training from ${localizeTemplateDisplayText(template.name)}`}
+                              description={"This entry submits the current template's model and hyperparameters to the training backend."}
                               initialTemplateId={template.template_id}
                             />
                             {!template.read_only ? (
@@ -417,7 +526,7 @@ export function ModelsPage() {
               ) : (
                 <EmptyState
                   title={I18N.state.empty}
-                  body={"当前还没有模型模板，可从已注册模型创建一个新的可训练模板。"}
+                  body={"No model templates are available yet."}
                 />
               )
             ) : null}
@@ -428,7 +537,7 @@ export function ModelsPage() {
               <PanelHeader
                 eyebrow={templateMode === "edit" ? I18N.action.editTemplate : I18N.action.createTemplate}
                 title={templateMode === "edit" ? I18N.action.editTemplate : I18N.action.createTemplate}
-                description={"模板字段与真实训练契约保持一致：模型、超参数、默认 trainer preset、默认 dataset preset。"}
+                description={"Templates keep model, hyperparameters, and defaults aligned with the backend contract."}
                 action={
                   <button className="link-button" onClick={() => setTemplateDraft(null)} type="button">
                     {I18N.action.close}
@@ -437,7 +546,7 @@ export function ModelsPage() {
               />
               <div className="form-section-grid">
                 <label>
-                  <span>{"名称"}</span>
+                  <span>{"鍚嶇О"}</span>
                   <input
                     className="field"
                     onChange={(event) =>
@@ -449,7 +558,7 @@ export function ModelsPage() {
                   />
                 </label>
                 <label>
-                  <span>{"模型类型"}</span>
+                  <span>{"妯″瀷绫诲瀷"}</span>
                   <select
                     className="field"
                     onChange={(event) => {
@@ -469,7 +578,7 @@ export function ModelsPage() {
                   </select>
                 </label>
                 <label>
-                  <span>{"默认数据集预置"}</span>
+                  <span>{"Default Dataset Preset"}</span>
                   <select
                     className="field"
                     onChange={(event) =>
@@ -487,7 +596,7 @@ export function ModelsPage() {
                   </select>
                 </label>
                 <label>
-                  <span>{"默认训练预置"}</span>
+                  <span>{"榛樿璁粌棰勭疆"}</span>
                   <select
                     className="field"
                     onChange={(event) =>
@@ -507,7 +616,7 @@ export function ModelsPage() {
               </div>
 
               <label>
-                <span>{"说明"}</span>
+                <span>{"璇存槑"}</span>
                 <textarea
                   className="field area-field"
                   onChange={(event) =>
@@ -520,8 +629,8 @@ export function ModelsPage() {
               </label>
 
               <section className="form-section">
-                <h3>{"超参数"}</h3>
-                <p className="drawer-copy">{`${modelCategory(templateDraft.model_name)} · ${modelSuitableData(templateDraft.model_name)}`}</p>
+                <h3>{"Hyperparameters"}</h3>
+                <p className="drawer-copy">{`${modelCategory(templateDraft.model_name)} | ${modelSuitableData(templateDraft.model_name)}`}</p>
                 <textarea
                   className="field area-field"
                   onChange={(event) => setHyperparamsText(event.target.value)}
@@ -541,7 +650,7 @@ export function ModelsPage() {
                   type="button"
                   disabled={templateSavePending}
                 >
-                  {templateSavePending ? "保存中..." : I18N.action.save}
+                  {templateSavePending ? "淇濆瓨涓?.." : I18N.action.save}
                 </button>
               </div>
             </section>
@@ -558,7 +667,7 @@ export function ModelsPage() {
                 <input
                   className="field search-field"
                   onChange={(event) => setRunSearch(event.target.value)}
-                  placeholder={"搜索 run_id / 模型 / 数据集"}
+                  placeholder={"Search run ID / model / dataset"}
                   value={runSearch}
                 />
               }
@@ -569,85 +678,219 @@ export function ModelsPage() {
               visibleRuns.length > 0 ? (
                 <div className="trained-model-table-shell">
                   <table className="data-table trained-models-table">
-                  <thead>
-                    <tr>
-                      <th>{"实例名称"}</th>
-                      <th>{"来源模板"}</th>
-                      <th>{"创建时间"}</th>
-                      <th>{"指标摘要"}</th>
-                      <th>{"关联回测"}</th>
-                      <th>{"状态"}</th>
-                      <th>{"操作"}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleRuns.map((run) => (
-                      <tr key={run.run_id}>
-                        <td>
-                          <div className="table-title-cell">
-                            <strong>{runMeta[run.run_id]?.displayName || run.run_id}</strong>
-                            <span>{runMeta[run.run_id]?.note || run.model_name}</span>
-                          </div>
-                        </td>
-                        <td>
-                          {modelLabel(run.model_name)}
-                          <div className="table-subcopy">{modelCategory(run.model_name)}</div>
-                        </td>
-                        <td>{formatDate(run.created_at)}</td>
-                        <td>{`${run.primary_metric_name?.toUpperCase() ?? "MAE"}=${run.primary_metric_value?.toFixed(4) ?? "--"} / backtests=${run.backtest_count}`}</td>
-                        <td>{run.backtest_count}</td>
-                        <td>
-                          <StatusPill status={run.status} />
-                        </td>
-                        <td>
-                          <div className="table-actions trained-model-actions">
-                            <Link className="link-button" to={`/models/trained/${run.run_id}`}>
-                              {I18N.action.openDetail}
-                            </Link>
-                            <button className="link-button" onClick={() => openRunMetaEditor(run.run_id)} type="button">
-                              {I18N.action.rename}
-                            </button>
-                            <button
-                              className="link-button"
-                              onClick={() => {
-                                setTemplateMode("create");
-                                const draft = templateDraftFromRun(run);
-                                setTemplateDraft(draft);
-                                setHyperparamsText(buildHyperparamsText(draft.hyperparams));
-                                setTemplateError(null);
-                                switchTab("templates");
-                              }}
-                              type="button"
-                            >
-                              {I18N.action.copyToTemplate}
-                            </button>
-                            <button
-                              className="link-button"
-                              onClick={() => setSelectedRunIdForBacktest(run.run_id)}
-                              type="button"
-                            >
-                              {I18N.action.launchBacktest}
-                            </button>
-                            <button
-                              className="link-button danger-link"
-                              onClick={() => setRunDeleteId(run.run_id)}
-                              type="button"
-                            >
-                              {I18N.action.delete}
-                            </button>
-                          </div>
-                        </td>
+                    <thead>
+                      <tr>
+                        <th>{"Select"}</th>
+                        <th>{"Run"}</th>
+                        <th>{"Model"}</th>
+                        <th>{"Datasets"}</th>
+                        <th>{"Created"}</th>
+                        <th>{"Metrics"}</th>
+                        <th>{"Backtests"}</th>
+                        <th>{"Status"}</th>
+                        <th>{"Actions"}</th>
                       </tr>
-                    ))}
-                  </tbody>
+                    </thead>
+                    <tbody>
+                      {visibleRuns.map((run) => {
+                        return (
+                          <tr key={run.run_id}>
+                            <td>
+                              <input
+                                aria-label={`Select ${run.run_id} for multimodal composition`}
+                                checked={selectedRunIdsForComposition.includes(run.run_id)}
+                                onChange={(event) =>
+                                  toggleRunSelection(run.run_id, event.target.checked)
+                                }
+                                type="checkbox"
+                              />
+                            </td>
+                            <td>
+                              <div className="table-title-cell">
+                                <strong>{runMeta[run.run_id]?.displayName || run.run_id}</strong>
+                                <span>{runMeta[run.run_id]?.note || run.model_name}</span>
+                              </div>
+                            </td>
+                            <td>
+                              {modelLabel(run.model_name)}
+                              <div className="table-subcopy">{modelCategory(run.model_name)}</div>
+                            </td>
+                            <td>
+                              <div className="table-title-cell">
+                                {datasetIdsForRun(run).length > 0 ? (
+                                  datasetIdsForRun(run).map((datasetId) => (
+                                    <Link
+                                      key={datasetId}
+                                      to={`/datasets/${encodeURIComponent(datasetId)}`}
+                                    >
+                                      {datasetId}
+                                    </Link>
+                                  ))
+                                ) : (
+                                  <span>--</span>
+                                )}
+                              </div>
+                            </td>
+                            <td>{formatDate(run.created_at)}</td>
+                            <td>
+                              {`${run.primary_metric_name?.toUpperCase() ?? "MAE"}=${run.primary_metric_value?.toFixed(4) ?? "--"} / backtests=${run.backtest_count}`}
+                            </td>
+                            <td>{run.backtest_count}</td>
+                            <td>
+                              <StatusPill status={run.status} />
+                            </td>
+                            <td>
+                              <div className="table-actions trained-model-actions">
+                                <Link
+                                  className="link-button"
+                                  to={`/models/trained/${encodeURIComponent(run.run_id)}`}
+                                >
+                                  {I18N.action.openDetail}
+                                </Link>
+                                <button
+                                  className="link-button"
+                                  onClick={() => openRunMetaEditor(run.run_id)}
+                                  type="button"
+                                >
+                                  {I18N.action.rename}
+                                </button>
+                                <button
+                                  className="link-button"
+                                  onClick={() => {
+                                    setTemplateMode("create");
+                                    const draft = templateDraftFromRun(run);
+                                    setTemplateDraft(draft);
+                                    setHyperparamsText(buildHyperparamsText(draft.hyperparams));
+                                    setTemplateError(null);
+                                    switchTab("templates");
+                                  }}
+                                  type="button"
+                                >
+                                  {I18N.action.copyToTemplate}
+                                </button>
+                                <button
+                                  className="link-button"
+                                  onClick={() => setSelectedRunIdForBacktest(run.run_id)}
+                                  type="button"
+                                >
+                                  {I18N.action.launchBacktest}
+                                </button>
+                                <button
+                                  className="link-button danger-link"
+                                  onClick={() => setRunDeleteId(run.run_id)}
+                                  type="button"
+                                >
+                                  {I18N.action.delete}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
                   </table>
                 </div>
               ) : (
                 <EmptyState
                   title={I18N.state.empty}
-                  body={"当前没有可展示的已训练模型实例。"}
+                  body={"No trained model runs are available."}
                 />
               )
+            ) : null}
+          </section>
+
+          <section className="panel form-shell">
+            <PanelHeader
+              eyebrow="Composition"
+              title="Compose multimodal models"
+              description="Select at least two single-modality runs and launch a composed model."
+            />
+            <div className="form-section-grid">
+              <label>
+                <span>{"Composition Name"}</span>
+                <input
+                  className="field"
+                  onChange={(event) => setCompositionName(event.target.value)}
+                  value={compositionName}
+                />
+              </label>
+              <div className="metric-tile">
+                <span>Selected Runs</span>
+                <strong>{selectedRuns.length}</strong>
+              </div>
+              <div className="metric-tile">
+                <span>Datasets</span>
+                <strong>{uniqueSelectedDatasetIds.length}</strong>
+              </div>
+            </div>
+            {selectedRuns.length > 0 ? (
+              <div className="stack-list">
+                {selectedRuns.map((run) => (
+                  <div className="stack-item align-start" key={run.run_id}>
+                    <strong>{run.run_id}</strong>
+                    <span>
+                      {datasetIdsForRun(run).join(", ") || "--"} | {modelLabel(run.model_name)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No runs selected"
+                body="Select at least two single-modality runs above before composing a multimodal model."
+              />
+            )}
+            {!selectedRunsHaveOnlySingleDataset && selectedRuns.length > 0 ? (
+              <p className="form-error">
+                Selected runs include multi-dataset entries. Only single-dataset runs can be composed.
+              </p>
+            ) : null}
+            {selectedRunsHaveOnlySingleDataset &&
+            selectedRuns.length >= 2 &&
+            uniqueSelectedDatasetIds.length < 2 ? (
+              <p className="form-error">
+                Selected runs do not cover two different datasets, so a multimodal composition cannot be created.
+              </p>
+            ) : null}
+            {compositionError ? <p className="form-error">{compositionError}</p> : null}
+            {compositionMutation.isError ? (
+              <p className="form-error">{(compositionMutation.error as Error).message}</p>
+            ) : null}
+            <div className="dialog-actions inline-actions">
+              <button
+                className="action-button"
+                disabled={compositionMutation.isPending || !compositionReady}
+                onClick={() => void handleLaunchComposition()}
+                type="button"
+              >
+                {compositionMutation.isPending ? "Submitting..." : "Launch composition"}
+              </button>
+            </div>
+            {compositionJobQuery.data ? (
+              <div className="job-box">
+                <div className="split-line">
+                  <strong>{compositionJobQuery.data.job_id}</strong>
+                  <StatusPill status={compositionJobQuery.data.status} />
+                </div>
+                {compositionJobQuery.data.stages.map((stage) => (
+                  <div className="job-stage" key={stage.name}>
+                    <span>{stage.name}</span>
+                    <span>{stage.summary}</span>
+                  </div>
+                ))}
+                {compositionJobQuery.data.error_message ? (
+                  <p className="form-error">{compositionJobQuery.data.error_message}</p>
+                ) : null}
+                {compositionJobQuery.data.status === "success" &&
+                compositionJobQuery.data.result.deeplinks.run_detail ? (
+                  <Link
+                    className="link-button"
+                    to={compositionJobQuery.data.result.deeplinks.run_detail}
+                  >
+                    Open composed model
+                  </Link>
+                ) : null}
+              </div>
             ) : null}
           </section>
 
@@ -656,7 +899,7 @@ export function ModelsPage() {
               <PanelHeader
                 eyebrow={I18N.action.rename}
                 title={I18N.action.rename}
-                description={"可为已训练模型添加展示名和研究备注。"}
+                description={"Add a display name and research note for a trained model."}
                 action={
                   <button className="link-button" onClick={() => setEditingRunId(null)} type="button">
                     {I18N.action.close}
@@ -665,7 +908,7 @@ export function ModelsPage() {
               />
               <div className="form-section-grid">
                 <label>
-                  <span>{"展示名称"}</span>
+                  <span>{"灞曠ず鍚嶇О"}</span>
                   <input
                     className="field"
                     onChange={(event) =>
@@ -675,7 +918,7 @@ export function ModelsPage() {
                   />
                 </label>
                 <label>
-                  <span>{"研究备注"}</span>
+                  <span>{"鐮旂┒澶囨敞"}</span>
                   <textarea
                     className="field area-field"
                     onChange={(event) =>

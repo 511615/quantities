@@ -4,9 +4,12 @@ from fastapi import APIRouter
 
 from quant_platform.webapi.app import ServicesDep
 from quant_platform.webapi.schemas.launch import (
+    BacktestLaunchPreflightView,
     BacktestLaunchOptionsView,
     LaunchBacktestRequest,
+    LaunchBacktestPreflightRequest,
     LaunchJobResponse,
+    LaunchModelCompositionRequest,
     LaunchTrainRequest,
     TrainLaunchOptionsView,
 )
@@ -24,6 +27,14 @@ def backtest_options(services: ServicesDep) -> BacktestLaunchOptionsView:
     return services.jobs.get_backtest_options()
 
 
+@router.post("/backtest/preflight", response_model=BacktestLaunchPreflightView)
+def backtest_preflight(
+    services: ServicesDep,
+    request: LaunchBacktestPreflightRequest,
+) -> BacktestLaunchPreflightView:
+    return services.jobs.get_backtest_preflight(request)
+
+
 @router.post("/train", response_model=LaunchJobResponse)
 def launch_train(
     services: ServicesDep,
@@ -38,3 +49,11 @@ def launch_backtest(
     request: LaunchBacktestRequest,
 ) -> LaunchJobResponse:
     return services.jobs.launch_backtest(request)
+
+
+@router.post("/model-composition", response_model=LaunchJobResponse)
+def launch_model_composition(
+    services: ServicesDep,
+    request: LaunchModelCompositionRequest,
+) -> LaunchJobResponse:
+    return services.jobs.launch_model_composition(request)

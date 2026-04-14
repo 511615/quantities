@@ -14,10 +14,11 @@ import {
   useDatasetDependencies,
   useDatasetDetail,
   useDatasetNlpInspection,
-  useDatasetOhlcv,
+  useDatasetOhlcvAll,
   useDatasetReadiness,
 } from "../shared/api/hooks";
 import type { DatasetDependencyView } from "../shared/api/types";
+import { api } from "../shared/api/client";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
@@ -30,28 +31,28 @@ const NLP_FEATURE_REGEX = /^(sentiment|text|news)_/i;
 function dependencyKindLabel(kind: string) {
   const normalized = kind.trim().toLowerCase();
   if (normalized === "run") {
-    return "Training run";
+    return "训练实例";
   }
   if (normalized === "backtest") {
-    return "Backtest";
+    return "回测";
   }
   if (normalized === "dataset") {
-    return "Derived dataset";
+    return "派生数据集";
   }
   if (normalized === "data_asset") {
-    return "Upstream asset";
+    return "上游资产";
   }
-  return kind || "Dependency";
+  return kind || "依赖项";
 }
 
 function dependencyDirectionLabel(direction?: string) {
   if (direction === "depends_on") {
-    return "Upstream";
+    return "上游";
   }
   if (direction === "referenced_by") {
-    return "Downstream";
+    return "下游";
   }
-  return "Related";
+  return "关联";
 }
 
 function dependencyText(item: DatasetDependencyView) {
@@ -71,6 +72,47 @@ function toCandles(
   }));
 }
 
+function formatWindow(startTime?: string | null, endTime?: string | null) {
+  if (startTime && endTime) {
+    return `${formatDate(startTime)} - ${formatDate(endTime)}`;
+  }
+  if (startTime) {
+    return `${formatDate(startTime)} - --`;
+  }
+  if (endTime) {
+    return `-- - ${formatDate(endTime)}`;
+  }
+  return "--";
+}
+
+function gateStatusLabel(status?: string | null) {
+  if (status === "passed") {
+    return "通过";
+  }
+  if (status === "failed") {
+    return "未通过";
+  }
+  if (status === "warning") {
+    return "需复核";
+  }
+  return "--";
+}
+
+function booleanLabel(value?: boolean | null) {
+  if (value === null || value === undefined) {
+    return "--";
+  }
+  return value ? "是" : "否";
+}
+
+function resolveDatasetDownloadHref(datasetId: string, links: Array<{ kind?: string; label?: string; href?: string; api_path?: string | null }> = []) {
+  const explicitLink = links.find((link) => {
+    const marker = `${link.kind ?? ""} ${link.label ?? ""}`.toLowerCase();
+    return marker.includes("download") || marker.includes("export") || marker.includes("获取");
+  });
+  return explicitLink?.href ?? explicitLink?.api_path ?? api.datasetDownloadUrl(datasetId);
+}
+
 export function DatasetDetailPage() {
   const navigate = useNavigate();
   const { datasetId = "" } = useParams();
@@ -87,16 +129,16 @@ export function DatasetDetailPage() {
 
   const datasetRoleHighlights = [
     {
-      title: "Raw event library",
-      body: "The upstream event table keeps each NLP record with event_time, available_time, source, and metadata for auditing and temporal safety.",
+      title: "原始事件库",
+      body: "上游事件表会保留每条 NLP 记录的 event_time、available_time、source 和元数据，便于审计与时序安全核查。",
     },
     {
-      title: "Training panel",
-      body: "Features are aligned with labels and splits so the dataset_id-first training workflow can run without touching raw text.",
+      title: "训练面板",
+      body: "特征已经与标签和切分方式对齐，因此训练流程可以直接基于 dataset_id 运行，而不用回到原始文本。",
     },
     {
-      title: "Feature snapshot",
-      body: "Aggregated sentiment and keyword metrics are packaged so fusion or downstream models can consume stable signal assets.",
+      title: "特征快照",
+      body: "聚合后的情绪与关键词指标已经打包完成，方便融合模型或下游模型稳定消费这些信号资产。",
     },
   ];
 
@@ -116,9 +158,10 @@ export function DatasetDetailPage() {
 
   const canRenderMarketSlice =
     activeDatasetId && detail?.summary.dataDomain === "market" && Boolean(detail.summary.symbol);
-  const barsQuery = useDatasetOhlcv(canRenderMarketSlice ? activeDatasetId : null, {
-    page: 1,
-    per_page: 120,
+  const barsQuery = useDatasetOhlcvAll(canRenderMarketSlice ? activeDatasetId : null, {
+    per_page: 5000,
+    start_time: detail?.summary.raw.freshness.data_start_time ?? null,
+    end_time: detail?.summary.raw.freshness.data_end_time ?? null,
   });
   const bars = barsQuery.data?.items ?? [];
   const candles = useMemo(() => toCandles(bars), [bars]);
@@ -131,7 +174,7 @@ export function DatasetDetailPage() {
     return {
       tooltip: { trigger: "axis" as const },
         legend: {
-          data: ["Event count", "Avg sentiment"],
+          data: ["事件数", "平均情绪"],
           textStyle: { color: "#b8b09e" },
         },
         xAxis: {
@@ -143,14 +186,14 @@ export function DatasetDetailPage() {
         yAxis: [
           {
             type: "value" as const,
-            name: "Events",
+            name: "事件数",
             axisLine: { lineStyle: { color: "rgba(213, 207, 193, 0.2)" } },
             axisLabel: { color: "#b8b09e" },
             splitLine: { lineStyle: { color: "rgba(213, 207, 193, 0.08)" } },
           },
           {
             type: "value" as const,
-            name: "Sentiment",
+            name: "情绪值",
             min: -1,
             max: 1,
             axisLine: { lineStyle: { color: "rgba(213, 207, 193, 0.2)" } },
@@ -160,14 +203,14 @@ export function DatasetDetailPage() {
       ],
         series: [
           {
-            name: "Event count",
+            name: "事件数",
             type: "line" as const,
             smooth: true,
             data: timeline.map((point) => point.event_count),
             lineStyle: { width: 2, color: "#c7ff73" },
           },
           {
-            name: "Avg sentiment",
+            name: "平均情绪",
             type: "line" as const,
             yAxisIndex: 1,
             smooth: true,
@@ -179,7 +222,7 @@ export function DatasetDetailPage() {
   }, [nlpInspectionQuery.data?.event_timeline]);
 
   if (detailQuery.isLoading) {
-    return <LoadingState label="Loading dataset detail..." />;
+    return <LoadingState label="正在加载数据集详情..." />;
   }
 
   if (detailQuery.isError) {
@@ -187,30 +230,72 @@ export function DatasetDetailPage() {
   }
 
   if (!detail) {
-    return <EmptyState title="Dataset not found" body="The requested dataset detail could not be loaded." />;
+    return <EmptyState title="未找到数据集" body="请求的数据集详情未能成功加载。" />;
   }
 
   const dependencyItems = dependenciesQuery.data?.items ?? [];
   const blockingDependencies = dependenciesQuery.data?.blocking_items ?? [];
   const nlpInspection = nlpInspectionQuery.data;
+  const downloadHref = resolveDatasetDownloadHref(datasetId, [
+    ...(detailQuery.data?.links ?? []),
+    ...(detailQuery.data?.dataset.links ?? []),
+  ]);
   const requestedRangeLabel =
-    nlpInspection?.requested_start_time && nlpInspection?.requested_end_time
-      ? `${formatDate(nlpInspection.requested_start_time)} - ${formatDate(nlpInspection.requested_end_time)}`
+    nlpInspection?.requested_start_time || readinessQuery.data?.nlp_requested_start_time
+      ? formatWindow(
+          nlpInspection?.requested_start_time ?? readinessQuery.data?.nlp_requested_start_time,
+          nlpInspection?.requested_end_time ?? readinessQuery.data?.nlp_requested_end_time,
+        )
       : "--";
   const actualRangeLabel =
-    nlpInspection?.actual_start_time && nlpInspection?.actual_end_time
-      ? `${formatDate(nlpInspection.actual_start_time)} - ${formatDate(nlpInspection.actual_end_time)}`
+    nlpInspection?.actual_start_time || readinessQuery.data?.nlp_actual_start_time
+      ? formatWindow(
+          nlpInspection?.actual_start_time ?? readinessQuery.data?.nlp_actual_start_time,
+          nlpInspection?.actual_end_time ?? readinessQuery.data?.nlp_actual_end_time,
+        )
       : "--";
   const sourceVendorLabel =
     nlpInspection?.source_vendors && nlpInspection.source_vendors.length > 0
       ? nlpInspection.source_vendors.join(", ")
       : detail.summary.sourceVendor || "--";
+  const officialGateStatus =
+    nlpInspection?.official_template_gate_status ?? readinessQuery.data?.official_nlp_gate_status;
+  const officialGateReasons =
+    nlpInspection?.official_template_gate_reasons?.length
+      ? nlpInspection.official_template_gate_reasons
+      : (readinessQuery.data?.official_nlp_gate_reasons ?? []);
+  const marketWindowLabel = formatWindow(
+    nlpInspection?.market_window_start_time ?? readinessQuery.data?.market_window_start_time,
+    nlpInspection?.market_window_end_time ?? readinessQuery.data?.market_window_end_time,
+  );
+  const officialTestWindowLabel = formatWindow(
+    nlpInspection?.official_backtest_start_time ?? readinessQuery.data?.official_backtest_start_time,
+    nlpInspection?.official_backtest_end_time ?? readinessQuery.data?.official_backtest_end_time,
+  );
+  const officialEligible =
+    nlpInspection?.official_template_eligible ?? readinessQuery.data?.official_template_eligible;
+  const archivalSourceOnly =
+    nlpInspection?.archival_source_only ?? readinessQuery.data?.archival_nlp_source_only;
+  const coverageRatio =
+    nlpInspection?.coverage_ratio ?? readinessQuery.data?.nlp_coverage_ratio ?? null;
+  const testCoverageRatio =
+    nlpInspection?.test_coverage_ratio ?? readinessQuery.data?.nlp_test_coverage_ratio ?? null;
+  const maxEmptyBars =
+    nlpInspection?.max_consecutive_empty_bars ??
+    readinessQuery.data?.nlp_max_consecutive_empty_bars ??
+    null;
+  const duplicateRatio =
+    nlpInspection?.duplicate_ratio ?? readinessQuery.data?.nlp_duplicate_ratio ?? null;
+  const entityLinkCoverageRatio =
+    nlpInspection?.entity_link_coverage_ratio ??
+    readinessQuery.data?.nlp_entity_link_coverage_ratio ??
+    null;
 
   return (
     <div className="page-stack">
       <section className="hero-strip compact-hero">
         <div>
-          <div className="eyebrow">Dataset detail</div>
+          <div className="eyebrow">数据集详情</div>
           <h1>{detail.summary.title}</h1>
           <p>{detail.heroSummary}</p>
         </div>
@@ -219,49 +304,52 @@ export function DatasetDetailPage() {
             <LaunchTrainDrawer
               datasetId={datasetId}
               datasetLabel={detail.summary.title}
-              triggerLabel="Train on this dataset"
-              title="Launch training"
-              description="Training stays dataset_id-first and will use this dataset directly."
+              triggerLabel="基于此数据集训练"
+              title="发起训练"
+              description="训练流程保持以数据集 ID 为主入口，并会直接使用当前数据集。"
             />
           ) : null}
+          <a className="link-button" href={downloadHref}>
+            获取该数据集
+          </a>
           <button className="link-button danger-link" onClick={() => setDeleteOpen(true)} type="button">
-            Delete dataset
+            删除数据集
           </button>
           <Link className="comparison-link" to="/datasets/browser">
-            Back to browser
+            返回浏览器
           </Link>
           <Link className="comparison-link" to="/datasets/training">
-            Training datasets
+            训练数据集
           </Link>
         </div>
       </section>
 
-      <DatasetWorkspaceNav detailLabel="Detail" />
+      <DatasetWorkspaceNav detailLabel="详情" />
 
       <div className="metric-grid">
         <div className="metric-tile">
-          <span>Data domain</span>
+          <span>数据域</span>
           <strong>{detail.summary.dataDomainLabel}</strong>
         </div>
         <div className="metric-tile">
-          <span>Dataset type</span>
+          <span>数据集类型</span>
           <strong>{detail.summary.datasetTypeLabel}</strong>
         </div>
         <div className="metric-tile">
-          <span>Coverage</span>
+          <span>覆盖范围</span>
           <strong>{detail.summary.coverageLabel}</strong>
         </div>
         <div className="metric-tile">
-          <span>Snapshot</span>
+          <span>快照版本</span>
           <strong>{detail.summary.snapshotVersion}</strong>
         </div>
       </div>
 
       <section className="panel dataset-roles-panel">
         <PanelHeader
-          eyebrow="Dataset story"
-          title="Signal path"
-          description="Raw NLP events turn into labeled training panels and structured feature snapshots. This summary explains how the current dataset fits into that path."
+          eyebrow="数据故事"
+          title="信号链路"
+          description="原始 NLP 事件如何转成带标签的训练面板和结构化特征快照，这里会解释当前数据集在整条链路中的位置。"
         />
         <div className="dataset-roles-grid">
           {datasetRoleHighlights.map((item) => (
@@ -272,9 +360,9 @@ export function DatasetDetailPage() {
           ))}
         </div>
         <div className="dataset-callout">
-          <strong>Structured NLP signal asset</strong>
+          <strong>结构化 NLP 信号资产</strong>
           <span>
-            This dataset exposes aggregated sentiment, keyword, and attention metrics derived from text. The training pipeline consumes numbers only—not the raw text—so the asset stays traceable and compatible with the market-first training/backtest flow.
+            该数据集暴露的是由文本聚合而来的情绪、关键词和关注度指标。训练流程只消费数值特征，不直接消费原始文本，因此既保留可追溯性，也兼容 market-first 的训练 / 回测流程。
           </span>
         </div>
       </section>
@@ -282,54 +370,130 @@ export function DatasetDetailPage() {
       {hasNlpSignal ? (
         <section className="panel">
           <PanelHeader
-            eyebrow="NLP inspection"
-            title="Text and event inspection"
-            description="Preview text events, keyword concentration, source mix, and training-ready sentiment features."
+            eyebrow="NLP 检查"
+            title="文本与事件巡检"
+            description="预览文本事件、关键词集中度、来源构成，以及可直接用于训练的情绪特征。"
           />
-          {nlpInspectionQuery.isLoading ? <LoadingState label="Loading NLP inspection..." /> : null}
+          {nlpInspectionQuery.isLoading ? <LoadingState label="正在加载 NLP 巡检..." /> : null}
           {nlpInspectionQuery.isError ? <ErrorState message={(nlpInspectionQuery.error as Error).message} /> : null}
           {!nlpInspectionQuery.isLoading && !nlpInspectionQuery.isError ? (
             nlpInspection?.contains_nlp ? (
               <div className="dataset-nlp-layout">
                 <section className="details-panel nlp-summary-panel">
-                  <PanelHeader eyebrow="Coverage" title="Coverage and source" />
+                  <PanelHeader
+                    eyebrow="官方门禁"
+                    title="NLP 质量门禁"
+                    description="这是官方 / 系统模板专用门禁，要求比通用训练 readiness 更严格。"
+                  />
                   <div className="nlp-stat-grid">
                     <div className="metric-tile compact">
-                      <span>Requested window</span>
+                      <span>门禁状态</span>
+                      <strong>{gateStatusLabel(officialGateStatus)}</strong>
+                    </div>
+                    <div className="metric-tile compact">
+                      <span>官方模板可用</span>
+                      <strong>{booleanLabel(officialEligible)}</strong>
+                    </div>
+                    <div className="metric-tile compact">
+                      <span>仅归档型 NLP 数据源</span>
+                      <strong>{booleanLabel(archivalSourceOnly)}</strong>
+                    </div>
+                    <div className="metric-tile compact">
+                      <span>覆盖率</span>
+                      <strong>{formatPercent(coverageRatio, 1)}</strong>
+                    </div>
+                    <div className="metric-tile compact">
+                      <span>官方测试覆盖率</span>
+                      <strong>{formatPercent(testCoverageRatio, 1)}</strong>
+                    </div>
+                    <div className="metric-tile compact">
+                      <span>最大连续空档条数</span>
+                      <strong>{maxEmptyBars ?? "--"}</strong>
+                    </div>
+                    <div className="metric-tile compact">
+                      <span>重复率</span>
+                      <strong>{formatPercent(duplicateRatio, 1)}</strong>
+                    </div>
+                    <div className="metric-tile compact">
+                      <span>实体关联覆盖率</span>
+                      <strong>{formatPercent(entityLinkCoverageRatio, 1)}</strong>
+                    </div>
+                  </div>
+                  <div className="stack-list">
+                    <div className="stack-item align-start">
+                      <strong>实际市场窗口</strong>
+                      <span>{marketWindowLabel}</span>
+                    </div>
+                    <div className="stack-item align-start">
+                      <strong>官方测试窗口</strong>
+                      <span>{officialTestWindowLabel}</span>
+                    </div>
+                    <div className="stack-item align-start">
+                      <strong>实际文本信号窗口</strong>
+                      <span>{actualRangeLabel}</span>
+                    </div>
+                    <div className="stack-item align-start">
+                      <strong>请求的文本信号窗口</strong>
+                      <span>{requestedRangeLabel}</span>
+                    </div>
+                  </div>
+                  <div className="dataset-callout">
+                    <strong>官方模板规则</strong>
+                    <span>时间窗对齐必须和 market 模板窗口一致。</span>
+                    <span>只有归档型 NLP 数据源才允许参加官方对比。</span>
+                    <span>NLP 门禁一旦失败，官方回测发起会被硬阻断。</span>
+                  </div>
+                  {officialGateReasons.length > 0 ? (
+                    <div className="stack-list">
+                      {officialGateReasons.map((reason) => (
+                        <div className="stack-item align-start" key={reason}>
+                          <strong>门禁说明</strong>
+                          <span>{reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className="details-panel nlp-summary-panel">
+                  <PanelHeader eyebrow="覆盖情况" title="覆盖范围与来源" />
+                  <div className="nlp-stat-grid">
+                    <div className="metric-tile compact">
+                      <span>请求窗口</span>
                       <strong>{requestedRangeLabel}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>Actual NLP coverage</span>
+                      <span>实际 NLP 覆盖</span>
                       <strong>{actualRangeLabel}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>Vendor</span>
+                      <span>来源供应商</span>
                       <strong>{sourceVendorLabel}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>Preview events</span>
+                      <span>预览事件数</span>
                       <strong>{nlpInspection.recent_event_previews?.length ?? 0}</strong>
                     </div>
                   </div>
                   <div className="dataset-callout">
-                    <strong>{nlpInspection.coverage_summary ?? "NLP inspection is available."}</strong>
+                    <strong>{nlpInspection.coverage_summary ?? "NLP 巡检结果已就绪。"}</strong>
                     <span>
-                      This panel surfaces structured NLP signals (sentiment, counts, attention) derived from the event metadata, not raw text.
+                      这里展示的是从事件元数据派生出的结构化 NLP 信号，比如情绪、计数和关注度，而不是原始文本本身。
                     </span>
                   </div>
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="Timeline" title="Event timeline" />
+                  <PanelHeader eyebrow="时间线" title="事件时间线" />
                   {nlpTimelineOption ? (
                     <WorkbenchChart option={nlpTimelineOption} />
                   ) : (
-                    <EmptyState title="No timeline" body="Event timeline data is not available for this dataset." />
+                    <EmptyState title="暂无时间线" body="当前数据集没有可展示的事件时间线数据。" />
                   )}
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="Preview" title="Recent text samples" />
+                  <PanelHeader eyebrow="预览" title="近期文本样本" />
                   {nlpInspection.recent_event_previews && nlpInspection.recent_event_previews.length > 0 ? (
                     <div className="nlp-preview-list">
                       {nlpInspection.recent_event_previews.slice(0, 4).map((preview, index) => (
@@ -337,44 +501,44 @@ export function DatasetDetailPage() {
                           <div>
                             <strong>{preview.title}</strong>
                             <span>
-                              {(preview.symbol || "mixed")} · {preview.source}
+                              {(preview.symbol || "混合")} · {preview.source}
                             </span>
                             <span>{formatDate(preview.event_time)}</span>
                           </div>
                           <p>{preview.snippet}</p>
                           {preview.url ? (
                             <a href={preview.url} rel="noreferrer" target="_blank">
-                              Open source
+                              打开来源
                             </a>
                           ) : null}
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <EmptyState title="No text preview" body="No event previews are available for this dataset." />
+                    <EmptyState title="暂无文本预览" body="当前数据集没有可展示的事件预览。" />
                   )}
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="Sources" title="Source breakdown" />
+                  <PanelHeader eyebrow="来源" title="来源构成" />
                   <div className="nlp-source-breakdown">
                     {(nlpInspection.source_breakdown ?? []).length > 0 ? (
                       nlpInspection.source_breakdown?.slice(0, 8).map((source, index) => (
                         <div className="nlp-source-row" key={`${source.source}-${index}`}>
                           <strong>{source.source}</strong>
                           <span>
-                            {source.count} items · {formatPercent(source.share ?? 0, 1)}
+                            {source.count} 条 · {formatPercent(source.share ?? 0, 1)}
                           </span>
                         </div>
                       ))
                     ) : (
-                      <span className="muted">No source mix available.</span>
+                      <span className="muted">暂无来源构成。</span>
                     )}
                   </div>
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="Keywords" title="Keywords and terms" />
+                  <PanelHeader eyebrow="关键词" title="关键词与高频词" />
                   {nlpInspection.keyword_summary && nlpInspection.keyword_summary.length > 0 ? (
                     <div className="nlp-keyword-cloud">
                       {nlpInspection.keyword_summary.slice(0, 12).map((keyword, index) => (
@@ -385,7 +549,7 @@ export function DatasetDetailPage() {
                       ))}
                     </div>
                   ) : (
-                    <EmptyState title="No keywords" body="Keyword aggregation is empty for the current dataset." />
+                    <EmptyState title="暂无关键词" body="当前数据集的关键词聚合结果为空。" />
                   )}
                   {nlpInspection.word_cloud_terms && nlpInspection.word_cloud_terms.length > 0 ? (
                     <div className="nlp-word-cloud compact-cloud">
@@ -402,7 +566,7 @@ export function DatasetDetailPage() {
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="Sentiment" title="Sentiment and features" />
+                  <PanelHeader eyebrow="情绪" title="情绪分布与特征" />
                   <div className="nlp-sentiment-grid">
                     {(nlpInspection.sentiment_distribution ?? []).length > 0 ? (
                       nlpInspection.sentiment_distribution?.map((bucket, index) => (
@@ -415,7 +579,7 @@ export function DatasetDetailPage() {
                         </div>
                       ))
                     ) : (
-                      <span className="muted">No sentiment histogram available.</span>
+                      <span className="muted">暂无情绪直方图。</span>
                     )}
                   </div>
                   {nlpInspection.sample_feature_preview && Object.keys(nlpInspection.sample_feature_preview).length > 0 ? (
@@ -428,22 +592,22 @@ export function DatasetDetailPage() {
                       ))}
                     </div>
                   ) : (
-                    <EmptyState title="No NLP features" body="Training-ready NLP sample features are not available yet." />
+                    <EmptyState title="暂无 NLP 特征" body="当前还没有可展示的训练级 NLP 样例特征。" />
                   )}
                 </section>
               </div>
             ) : (
-              <EmptyState title="No NLP payload" body="The dataset suggests NLP usage, but no inspection payload was returned." />
+              <EmptyState title="暂无 NLP 载荷" body="该数据集看起来包含 NLP 信号，但后端没有返回对应巡检载荷。" />
             )
           ) : null}
         </section>
       ) : null}
 
       <section className="panel">
-        <PanelHeader eyebrow="Overview" title="What this dataset is for" description="High-level use case, readiness, and data shape." />
+        <PanelHeader eyebrow="概览" title="这个数据集是做什么的" description="高层用途、可用性状态和数据形态说明。" />
         <div className="dataset-hero-grid">
           <section className="details-panel">
-            <PanelHeader eyebrow="Use case" title="Intended use" description={detail.intendedUse} />
+            <PanelHeader eyebrow="使用场景" title="预期用途" description={detail.intendedUse} />
             <div className="story-list">
               <div className="story-item">
                 <p>{detail.heroSummary}</p>
@@ -455,30 +619,30 @@ export function DatasetDetailPage() {
           </section>
 
           <section className="details-panel">
-            <PanelHeader eyebrow="Scale" title="Shape and coverage" />
+            <PanelHeader eyebrow="规模" title="数据形态与覆盖范围" />
             <div className="definition-grid">
               <div className="definition-item">
-                <span>Rows</span>
+                <span>行数</span>
                 <strong>{detail.summary.rowCountLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>Features</span>
+                <span>特征数</span>
                 <strong>{detail.summary.featureCountLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>Labels</span>
+                <span>标签数</span>
                 <strong>{detail.summary.labelCountLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>Horizon</span>
+                <span>跨度</span>
                 <strong>{detail.summary.labelHorizonLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>Entity scope</span>
+                <span>实体范围</span>
                 <strong>{detail.summary.entityScopeLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>Freshness</span>
+                <span>新鲜度</span>
                 <strong>{detail.summary.freshnessLabel}</strong>
               </div>
             </div>
@@ -487,7 +651,7 @@ export function DatasetDetailPage() {
       </section>
 
       <section className="panel">
-        <PanelHeader eyebrow="Readiness" title="Training readiness" description="The backend readiness contract is shown directly here." />
+        <PanelHeader eyebrow="就绪度" title="训练就绪状态" description="这里直接展示后端返回的 readiness 合同结果。" />
         <div className="dataset-lifecycle-grid">
           <section className="details-panel">
             <div className="split-line">
@@ -499,7 +663,7 @@ export function DatasetDetailPage() {
               <span>
                 {readinessQuery.isError
                   ? (readinessQuery.error as Error).message
-                  : "Training and backtest gates use the same readiness state and schema checks shown here."}
+                  : "通用 readiness 负责 schema 和训练安全校验；上方单独展示的官方 NLP 质量门禁会更严格。"}
               </span>
             </div>
             <div className="kv-list compact">
@@ -513,7 +677,7 @@ export function DatasetDetailPage() {
           </section>
 
           <section className="details-panel">
-            <PanelHeader eyebrow="Acquisition" title="Request profile" />
+            <PanelHeader eyebrow="采集" title="请求画像" />
             <div className="kv-list compact">
               {detail.acquisitionEntries.map((row, index) => (
                 <div className="kv-row" key={`${row.key}-${index}`}>
@@ -525,7 +689,7 @@ export function DatasetDetailPage() {
           </section>
 
           <section className="details-panel">
-            <PanelHeader eyebrow="Build" title="Build and schema" />
+            <PanelHeader eyebrow="构建" title="构建与 Schema" />
             <div className="kv-list compact">
               {detail.buildEntries.concat(detail.schemaEntries).map((row, index) => (
                 <div className="kv-row" key={`${row.key}-${row.value}-${index}`}>
@@ -540,31 +704,31 @@ export function DatasetDetailPage() {
 
       <section className="panel">
         <PanelHeader
-          eyebrow="Dependencies"
-          title="Upstream and downstream graph"
-          description="Deletion is hard delete now. Dependencies are surfaced for review only."
+          eyebrow="依赖"
+          title="上下游关系图"
+          description="当前删除模式为硬删除。这里展示依赖关系，仅供核查，不做拦截。"
         />
         <div className="metric-grid">
           <div className="metric-tile">
-            <span>Total dependencies</span>
+            <span>依赖总数</span>
             <strong>{dependencyItems.length}</strong>
           </div>
           <div className="metric-tile">
-            <span>Informational downstream refs</span>
+            <span>信息型下游引用</span>
             <strong>{blockingDependencies.length}</strong>
           </div>
           <div className="metric-tile">
-            <span>Delete mode</span>
-            <strong>Hard delete</strong>
+            <span>删除模式</span>
+            <strong>硬删除</strong>
           </div>
         </div>
         <div className="dataset-callout">
-          <strong>Deletion will not be blocked by lineage.</strong>
+          <strong>删除不会被血缘关系阻止。</strong>
           <span>
-            Runs, backtests, and derived datasets may still carry the deleted dataset id and will surface a missing reference afterward.
+            训练实例、回测和派生数据集仍可能保留已删除的数据集 ID，之后会显示为缺失引用。
           </span>
         </div>
-        {dependenciesQuery.isLoading ? <LoadingState label="Loading dependency graph..." /> : null}
+        {dependenciesQuery.isLoading ? <LoadingState label="正在加载依赖关系图..." /> : null}
         {dependenciesQuery.isError ? <ErrorState message={(dependenciesQuery.error as Error).message} /> : null}
         {!dependenciesQuery.isLoading && !dependenciesQuery.isError ? (
           dependencyItems.length > 0 ? (
@@ -578,7 +742,7 @@ export function DatasetDetailPage() {
                         <span>{dependencyKindLabel(item.dependency_kind)}</span>
                       </div>
                       <span className="dataset-card-tag">
-                        {item.blocking ? "Informational" : dependencyDirectionLabel(item.direction)}
+                        {item.blocking ? "信息型引用" : dependencyDirectionLabel(item.direction)}
                       </span>
                     </div>
                     <div className="dataset-domain-stats">
@@ -593,7 +757,7 @@ export function DatasetDetailPage() {
                         <span>{dependencyKindLabel(item.dependency_kind)}</span>
                       </div>
                       <span className="dataset-card-tag">
-                        {item.blocking ? "Informational" : dependencyDirectionLabel(item.direction)}
+                        {item.blocking ? "信息型引用" : dependencyDirectionLabel(item.direction)}
                       </span>
                     </div>
                     <div className="dataset-domain-stats">
@@ -604,52 +768,52 @@ export function DatasetDetailPage() {
               )}
             </div>
           ) : (
-            <EmptyState title="No dependencies" body="No related upstream or downstream items were found." />
+            <EmptyState title="暂无依赖" body="没有找到相关的上游或下游项目。" />
           )
         ) : null}
       </section>
 
       <section className="panel">
-        <PanelHeader eyebrow="Features" title="Field groups and labels" description="A compact view of feature groupings and label definitions." />
+        <PanelHeader eyebrow="特征" title="字段分组与标签" description="以紧凑形式查看特征分组与标签定义。" />
         <div className="dataset-field-layout">
           <section className="details-panel">
-            <PanelHeader eyebrow="Groups" title="Feature groups" />
+            <PanelHeader eyebrow="分组" title="特征分组" />
             <div className="feature-group-list">
               {detail.featureGroups.length > 0 ? (
                 detail.featureGroups.map((group) => (
                   <div className="feature-group-card" key={group.key}>
                     <strong>{group.label}</strong>
                     <p>{group.description}</p>
-                    <span>{group.columns.join(" / ") || "No example columns"}</span>
+                    <span>{group.columns.join(" / ") || "暂无示例列"}</span>
                   </div>
                 ))
               ) : (
-                <EmptyState title="No feature groups" body="No grouped feature preview is available." />
+                <EmptyState title="暂无特征分组" body="当前没有可展示的分组特征预览。" />
               )}
             </div>
           </section>
 
           <section className="details-panel">
-            <PanelHeader eyebrow="Labels" title="Label and quality summary" />
+            <PanelHeader eyebrow="标签" title="标签与质量摘要" />
             <div className="kv-list compact">
               <div className="kv-row">
-                <span>Label columns</span>
+                <span>标签列</span>
                 <strong>{detail.labelColumns.join(" / ") || "--"}</strong>
               </div>
               <div className="kv-row">
-                <span>Split strategy</span>
+                <span>切分策略</span>
                 <strong>{detail.summary.raw.split_strategy ?? "--"}</strong>
               </div>
               <div className="kv-row">
-                <span>Temporal safety</span>
+                <span>时序安全</span>
                 <strong>{detail.summary.raw.temporal_safety_summary ?? "--"}</strong>
               </div>
               <div className="kv-row">
-                <span>Missing ratio</span>
+                <span>缺失率</span>
                 <strong>{formatPercent(detail.qualitySummary?.missing_ratio, 2)}</strong>
               </div>
               <div className="kv-row">
-                <span>Duplicate ratio</span>
+                <span>重复率</span>
                 <strong>{formatPercent(detail.qualitySummary?.duplicate_ratio, 2)}</strong>
               </div>
             </div>
@@ -658,51 +822,55 @@ export function DatasetDetailPage() {
       </section>
 
       <section className="panel">
-        <PanelHeader eyebrow="Market slice" title="OHLCV preview" description="Only market datasets render a bar preview. Other domains avoid synthetic fallback visuals." />
+        <PanelHeader eyebrow="市场切片" title="行情预览" description="只有市场数据集才会渲染 K 线预览，其他数据域不会使用伪造回退图。" />
         {canRenderMarketSlice ? (
           <div className="page-stack">
-            {barsQuery.isLoading ? <LoadingState label="Loading OHLCV bars..." /> : null}
+            {barsQuery.isLoading ? <LoadingState label="正在加载行情条目..." /> : null}
             {barsQuery.isError ? <ErrorState message={(barsQuery.error as Error).message} /> : null}
             {!barsQuery.isLoading && !barsQuery.isError && bars.length === 0 ? (
-              <EmptyState title="No bars" body="No market bars are available for the current dataset window." />
+              <EmptyState title="暂无 K 线" body="当前数据集窗口下没有可用的市场条目。" />
             ) : null}
             {bars.length > 0 ? (
               <>
                 <div className="metric-grid">
                   <div className="metric-tile">
-                    <span>Loaded bars</span>
-                    <strong>{bars.length}</strong>
+                    <span>已加载条数</span>
+                    <strong>{bars.length} / {barsQuery.data?.total ?? bars.length}</strong>
                   </div>
                   <div className="metric-tile">
-                    <span>Latest close</span>
+                    <span>最新收盘价</span>
                     <strong>{formatNumber(bars[bars.length - 1]?.close, 2)}</strong>
                   </div>
                   <div className="metric-tile">
-                    <span>Symbol</span>
+                    <span>标的</span>
                     <strong>{detail.summary.symbolLabel}</strong>
                   </div>
                   <div className="metric-tile">
-                    <span>Frequency</span>
+                    <span>频率</span>
                     <strong>{detail.summary.frequencyLabel}</strong>
                   </div>
+                </div>
+                <div className="dataset-callout">
+                  <strong>实际展示时间</strong>
+                  <span>{formatWindow(bars[0]?.event_time, bars[bars.length - 1]?.event_time)}</span>
                 </div>
                 <section className="panel">
                   <DatasetCandlestickChart candles={candles} showMA10={true} showMA5={true} showVolume={true} />
                 </section>
                 <section className="panel">
-                  <PanelHeader eyebrow="Rows" title="Latest OHLCV rows" />
+                  <PanelHeader eyebrow="数据行" title="最新行情记录" />
                   <div className="dataset-browser-table-shell">
                     <table className="data-table compact-table">
                       <thead>
                         <tr>
-                          <th>Event time</th>
-                          <th>Available time</th>
-                          <th>Symbol</th>
-                          <th>Open</th>
-                          <th>High</th>
-                          <th>Low</th>
-                          <th>Close</th>
-                          <th>Volume</th>
+                          <th>事件时间</th>
+                          <th>可用时间</th>
+                          <th>标的</th>
+                          <th>开盘</th>
+                          <th>最高</th>
+                          <th>最低</th>
+                          <th>收盘</th>
+                          <th>成交量</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -726,7 +894,7 @@ export function DatasetDetailPage() {
             ) : null}
           </div>
         ) : (
-          <EmptyState title="No market preview" body="This dataset is not a single market slice with real OHLCV bars." />
+          <EmptyState title="暂无市场预览" body="这个数据集不是带真实行情条目的单一市场切片。" />
         )}
       </section>
 

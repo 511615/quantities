@@ -10,7 +10,7 @@ export function ComparisonScatterChart({ rows }: { rows: ComparisonRowView[] }) 
         tooltip: { trigger: "item" },
         xAxis: {
           type: "value",
-          name: "Test MAE",
+          name: "测试集平均绝对误差",
           axisLabel: { color: "#b9b0a0" },
         },
         yAxis: {

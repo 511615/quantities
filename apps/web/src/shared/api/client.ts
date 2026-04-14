@@ -1,6 +1,7 @@
 import type {
   ArtifactPreviewResponse,
   BacktestDeleteResponse,
+  BacktestLaunchPreflightView,
   BacktestLaunchOptionsView,
   BacktestReportView,
   BacktestsResponse,
@@ -21,7 +22,9 @@ import type {
   JobListResponse,
   JobStatusView,
   LaunchBacktestRequest,
+  LaunchBacktestPreflightRequest,
   LaunchJobResponse,
+  LaunchModelCompositionRequest,
   LaunchTrainRequest,
   ModelTemplateCreateRequest,
   ModelTemplateView,
@@ -112,13 +115,13 @@ export const api = {
     return request<ExperimentsResponse>(`/api/runs?${params.toString()}`);
   },
   run(runId: string) {
-    return request<RunDetailView>(`/api/runs/${runId}`);
+    return request<RunDetailView>(`/api/runs/${encodeURIComponent(runId)}`);
   },
   backtests(params: URLSearchParams) {
     return request<BacktestsResponse>(`/api/backtests?${params.toString()}`);
   },
   backtest(backtestId: string) {
-    return request<BacktestReportView>(`/api/backtests/${backtestId}`);
+    return request<BacktestReportView>(`/api/backtests/${encodeURIComponent(backtestId)}`);
   },
   deleteBacktest(backtestId: string) {
     return request<BacktestDeleteResponse>(`/api/backtests/${encodeURIComponent(backtestId)}`, {
@@ -129,7 +132,7 @@ export const api = {
     return request<BenchmarkListItemView[]>("/api/benchmarks");
   },
   benchmark(name: string) {
-    return request<BenchmarkDetailView>(`/api/benchmarks/${name}`);
+    return request<BenchmarkDetailView>(`/api/benchmarks/${encodeURIComponent(name)}`);
   },
   datasets(page = 1, perPage = 20) {
     return request<DatasetListResponse>(`/api/datasets?page=${page}&per_page=${perPage}`);
@@ -162,6 +165,9 @@ export const api = {
   },
   dataset(datasetId: string) {
     return request<DatasetDetailView>(`/api/datasets/${encodeURIComponent(datasetId)}`);
+  },
+  datasetDownloadUrl(datasetId: string) {
+    return `${API_BASE}/api/datasets/${encodeURIComponent(datasetId)}/download`;
   },
   datasetDependencies(datasetId: string) {
     return request<DatasetDependenciesResponse>(
@@ -243,8 +249,20 @@ export const api = {
   backtestOptions() {
     return request<BacktestLaunchOptionsView>("/api/launch/backtest/options");
   },
+  backtestPreflight(body: LaunchBacktestPreflightRequest) {
+    return request<BacktestLaunchPreflightView>("/api/launch/backtest/preflight", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
   launchTrain(body: LaunchTrainRequest) {
     return request<LaunchJobResponse>("/api/launch/train", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  launchModelComposition(body: LaunchModelCompositionRequest) {
+    return request<LaunchJobResponse>("/api/launch/model-composition", {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -259,7 +277,7 @@ export const api = {
     return request<JobListResponse>("/api/jobs");
   },
   job(jobId: string) {
-    return request<JobStatusView>(`/api/jobs/${jobId}`);
+    return request<JobStatusView>(`/api/jobs/${encodeURIComponent(jobId)}`);
   },
   previewArtifact(uri: string) {
     return request<ArtifactPreviewResponse>(

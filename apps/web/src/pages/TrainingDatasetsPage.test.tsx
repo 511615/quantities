@@ -46,8 +46,8 @@ test("shows train CTA for ready and warning datasets but not for not_ready datas
     .getByRole("link", { name: "多域融合训练面板 / Multi-domain Fusion Training Panel" })
     .closest("tr");
   expect(fusionRow).not.toBeNull();
-  expect(within(fusionRow as HTMLElement).getByText("融合训练面板")).toBeInTheDocument();
-  expect(within(fusionRow as HTMLElement).getByText("市场数据")).toBeInTheDocument();
+  expect(within(fusionRow as HTMLElement).getAllByText("融合训练面板").length).toBeGreaterThan(0);
+  expect(within(fusionRow as HTMLElement).getAllByText("市场数据").length).toBeGreaterThan(0);
   expect(
     within(fusionRow as HTMLElement).getByRole("link", { name: "发起训练" }),
   ).toHaveAttribute("href", "/models?launchTrain=1&datasetId=market_macro_onchain_fusion_v1");
@@ -67,5 +67,5 @@ test("shows train CTA for ready and warning datasets but not for not_ready datas
   expect(
     within(blockedItem as HTMLElement).queryByRole("link", { name: "发起训练" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByText("当前被后端判定为 not_ready 的数据集")).toBeInTheDocument();
+  expect(screen.getByText("当前被后端判定为暂不可训练的数据集")).toBeInTheDocument();
 });

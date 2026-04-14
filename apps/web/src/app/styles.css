@@ -974,6 +974,29 @@ strong,
   background: linear-gradient(135deg, rgba(199, 255, 115, 0.08), rgba(255, 255, 255, 0.02));
 }
 
+.backtest-callout {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.85rem 0 1rem;
+  padding: 1rem;
+  border-radius: 18px;
+}
+
+.backtest-callout strong {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 0.98rem;
+}
+
+.backtest-callout-danger {
+  border: 1px solid rgba(255, 120, 120, 0.26);
+  background: linear-gradient(135deg, rgba(255, 120, 120, 0.12), rgba(255, 255, 255, 0.02));
+}
+
+.backtest-callout-warning {
+  border: 1px solid rgba(255, 190, 92, 0.24);
+  background: linear-gradient(135deg, rgba(255, 190, 92, 0.12), rgba(255, 255, 255, 0.02));
+}
+
 .dataset-nlp-grid,
 .dataset-nlp-layout {
   display: grid;

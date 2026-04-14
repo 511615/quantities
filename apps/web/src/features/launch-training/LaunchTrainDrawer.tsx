@@ -20,6 +20,30 @@ type LaunchTrainDrawerProps = {
   onJobCreated?: (jobId: string) => void;
 };
 
+function localizeTrainOptionLabel(value: string, label?: string | null) {
+  const normalized = (label ?? value).trim().toLowerCase();
+  if (normalized === "smoke") {
+    return "联调样本";
+  }
+  if (normalized === "real_benchmark") {
+    return "真实基准";
+  }
+  if (normalized === "elastic net default") {
+    return "弹性网络默认模板";
+  }
+  return label ?? value;
+}
+
+function localizeTrainOptionDescription(description?: string | null) {
+  if (!description) {
+    return null;
+  }
+  if (description.trim().toLowerCase() === "template sourced from model registry.") {
+    return "模板来自模型注册表。";
+  }
+  return description;
+}
+
 export function LaunchTrainDrawer({
   defaultOpen = false,
   showTrigger = true,
@@ -48,7 +72,7 @@ export function LaunchTrainDrawer({
     () => optionsQuery.data?.template_options ?? [],
     [optionsQuery.data?.template_options],
   );
-  const runDetailLink = jobQuery.data?.result.deeplinks.run_detail ?? null;
+  const runDetailLink = jobQuery.data?.result?.deeplinks?.run_detail ?? null;
   const isDatasetAware = Boolean(datasetId);
   const readinessStatus = readinessQuery.data?.readiness_status ?? null;
   const datasetDetailPath = datasetId ? `/datasets/${encodeURIComponent(datasetId)}` : null;
@@ -119,7 +143,7 @@ export function LaunchTrainDrawer({
       return;
     }
     if (!seed.trim() || Number.isNaN(Number(seed))) {
-      setFormError("请输入有效的 seed。");
+      setFormError("请输入有效的随机种子。");
       return;
     }
     if (isDatasetAware && readinessQuery.isLoading) {
@@ -206,7 +230,7 @@ export function LaunchTrainDrawer({
                 <option value="">使用模板默认数据集</option>
                 {(optionsQuery.data?.dataset_presets ?? []).map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {localizeTrainOptionLabel(option.value, option.label)}
                   </option>
                 ))}
               </select>
@@ -218,20 +242,20 @@ export function LaunchTrainDrawer({
             <select onChange={(event) => setTemplateId(event.target.value)} value={templateId}>
               {templateOptions.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {localizeTrainOptionLabel(option.value, option.label)}
                 </option>
               ))}
             </select>
           </label>
-          {selectedTemplate?.description ? (
-            <p className="drawer-copy">{selectedTemplate.description}</p>
+          {localizeTrainOptionDescription(selectedTemplate?.description) ? (
+            <p className="drawer-copy">{localizeTrainOptionDescription(selectedTemplate?.description)}</p>
           ) : null}
           <label>
             <span>{"实验名称"}</span>
             <input onChange={(event) => setExperimentName(event.target.value)} value={experimentName} />
           </label>
           <label>
-            <span>Seed</span>
+            <span>随机种子</span>
             <input inputMode="numeric" onChange={(event) => setSeed(event.target.value)} value={seed} />
           </label>
           {formError ? <p className="form-error">{formError}</p> : null}

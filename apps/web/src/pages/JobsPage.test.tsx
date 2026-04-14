@@ -54,7 +54,8 @@ test("renders jobs page with launch controls and recent jobs", async () => {
   await waitFor(() =>
     expect(screen.getByRole("heading", { name: "\u4efb\u52a1\u4e2d\u5fc3" })).toBeInTheDocument(),
   );
-  expect(screen.getByRole("button", { name: "\u53d1\u8d77\u8bad\u7ec3" })).toBeInTheDocument();
+  expect(screen.getAllByRole("heading", { name: "\u53d1\u8d77\u8bad\u7ec3" }).length).toBeGreaterThan(0);
+  expect(screen.getByRole("button", { name: "\u63d0\u4ea4" })).toBeInTheDocument();
   expect(screen.getAllByText("job-train-1").length).toBeGreaterThan(0);
 });
 
@@ -62,9 +63,9 @@ test("submits train job and renders result deeplink area", async () => {
   renderWithProviders(<JobsPage />, "/jobs");
 
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "\u53d1\u8d77\u8bad\u7ec3" })).toBeInTheDocument(),
+    expect(screen.getByRole("button", { name: "\u63d0\u4ea4" })).toBeInTheDocument(),
   );
-  fireEvent.click(screen.getByRole("button", { name: "\u53d1\u8d77\u8bad\u7ec3" }));
+  fireEvent.click(screen.getByRole("button", { name: "\u63d0\u4ea4" }));
 
   await waitFor(() =>
     expect(screen.getByRole("link", { name: "\u8df3\u8f6c\u8fd0\u884c\u8be6\u60c5" })).toBeInTheDocument(),

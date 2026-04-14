@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Suspense, lazy, useState } from "react";
+import { Suspense, lazy, useState, type ReactElement } from "react";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 
 import { AppShell } from "./AppShell";
@@ -39,7 +39,7 @@ const ComparisonPage = lazy(
   async () => ({ default: (await import("../pages/ComparisonPage")).ComparisonPage }),
 );
 
-function withSuspense(node: JSX.Element) {
+function withSuspense(node: ReactElement) {
   return <Suspense fallback={<LoadingState label={I18N.state.loading} />}>{node}</Suspense>;
 }
 
@@ -69,11 +69,6 @@ function createWorkbenchRouter() {
         ],
       },
     ],
-    {
-      future: {
-        v7_relativeSplatPath: true,
-      },
-    },
   );
 }
 

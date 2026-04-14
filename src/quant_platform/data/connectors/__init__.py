@@ -10,7 +10,9 @@ from quant_platform.data.connectors.sentiment import (
     GdeltSentimentConnector,
     GNewsSentimentConnector,
     NewsArchiveSentimentConnector,
+    RedditArchiveSentimentConnector,
     RedditHistoryCsvSentimentConnector,
+    RedditPullPushSentimentConnector,
     RedditPublicSentimentConnector,
 )
 
@@ -24,6 +26,8 @@ __all__ = [
     "GNewsSentimentConnector",
     "InternalSmokeMarketConnector",
     "NewsArchiveSentimentConnector",
+    "RedditArchiveSentimentConnector",
     "RedditHistoryCsvSentimentConnector",
+    "RedditPullPushSentimentConnector",
     "RedditPublicSentimentConnector",
 ]

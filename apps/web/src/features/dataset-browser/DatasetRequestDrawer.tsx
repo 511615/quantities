@@ -46,7 +46,7 @@ const DEFAULT_VENDOR_BY_DOMAIN: Record<string, string> = {
   market: "binance",
   macro: "fred",
   on_chain: "defillama",
-  sentiment_events: "gnews",
+  sentiment_events: "reddit_archive",
 };
 const DEFAULT_EXCHANGE_BY_DOMAIN: Record<string, string> = {
   market: "binance",
@@ -54,9 +54,15 @@ const DEFAULT_EXCHANGE_BY_DOMAIN: Record<string, string> = {
 const DEFAULT_IDENTIFIER_BY_DOMAIN: Record<string, string> = {
   macro: "DFF",
   on_chain: "ethereum",
-  sentiment_events: "btc",
+  sentiment_events: "btc_news",
 };
 const DEFAULT_SYMBOL = "BTCUSDT";
+const DOMAIN_LABELS: Record<string, string> = {
+  market: "市场数据",
+  macro: "宏观数据",
+  on_chain: "链上数据",
+  sentiment_events: "情绪 / 事件数据",
+};
 
 function dateInputValue(date: Date) {
   return date.toISOString().slice(0, 10);
@@ -84,6 +90,45 @@ function createDraft(domain = "market"): SourceDraft {
     symbols: "",
     identifier: "",
   };
+}
+
+function domainLabel(domain: string) {
+  return DOMAIN_LABELS[domain] ?? domain;
+}
+
+function localizeRequestOptionLabel(value: string, label?: string | null) {
+  const normalized = (label ?? value).trim().toLowerCase();
+  if (normalized === "news_archive") {
+    return "新闻归档";
+  }
+  if (normalized === "gnews") {
+    return "Google 新闻";
+  }
+  if (normalized === "reddit_archive") {
+    return "Reddit 历史归档";
+  }
+  if (normalized === "manual_list") {
+    return "手动列表";
+  }
+  if (normalized === "top_n") {
+    return "前 N 个标的";
+  }
+  if (normalized === "binance") {
+    return "币安";
+  }
+  if (normalized === "baseline_market_features") {
+    return "基础市场特征";
+  }
+  if (normalized === "time_series") {
+    return "时间序列切分";
+  }
+  if (normalized === "available_time_safe_asof") {
+    return "按可用时间安全对齐";
+  }
+  if (normalized === "single_domain") {
+    return "单域产出";
+  }
+  return label ?? value;
 }
 
 function normalizeOptionValue(
@@ -280,7 +325,7 @@ function alignDraftFrequencies(
 
 export function DatasetRequestDrawer({
   title = "\u7533\u8bf7\u6570\u636e\u96c6",
-  description = "\u4e00\u6b21\u9009\u62e9 1..n \u4e2a\u57df\uff0c\u591a\u57df\u65f6\u76f4\u63a5\u4ea7\u51fa merged dataset\uff0c\u7136\u540e\u7528 dataset_id \u8fde\u5230\u8bad\u7ec3\u548c\u56de\u6d4b\u3002",
+  description = "\u4e00\u6b21\u9009\u62e9 1..n \u4e2a\u57df\uff0c\u591a\u57df\u65f6\u76f4\u63a5\u4ea7\u51fa\u5408\u5e76\u6570\u636e\u96c6\uff0c\u7136\u540e\u7528\u6570\u636e\u96c6 ID \u8fde\u5230\u8bad\u7ec3\u548c\u56de\u6d4b\u3002",
   triggerTone = "primary",
   initialValues,
 }: DatasetRequestDrawerProps) {
@@ -322,9 +367,9 @@ export function DatasetRequestDrawer({
     },
   });
 
-  const datasetId = jobQuery.data?.result.dataset_id ?? null;
-  const datasetDetailHref = jobQuery.data?.result.deeplinks.dataset_detail ?? null;
-  const runDetailHref = jobQuery.data?.result.deeplinks.run_detail ?? null;
+  const datasetId = jobQuery.data?.result?.dataset_id ?? null;
+  const datasetDetailHref = jobQuery.data?.result?.deeplinks?.dataset_detail ?? null;
+  const runDetailHref = jobQuery.data?.result?.deeplinks?.run_detail ?? null;
   const trainHref = datasetId
     ? `/models?launchTrain=1&datasetId=${encodeURIComponent(datasetId)}`
     : null;
@@ -374,20 +419,20 @@ export function DatasetRequestDrawer({
     const multiDomain = drafts.length > 1;
     const marketCount = drafts.filter((draft) => draft.dataDomain === "market").length;
     if (multiDomain && marketCount !== 1) {
-      return "\u53ef\u8bad\u7ec3 / \u53ef\u56de\u6d4b\u7684 merged request \u5fc5\u987b\u5305\u542b\u4e14\u4ec5\u5305\u542b\u4e00\u4e2a market \u951a\u70b9\u3002";
+      return "\u53ef\u8bad\u7ec3 / \u53ef\u56de\u6d4b\u7684\u5408\u5e76\u8bf7\u6c42\u5fc5\u987b\u5305\u542b\u4e14\u4ec5\u5305\u542b\u4e00\u4e2a\u5e02\u573a\u951a\u70b9\u3002";
     }
     if (multiDomain && new Set(drafts.map((draft) => draft.frequency)).size !== 1) {
-      return "\u591a\u57df direct merge \u8981\u6c42\u6240\u6709 source \u7684 frequency \u5b8c\u5168\u4e00\u81f4\u3002";
+      return "\u591a\u57df\u76f4\u63a5\u5408\u5e76\u8981\u6c42\u6240\u6709\u6570\u636e\u6e90\u7684\u9891\u7387\u5b8c\u5168\u4e00\u81f4\u3002";
     }
     const marketDraft = drafts.find((draft) => draft.dataDomain === "market");
     if (marketDraft && !marketDraft.symbols.trim()) {
-      return "\u8bf7\u4e3a market \u57df\u81f3\u5c11\u586b\u5199\u4e00\u4e2a symbol\u3002";
+      return "请至少为市场数据域填写一个标的。";
     }
     const missingIdentifier = drafts.find(
       (draft) => draft.dataDomain !== "market" && !draft.identifier.trim(),
     );
     if (missingIdentifier) {
-      return `\u8bf7\u4e3a ${missingIdentifier.dataDomain} \u57df\u586b\u5199 identifier\u3002`;
+      return `请为${domainLabel(missingIdentifier.dataDomain)}填写标识符。`;
     }
     return null;
   }
@@ -487,8 +532,8 @@ export function DatasetRequestDrawer({
             </strong>
             <span>
               {sourceDrafts.length > 1
-                ? "\u591a\u57df\u65f6\u4f1a\u7528 market \u505a\u552f\u4e00\u951a\u70b9\uff0c\u540e\u7aef\u6309 available_time_safe_asof \u76f4\u63a5\u5408\u5e76\u4e3a\u6700\u7ec8 merged dataset\u3002"
-                : "\u5355\u57df\u65f6\u4f1a\u76f4\u63a5\u4ea7\u51fa\u53ef\u7ee7\u7eed dataset_id \u8bad\u7ec3\u7684\u6570\u636e\u96c6\u3002"}
+                ? "\u591a\u57df\u65f6\u4f1a\u7528\u5e02\u573a\u57df\u4f5c\u4e3a\u552f\u4e00\u951a\u70b9\uff0c\u540e\u7aef\u6309\u201c\u6309\u53ef\u7528\u65f6\u95f4\u5b89\u5168\u5bf9\u9f50\u201d\u7b56\u7565\u76f4\u63a5\u5408\u5e76\u4e3a\u6700\u7ec8\u6570\u636e\u96c6\u3002"
+                : "\u5355\u57df\u65f6\u4f1a\u76f4\u63a5\u4ea7\u51fa\u53ef\u7ee7\u7eed\u4f7f\u7528\u6570\u636e\u96c6 ID \u53d1\u8d77\u8bad\u7ec3\u7684\u6570\u636e\u96c6\u3002"}
             </span>
           </div>
 
@@ -532,7 +577,7 @@ export function DatasetRequestDrawer({
                   onClick={addDomain}
                   type="button"
                 >
-                  add-domain
+                  添加数据域
                 </button>
               </div>
 
@@ -575,14 +620,14 @@ export function DatasetRequestDrawer({
                         >
                           {domainOptions.map((domain) => (
                             <option key={domain} value={domain}>
-                              {domain}
+                              {domainLabel(domain)}
                             </option>
                           ))}
                         </select>
                       </label>
 
                       <label>
-                        <span>{"Vendor"}</span>
+                        <span>{"来源"}</span>
                         <select
                           className="field"
                           onChange={(event) =>
@@ -595,7 +640,7 @@ export function DatasetRequestDrawer({
                         >
                           {capability.source_vendors.map((option) => (
                             <option key={option.value} value={option.value}>
-                              {option.label}
+                              {localizeRequestOptionLabel(option.value, option.label)}
                             </option>
                           ))}
                         </select>
@@ -624,7 +669,7 @@ export function DatasetRequestDrawer({
                       {draft.dataDomain === "market" ? (
                         <>
                           <label>
-                            <span>{"Exchange"}</span>
+                            <span>{"交易所"}</span>
                             <select
                               className="field"
                               onChange={(event) =>
@@ -637,7 +682,7 @@ export function DatasetRequestDrawer({
                             >
                               {(capability.exchanges ?? []).map((option) => (
                                 <option key={option.value} value={option.value}>
-                                  {option.label}
+                                  {localizeRequestOptionLabel(option.value, option.label)}
                                 </option>
                               ))}
                             </select>
@@ -660,14 +705,14 @@ export function DatasetRequestDrawer({
                             >
                               {(capability.selection_modes ?? []).map((option) => (
                                 <option key={option.value} value={option.value}>
-                                  {option.label}
+                                  {localizeRequestOptionLabel(option.value, option.label)}
                                 </option>
                               ))}
                             </select>
                           </label>
 
                           <label>
-                            <span>{"Symbol"}</span>
+                            <span>{"标的"}</span>
                             <input
                               className="field"
                               onChange={(event) =>
@@ -683,7 +728,7 @@ export function DatasetRequestDrawer({
                         </>
                       ) : (
                         <label>
-                          <span>{"Identifier"}</span>
+                          <span>{"标识符"}</span>
                           <input
                             className="field"
                             onChange={(event) =>
@@ -692,7 +737,7 @@ export function DatasetRequestDrawer({
                                 identifier: event.target.value,
                               }))
                             }
-                            placeholder={DEFAULT_IDENTIFIER_BY_DOMAIN[draft.dataDomain] ?? "identifier"}
+                            placeholder={DEFAULT_IDENTIFIER_BY_DOMAIN[draft.dataDomain] ?? "请输入标识符"}
                             value={draft.identifier}
                           />
                         </label>
@@ -709,7 +754,7 @@ export function DatasetRequestDrawer({
                 <GlossaryHint hintKey="sample_policy" iconOnly />
               </strong>
               <span>
-                {`\u7279\u5f81 ${recommendedValue(optionsQuery.data?.feature_sets, "baseline_market_features")} / split ${recommendedValue(optionsQuery.data?.split_strategies, "time_series")} / merge ${sourceDrafts.length > 1 ? "available_time_safe_asof" : "single_domain"}`}
+                {`\u7279\u5f81\uff1a${localizeRequestOptionLabel(recommendedValue(optionsQuery.data?.feature_sets, "baseline_market_features"))} / \u5207\u5206\uff1a${localizeRequestOptionLabel(recommendedValue(optionsQuery.data?.split_strategies, "time_series"))} / \u5408\u5e76\uff1a${localizeRequestOptionLabel(sourceDrafts.length > 1 ? "available_time_safe_asof" : "single_domain")}`}
               </span>
             </section>
 

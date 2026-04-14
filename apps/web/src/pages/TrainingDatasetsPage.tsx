@@ -140,7 +140,7 @@ export function TrainingDatasetsPage() {
                       <TermLabel hintKey="dataset_type" label="数据类型" />
                     </th>
                     <th>实体范围</th>
-                    <th>Universe</th>
+                    <th>标的池</th>
                     <th>样本量</th>
                     <th>
                       <TermLabel hintKey="feature_dimensions" label="特征维度" />
@@ -166,7 +166,7 @@ export function TrainingDatasetsPage() {
                   {items.map((item) => (
                     <tr key={item.datasetId}>
                       <td>
-                        <Link to={`/datasets/${item.datasetId}`}>{item.title}</Link>
+                        <Link to={`/datasets/${encodeURIComponent(item.datasetId)}`}>{item.title}</Link>
                         <div className="dataset-row-subcopy">
                           <span>{item.subtitle}</span>
                           <span>技术标识：{item.technicalId}</span>
@@ -212,14 +212,14 @@ export function TrainingDatasetsPage() {
             <section className="panel">
               <PanelHeader
                 eyebrow="暂不可训练"
-                title="当前被后端判定为 not_ready 的数据集"
+                title="当前被后端判定为暂不可训练的数据集"
                 description="这些数据集先不进入主比较表，避免把“能看”误认成“能训练”。"
               />
               <div className="stack-list">
                 {blockedItems.map((item) => (
                   <div className="stack-item align-start" key={item.datasetId}>
                     <div className="page-stack compact-gap">
-                      <Link to={`/datasets/${item.datasetId}`}>{item.title}</Link>
+                      <Link to={`/datasets/${encodeURIComponent(item.datasetId)}`}>{item.title}</Link>
                       <span>{item.subtitle}</span>
                       <span>{item.readinessReason}</span>
                     </div>

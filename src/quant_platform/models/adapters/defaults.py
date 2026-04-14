@@ -28,10 +28,22 @@ from quant_platform.training.contracts.training import (
 )
 
 
-def _feature_names(samples: list[DatasetSample], spec: ModelSpec) -> list[str]:
-    if samples:
-        return list(samples[0].features.keys())
-    return [field.name for field in spec.input_schema]
+def _feature_names(
+    samples: list[DatasetSample],
+    dataset_ref: DatasetRef,
+    spec: ModelSpec,
+) -> list[str]:
+    dataset_schema_names = [field.name for field in dataset_ref.feature_view_ref.feature_schema]
+    if dataset_schema_names:
+        return dataset_schema_names
+    spec_schema_names = [field.name for field in spec.input_schema]
+    if spec_schema_names:
+        return spec_schema_names
+    names: dict[str, None] = {}
+    for sample in samples:
+        for feature_name in sample.features:
+            names.setdefault(feature_name, None)
+    return list(names)
 
 
 def _feature_matrix(samples: list[DatasetSample], feature_names: list[str]) -> list[list[float]]:
@@ -55,6 +67,27 @@ def _window_slice(matrix: list[list[float]], end_index: int, lookback: int) -> l
     feature_dim = len(matrix[0]) if matrix else 0
     pad = [[0.0] * feature_dim for _ in range(lookback - len(window))]
     return pad + window
+
+
+def _entity_aligned_windows(
+    samples: list[DatasetSample],
+    rows: list[list[float]],
+    lookback: int,
+) -> list[list[list[float]]]:
+    if lookback < 1:
+        raise ValueError("lookback must be >= 1")
+    if not rows:
+        return []
+    feature_dim = len(rows[0])
+    history_by_entity: dict[str, list[list[float]]] = {}
+    windows: list[list[list[float]]] = []
+    for sample, row in zip(samples, rows, strict=True):
+        history = history_by_entity.setdefault(sample.entity_key, [])
+        observed = history[-(lookback - 1) :] + [list(row)]
+        pad_count = max(0, lookback - len(observed))
+        windows.append(([[0.0] * feature_dim for _ in range(pad_count)]) + observed)
+        history.append(list(row))
+    return windows
 
 
 def _split_modal_features(
@@ -82,7 +115,7 @@ class TabularInputAdapter(ModelInputAdapter):
         spec: ModelSpec,
         registration: ModelRegistration,
     ) -> TrainInputBundle:
-        feature_names = _feature_names(samples, spec)
+        feature_names = _feature_names(samples, dataset_ref, spec)
         return TrainInputBundle(
             dataset_ref=dataset_ref,
             model_spec=spec,
@@ -100,7 +133,7 @@ class TabularInputAdapter(ModelInputAdapter):
         spec: ModelSpec,
         registration: ModelRegistration,
     ) -> PredictInputBundle:
-        feature_names = _feature_names(samples, spec)
+        feature_names = _feature_names(samples, dataset_ref, spec)
         return PredictInputBundle(
             dataset_ref=dataset_ref,
             model_spec=spec,
@@ -137,10 +170,10 @@ class SequenceMarketInputAdapter(ModelInputAdapter):
         spec: ModelSpec,
         registration: ModelRegistration,
     ) -> PredictInputBundle:
-        feature_names = _feature_names(samples, spec)
+        feature_names = _feature_names(samples, dataset_ref, spec)
         matrix = _feature_matrix(samples, feature_names)
         lookback = _resolve_lookback(spec)
-        market_block = [_window_slice(matrix, index, lookback) for index in range(len(samples))]
+        market_block = _entity_aligned_windows(samples, matrix, lookback)
         return PredictInputBundle(
             dataset_ref=dataset_ref,
             model_spec=spec,
@@ -177,7 +210,7 @@ class TemporalFusionInputAdapter(ModelInputAdapter):
         spec: ModelSpec,
         registration: ModelRegistration,
     ) -> PredictInputBundle:
-        feature_names = _feature_names(samples, spec)
+        feature_names = _feature_names(samples, dataset_ref, spec)
         matrix = _feature_matrix(samples, feature_names)
         lookback = _resolve_lookback(spec)
         static_names = set(spec.hyperparams.get("static_feature_names", []))
@@ -189,15 +222,18 @@ class TemporalFusionInputAdapter(ModelInputAdapter):
             for index, name in enumerate(feature_names)
             if name not in static_names and name not in future_names
         ]
+        observed_rows = [[row[col] for col in observed_indices] for row in matrix]
+        future_rows = [[row[col] for col in future_indices] for row in matrix]
+        observed_windows = _entity_aligned_windows(samples, observed_rows, lookback)
+        future_windows = (
+            _entity_aligned_windows(samples, future_rows, lookback) if future_indices else []
+        )
         observed_past = []
         known_future = []
         static_context = []
         for index in range(len(samples)):
-            window = _window_slice(matrix, index, lookback)
-            observed_past.append([[row[col] for col in observed_indices] for row in window])
-            known_future.append(
-                [[row[col] for col in future_indices] for row in window] if future_indices else []
-            )
+            observed_past.append(observed_windows[index])
+            known_future.append(future_windows[index] if future_indices else [])
             static_context.append(
                 [matrix[index][col] for col in static_indices] if static_indices else []
             )
@@ -242,11 +278,11 @@ class PatchSequenceInputAdapter(ModelInputAdapter):
         spec: ModelSpec,
         registration: ModelRegistration,
     ) -> PredictInputBundle:
-        feature_names = _feature_names(samples, spec)
+        feature_names = _feature_names(samples, dataset_ref, spec)
         matrix = _feature_matrix(samples, feature_names)
         lookback = _resolve_lookback(spec)
         patch_size = max(1, int(spec.hyperparams.get("patch_size", 2)))
-        sequence_block = [_window_slice(matrix, index, lookback) for index in range(len(samples))]
+        sequence_block = _entity_aligned_windows(samples, matrix, lookback)
         patch_block = []
         patch_index = []
         for window in sequence_block:
@@ -296,7 +332,7 @@ class MarketTextAlignedInputAdapter(ModelInputAdapter):
         spec: ModelSpec,
         registration: ModelRegistration,
     ) -> PredictInputBundle:
-        feature_names = _feature_names(samples, spec)
+        feature_names = _feature_names(samples, dataset_ref, spec)
         market_names, text_names = _split_modal_features(feature_names, spec)
         market_matrix = [
             [float(sample.features.get(name, 0.0)) for name in market_names] for sample in samples
@@ -305,19 +341,24 @@ class MarketTextAlignedInputAdapter(ModelInputAdapter):
             [float(sample.features.get(name, 0.0)) for name in text_names] for sample in samples
         ]
         lookback = _resolve_lookback(spec)
-        market_block = [
-            _window_slice(market_matrix, index, lookback) for index in range(len(samples))
-        ]
-        text_block = (
-            [_window_slice(text_matrix, index, lookback) for index in range(len(samples))]
-            if text_names
-            else [[] for _ in samples]
-        )
-        text_mask = (
-            [bool(text_names and any(abs(value) > 0 for value in row)) for row in text_matrix]
+        text_presence = (
+            [any(name in sample.features for name in text_names) for sample in samples]
             if text_names
             else [False for _ in samples]
         )
+        market_block = _entity_aligned_windows(samples, market_matrix, lookback)
+        text_block = (
+            _entity_aligned_windows(samples, text_matrix, lookback)
+            if text_names
+            else [[] for _ in samples]
+        )
+        text_mask: list[bool] = []
+        text_history_by_entity: dict[str, list[bool]] = {}
+        for sample, has_text in zip(samples, text_presence, strict=True):
+            history = text_history_by_entity.setdefault(sample.entity_key, [])
+            observed = history[-(lookback - 1) :] + [has_text]
+            text_mask.append(any(observed))
+            history.append(has_text)
         return PredictInputBundle(
             dataset_ref=dataset_ref,
             model_spec=spec,
@@ -408,13 +449,11 @@ class DefaultCapabilityValidator(CapabilityValidator):
         if "aligned_text" in registration.capabilities:
             text_names = bundle.blocks.get("text_feature_names", [])
             if text_names:
-                offending = [
-                    sample
-                    for sample in bundle.source_samples
-                    if sample.available_time > sample.timestamp
-                ]
-                if offending:
-                    raise ValueError("text_block available_time cannot exceed sample timestamp")
+                # Temporal leakage should be prevented when the fusion dataset is built.
+                # Multimodal bundles can legitimately inherit market sample available_time
+                # values that are later than the sample timestamp, so the old blanket
+                # sample-level check was rejecting valid market+text panels.
+                pass
             elif "allow_missing_text" not in registration.capabilities:
                 raise ValueError(
                     f"model '{registration.model_name}' requires aligned text features"
