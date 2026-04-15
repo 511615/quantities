@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 
-import { I18N } from "../shared/lib/i18n";
+import { I18N, translateText } from "../shared/lib/i18n";
+import { useUiPreferences } from "../shared/preferences/UiPreferencesContext";
 
 const PRIMARY_LINKS = [
   { to: "/", label: I18N.nav.workbench, end: true },
@@ -12,6 +13,8 @@ const PRIMARY_LINKS = [
 ];
 
 export function AppShell() {
+  const { locale, setLocale, theme, setTheme } = useUiPreferences();
+
   return (
     <div className="workbench-shell">
       <aside className="workspace-nav">
@@ -35,13 +38,56 @@ export function AppShell() {
         </section>
 
         <section className="workspace-note">
-          <div className="nav-caption">API / BFF</div>
+          <div className="nav-caption">{translateText("API / BFF")}</div>
           <p>{I18N.app.note}</p>
           <NavLink className="comparison-link" to="/comparison">
             {I18N.nav.comparison}
           </NavLink>
         </section>
+
+        <section className="nav-section nav-settings">
+          <div className="nav-caption">{I18N.app.settingsTitle}</div>
+          <div className="settings-group">
+            <span className="settings-label">{I18N.app.languageLabel}</span>
+            <div className="segmented-tabs compact" role="tablist" aria-label={I18N.app.languageLabel}>
+              <button
+                className={locale === "zh-CN" ? "active" : ""}
+                onClick={() => setLocale("zh-CN")}
+                type="button"
+              >
+                中
+              </button>
+              <button
+                className={locale === "en-US" ? "active" : ""}
+                onClick={() => setLocale("en-US")}
+                type="button"
+              >
+                EN
+              </button>
+            </div>
+          </div>
+          <div className="settings-group">
+            <span className="settings-label">{I18N.app.themeLabel}</span>
+            <div className="segmented-tabs compact" role="tablist" aria-label={I18N.app.themeLabel}>
+              <button
+                className={theme === "light" ? "active" : ""}
+                onClick={() => setTheme("light")}
+                type="button"
+              >
+                {I18N.app.themeLight}
+              </button>
+              <button
+                className={theme === "dark" ? "active" : ""}
+                onClick={() => setTheme("dark")}
+                type="button"
+              >
+                {I18N.app.themeDark}
+              </button>
+            </div>
+          </div>
+        </section>
       </aside>
+
       <main className="workspace-main">
         <Outlet />
       </main>

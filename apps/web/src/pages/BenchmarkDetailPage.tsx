@@ -2,7 +2,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { useBenchmarkDetail } from "../shared/api/hooks";
 import { formatDate, formatNumber } from "../shared/lib/format";
-import { I18N } from "../shared/lib/i18n";
+import { I18N, translateText } from "../shared/lib/i18n";
 import { mapBenchmarkDetail } from "../shared/view-model/mappers";
 import { GlossaryHint } from "../shared/ui/GlossaryHint";
 import { MetricGrid } from "../shared/ui/MetricGrid";
@@ -20,12 +20,7 @@ export function BenchmarkDetailPage() {
     return <ErrorState message={(query.error as Error).message} />;
   }
   if (!query.data) {
-    return (
-      <EmptyState
-        title={I18N.state.empty}
-        body={"\u6ca1\u6709\u627e\u5230\u5bf9\u5e94\u7684\u57fa\u51c6\u8be6\u60c5\u3002"}
-      />
-    );
+    return <EmptyState title={I18N.state.empty} body={translateText("没有找到对应的基准详情。")} />;
   }
 
   const detail = mapBenchmarkDetail(query.data);
@@ -37,13 +32,13 @@ export function BenchmarkDetailPage() {
         <PanelHeader
           eyebrow={I18N.nav.benchmarks}
           title={detail.benchmark_name}
-          description={"\u5305\u542b\u6392\u884c\u699c\u3001\u9a8c\u8bc1\u6458\u8981\u4e0e\u53ef\u8ffd\u6eaf\u5de5\u4ef6\u5165\u53e3\u3002"}
+          description={translateText("包含排行榜、验证摘要与可追溯工件入口。")}
         />
         <MetricGrid
           items={[
-            { label: "\u6570\u636e\u96c6", value: detail.dataset_id },
-            { label: "\u7a97\u53e3\u6570", value: String(detail.window_count) },
-            { label: "\u66f4\u65b0\u65f6\u95f4", value: formatDate(detail.updated_at) },
+            { label: translateText("数据集"), value: detail.dataset_id },
+            { label: translateText("窗口数"), value: String(detail.window_count) },
+            { label: translateText("更新时间"), value: formatDate(detail.updated_at) },
           ]}
         />
       </section>
@@ -51,19 +46,19 @@ export function BenchmarkDetailPage() {
       <div className="detail-grid">
         <section className="panel">
           <PanelHeader
-            eyebrow={"排行榜"}
-            title={"\u6a21\u578b\u6392\u540d"}
-            description={"\u57fa\u4e8e MAE \u7684\u6a2a\u5411\u5bf9\u6bd4\uff0c\u5173\u952e\u672f\u8bed\u5168\u90e8\u6536\u655b\u4e3a hover \u95ee\u53f7\u89e3\u91ca\u3002"}
+            eyebrow={translateText("排行榜")}
+            title={translateText("模型排名")}
+            description={translateText("基于 MAE 的横向对比，关键术语全部收敛为 hover 问号解释。")}
           />
           {rows.length > 0 ? (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>排名</th>
+                  <th>{translateText("排名")}</th>
                   <th>{I18N.nav.runs}</th>
-                  <th>{"\u7b97\u6cd5\u65cf"}</th>
+                  <th>{translateText("算法族")}</th>
                   <th><GlossaryHint hintKey="mae" /></th>
-                  <th><GlossaryHint hintKey="mae" termOverride={"测试集 MAE"} /></th>
+                  <th><GlossaryHint hintKey="mae" termOverride={translateText("测试集 MAE")} /></th>
                 </tr>
               </thead>
               <tbody>
@@ -79,15 +74,12 @@ export function BenchmarkDetailPage() {
               </tbody>
             </table>
           ) : (
-            <EmptyState
-              title={I18N.state.empty}
-              body={"\u57fa\u51c6\u7ed3\u679c\u4e2d\u6ca1\u6709\u6392\u884c\u699c\u6570\u636e\u3002"}
-            />
+            <EmptyState title={I18N.state.empty} body={translateText("基准结果中没有排行榜数据。")} />
           )}
         </section>
 
         <section className="panel">
-          <PanelHeader eyebrow={"\u544a\u8b66\u6458\u8981"} title={"\u98ce\u9669\u63d0\u793a"} />
+          <PanelHeader eyebrow={translateText("告警摘要")} title={translateText("风险提示")} />
           {detail.warning_summary && detail.warning_summary.count > 0 ? (
             <div className="stack-list">
               {detail.warning_summary.items.map((warning) => (
@@ -97,10 +89,7 @@ export function BenchmarkDetailPage() {
               ))}
             </div>
           ) : (
-            <EmptyState
-              title={"\u65e0\u544a\u8b66"}
-              body={"\u5f53\u524d\u57fa\u51c6\u6ca1\u6709\u989d\u5916\u544a\u8b66\u3002"}
-            />
+            <EmptyState title={translateText("无告警")} body={translateText("当前基准没有额外告警。")} />
           )}
           {detail.review_summary ? (
             <div className="stack-list">
@@ -114,7 +103,7 @@ export function BenchmarkDetailPage() {
       </div>
 
       <section className="panel">
-        <PanelHeader eyebrow={"\u5de5\u4ef6"} title={"\u57fa\u51c6\u4ea7\u7269"} />
+        <PanelHeader eyebrow={translateText("工件")} title={translateText("基准产物")} />
         <div className="stack-list">
           {detail.artifacts.map((artifact) => (
             <div className="stack-item" key={artifact.uri}>
@@ -123,7 +112,7 @@ export function BenchmarkDetailPage() {
             </div>
           ))}
           <Link className="link-button" to="/benchmarks">
-            {"\u8fd4\u56de\u57fa\u51c6\u5217\u8868"}
+            {translateText("返回基准列表")}
           </Link>
         </div>
       </section>

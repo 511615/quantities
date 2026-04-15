@@ -1,115 +1,115 @@
-import { I18N } from "./i18n";
+import { I18N, translateText } from "./i18n";
 
-const STATUS_LABELS: Record<string, string> = {
-  queued: I18N.status.queued,
-  running: I18N.status.running,
-  success: I18N.status.success,
-  failed: I18N.status.failed,
-  error: I18N.status.failed,
-  partial: I18N.status.partial,
-  ready: "\u53ef\u8bad\u7ec3",
-  warning: "\u9700\u7559\u610f",
-  not_ready: "\u6682\u4e0d\u53ef\u8bad\u7ec3",
-  benchmark: I18N.status.benchmark,
-  unknown: I18N.status.unknown,
+const STATUS_LABELS: Record<string, () => string> = {
+  queued: () => I18N.status.queued,
+  running: () => I18N.status.running,
+  success: () => I18N.status.success,
+  failed: () => I18N.status.failed,
+  error: () => I18N.status.failed,
+  partial: () => I18N.status.partial,
+  ready: () => translateText("可训练"),
+  warning: () => translateText("需留意"),
+  not_ready: () => translateText("暂不可训练"),
+  benchmark: () => I18N.status.benchmark,
+  unknown: () => I18N.status.unknown,
 };
 
-const JOB_TYPE_LABELS: Record<string, string> = {
-  train: "\u8bad\u7ec3\u4efb\u52a1",
-  backtest: "\u56de\u6d4b\u4efb\u52a1",
-  dataset_request: "\u6570\u636e\u7533\u8bf7",
-  dataset_pipeline: "\u95ed\u73af\u7f16\u6392",
-  prepare: "\u6570\u636e\u51c6\u5907",
-  build: "\u6570\u636e\u6784\u5efa",
-  acquisition: "\u6570\u636e\u91c7\u96c6",
+const JOB_TYPE_LABELS: Record<string, () => string> = {
+  train: () => translateText("训练任务"),
+  backtest: () => translateText("回测任务"),
+  dataset_request: () => translateText("数据申请"),
+  dataset_pipeline: () => translateText("数据闭环编排"),
+  prepare: () => translateText("数据准备"),
+  build: () => translateText("数据构建"),
+  acquisition: () => translateText("数据采集"),
 };
 
-const SOURCE_TYPE_LABELS: Record<string, string> = {
-  run: I18N.sourceType.run,
-  benchmark: I18N.sourceType.benchmark,
+const SOURCE_TYPE_LABELS: Record<string, () => string> = {
+  run: () => I18N.sourceType.run,
+  benchmark: () => I18N.sourceType.benchmark,
 };
 
-const STAGE_NAME_LABELS: Record<string, string> = {
-  acquire_base: "\u7533\u8bf7\u57fa\u7840\u6570\u636e",
-  prepare_base: "\u6784\u5efa\u57fa\u7840\u6570\u636e",
-  readiness_base: "\u57fa\u7840\u5c31\u7eea\u6821\u9a8c",
-  build_fusion: "\u6784\u5efa\u878d\u5408\u6570\u636e",
-  readiness_fusion: "\u878d\u5408\u5c31\u7eea\u6821\u9a8c",
-  prepare: I18N.stage.prepare,
-  train: I18N.stage.train,
-  predict: I18N.stage.predict,
-  backtest: I18N.stage.backtest,
-  acquire: "\u7533\u8bf7\u6570\u636e",
-  readiness: "\u5c31\u7eea\u6821\u9a8c",
+const STAGE_NAME_LABELS: Record<string, () => string> = {
+  acquire_base: () => translateText("申请基础数据"),
+  prepare_base: () => translateText("构建基础数据"),
+  readiness_base: () => translateText("基础就绪校验"),
+  build_fusion: () => translateText("构建融合数据"),
+  readiness_fusion: () => translateText("融合就绪校验"),
+  prepare: () => I18N.stage.prepare,
+  train: () => I18N.stage.train,
+  predict: () => I18N.stage.predict,
+  backtest: () => I18N.stage.backtest,
+  acquire: () => translateText("申请数据"),
+  readiness: () => translateText("就绪校验"),
 };
 
-const ARTIFACT_LABELS: Record<string, string> = {
-  tracking_summary: "\u8ddf\u8e2a\u6458\u8981",
-  train_manifest: "\u8bad\u7ec3\u6e05\u5355",
-  legacy_manifest: "\u65e7\u7248\u6e05\u5355",
-  model_state: "\u6a21\u578b\u72b6\u6001",
-  model_metadata: "\u6a21\u578b\u5143\u6570\u636e",
-  feature_importance: "\u7279\u5f81\u91cd\u8981\u6027",
-  evaluation_summary: "\u8bc4\u4f30\u6458\u8981",
-  prediction_frame: "\u9884\u6d4b\u7ed3\u679c",
-  benchmark_json: "\u57fa\u51c6 JSON",
-  benchmark_markdown: "\u57fa\u51c6 Markdown",
-  benchmark_csv: "\u57fa\u51c6 CSV",
-  research_result: "\u7814\u7a76\u5f15\u64ce\u7ed3\u679c",
-  simulation_result: "\u4eff\u771f\u5f15\u64ce\u7ed3\u679c",
-  research_backtest_result: "\u7814\u7a76\u5f15\u64ce\u7ed3\u679c",
-  simulation_backtest_result: "\u6a21\u62df\u5f15\u64ce\u7ed3\u679c",
-  backtest_report: "\u56de\u6d4b\u62a5\u544a",
-  simulation_backtest_report: "\u6a21\u62df\u62a5\u544a",
-  report: "\u62a5\u544a",
-  diagnostics: "\u8bca\u65ad",
-  backtest_diagnostics: "\u56de\u6d4b\u8bca\u65ad",
-  leakage_audit: "\u6cc4\u6f0f\u5ba1\u8ba1",
-  backtest_leakage: "\u6cc4\u6f0f\u5ba1\u8ba1",
-  pnl: "\u6536\u76ca\u5206\u89e3",
-  backtest_pnl: "\u56de\u6d4b\u6536\u76ca\u5206\u89e3",
-  positions: "\u6301\u4ed3",
-  backtest_positions: "\u56de\u6d4b\u6301\u4ed3\u8def\u5f84",
-  orders: "\u59d4\u6258",
-  fills: "\u6210\u4ea4",
-  scenario_summary: "\u538b\u529b\u573a\u666f",
-  scenarios: "\u538b\u529b\u573a\u666f",
-  backtest_scenarios: "\u56de\u6d4b\u538b\u529b\u573a\u666f",
+const ARTIFACT_LABELS: Record<string, () => string> = {
+  tracking_summary: () => translateText("跟踪摘要"),
+  train_manifest: () => translateText("训练清单"),
+  legacy_manifest: () => translateText("旧版清单"),
+  model_state: () => translateText("模型状态"),
+  model_metadata: () => translateText("模型元数据"),
+  feature_importance: () => translateText("特征重要性"),
+  evaluation_summary: () => translateText("评估摘要"),
+  prediction_frame: () => translateText("预测结果"),
+  benchmark_json: () => translateText("基准 JSON"),
+  benchmark_markdown: () => translateText("基准 Markdown"),
+  benchmark_csv: () => translateText("基准 CSV"),
+  research_result: () => translateText("研究引擎结果"),
+  simulation_result: () => translateText("仿真引擎结果"),
+  research_backtest_result: () => translateText("研究引擎结果"),
+  simulation_backtest_result: () => translateText("模拟引擎结果"),
+  backtest_report: () => translateText("回测报告"),
+  simulation_backtest_report: () => translateText("模拟报告"),
+  report: () => translateText("报告"),
+  diagnostics: () => translateText("诊断"),
+  backtest_diagnostics: () => translateText("回测诊断"),
+  leakage_audit: () => translateText("泄漏审计"),
+  backtest_leakage: () => translateText("泄漏审计"),
+  pnl: () => translateText("收益分解"),
+  backtest_pnl: () => translateText("回测收益分解"),
+  positions: () => translateText("持仓"),
+  backtest_positions: () => translateText("回测持仓路径"),
+  orders: () => translateText("委托"),
+  fills: () => translateText("成交"),
+  scenario_summary: () => translateText("压力场景"),
+  scenarios: () => translateText("压力场景"),
+  backtest_scenarios: () => translateText("回测压力场景"),
 };
 
-const FRESHNESS_LABELS: Record<string, string> = {
-  fresh: "\u65b0\u9c9c",
-  stale: "\u504f\u65e7",
-  delayed: "\u5ef6\u8fdf",
-  unknown: "\u672a\u77e5",
+const FRESHNESS_LABELS: Record<string, () => string> = {
+  fresh: () => translateText("新鲜"),
+  stale: () => translateText("偏旧"),
+  delayed: () => translateText("延迟"),
+  unknown: () => I18N.status.unknown,
 };
 
 export function formatStatusLabel(status: string | null | undefined): string {
   const normalized = (status ?? "unknown").toLowerCase();
-  return STATUS_LABELS[normalized] ?? normalized;
+  return STATUS_LABELS[normalized]?.() ?? normalized;
 }
 
 export function formatJobTypeLabel(jobType: string | null | undefined): string {
   const normalized = (jobType ?? "").toLowerCase();
-  return JOB_TYPE_LABELS[normalized] ?? (jobType || "--");
+  return JOB_TYPE_LABELS[normalized]?.() ?? (jobType || "--");
 }
 
 export function formatSourceTypeLabel(sourceType: string | null | undefined): string {
   const normalized = (sourceType ?? "").toLowerCase();
-  return SOURCE_TYPE_LABELS[normalized] ?? (sourceType || "--");
+  return SOURCE_TYPE_LABELS[normalized]?.() ?? (sourceType || "--");
 }
 
 export function formatStageNameLabel(stageName: string | null | undefined): string {
   const normalized = (stageName ?? "").toLowerCase();
-  return STAGE_NAME_LABELS[normalized] ?? (stageName || "--");
+  return STAGE_NAME_LABELS[normalized]?.() ?? (stageName || "--");
 }
 
 export function formatArtifactLabel(kind: string | null | undefined, fallback?: string): string {
   const normalized = (kind ?? "").toLowerCase();
-  return ARTIFACT_LABELS[normalized] ?? fallback ?? (normalized || "--");
+  return ARTIFACT_LABELS[normalized]?.() ?? fallback ?? (normalized || "--");
 }
 
 export function formatFreshnessLabel(freshness: string | null | undefined): string {
   const normalized = (freshness ?? "unknown").toLowerCase();
-  return FRESHNESS_LABELS[normalized] ?? (freshness || "--");
+  return FRESHNESS_LABELS[normalized]?.() ?? (freshness || "--");
 }

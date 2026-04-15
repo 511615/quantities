@@ -10,7 +10,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import type { ExperimentListItem, ExperimentsResponse } from "../../shared/api/types";
 import { formatDate, formatNumber } from "../../shared/lib/format";
-import { I18N } from "../../shared/lib/i18n";
+import { I18N, translateText } from "../../shared/lib/i18n";
 import { EmptyState, ErrorState, LoadingState } from "../../shared/ui/StateViews";
 import { PanelHeader } from "../../shared/ui/PanelHeader";
 import { StatusPill } from "../../shared/ui/StatusPill";
@@ -38,7 +38,7 @@ export function ExperimentBrowser({
   datasetFilter,
   onDatasetFilterChange,
   onLaunchBacktest,
-  title = "\u5b9e\u9a8c\u4e0e\u8fd0\u884c",
+  title = translateText("实验与运行"),
 }: ExperimentBrowserProps) {
   const navigate = useNavigate();
   const [selectedRuns, setSelectedRuns] = useState<string[]>([]);
@@ -55,9 +55,7 @@ export function ExperimentBrowser({
               const checked = event.target.checked;
               startTransition(() => {
                 setSelectedRuns((current) =>
-                  checked
-                    ? [...current, row.original.run_id]
-                    : current.filter((value) => value !== row.original.run_id),
+                  checked ? [...current, row.original.run_id] : current.filter((value) => value !== row.original.run_id),
                 );
               });
             }}
@@ -66,26 +64,26 @@ export function ExperimentBrowser({
         ),
       }),
       columnHelper.accessor("run_id", {
-        header: "\u8bad\u7ec3\u5b9e\u4f8b ID",
-      cell: ({ row }) => (
-        <Link to={`/runs/${encodeURIComponent(row.original.run_id)}`}>{row.original.run_id}</Link>
-      ),
+        header: translateText("训练实例 ID"),
+        cell: ({ row }) => (
+          <Link to={`/runs/${encodeURIComponent(row.original.run_id)}`}>{row.original.run_id}</Link>
+        ),
       }),
-      columnHelper.accessor("model_name", { header: "\u6a21\u578b" }),
+      columnHelper.accessor("model_name", { header: translateText("模型") }),
       columnHelper.accessor("dataset_id", {
-        header: "\u6570\u636e\u96c6",
+        header: translateText("数据集"),
         cell: ({ getValue }) => getValue() ?? "--",
       }),
       columnHelper.accessor("primary_metric_value", {
-        header: "平均绝对误差",
+        header: "MAE",
         cell: ({ getValue }) => formatNumber(getValue()),
       }),
       columnHelper.accessor("created_at", {
-        header: "\u521b\u5efa\u65f6\u95f4",
+        header: translateText("创建时间"),
         cell: ({ getValue }) => formatDate(getValue()),
       }),
       columnHelper.accessor("status", {
-        header: "\u72b6\u6001",
+        header: translateText("状态"),
         cell: ({ getValue }) => <StatusPill status={getValue()} />,
       }),
       columnHelper.display({
@@ -93,11 +91,7 @@ export function ExperimentBrowser({
         header: "",
         cell: ({ row }) =>
           onLaunchBacktest ? (
-            <button
-              className="link-button"
-              onClick={() => onLaunchBacktest(row.original.run_id)}
-              type="button"
-            >
+            <button className="link-button" onClick={() => onLaunchBacktest(row.original.run_id)} type="button">
               {I18N.action.launchBacktest}
             </button>
           ) : null,
@@ -117,9 +111,7 @@ export function ExperimentBrowser({
       <PanelHeader
         eyebrow={I18N.nav.runs}
         title={title}
-        description={
-          "\u652f\u6301\u641c\u7d22\u3001\u7b5b\u9009\u3001\u6392\u5e8f\u4e0e\u6279\u91cf\u52fe\u9009\u8fdb\u884c\u5bf9\u6bd4\u3002"
-        }
+        description={translateText("支持搜索、筛选、排序与批量勾选进行对比。")}
         action={
           <button
             className="action-button secondary"
@@ -136,27 +128,19 @@ export function ExperimentBrowser({
         <input
           className="field"
           onChange={(event) => onSearchChange(event.target.value)}
-          placeholder={"\u641c\u7d22\u8bad\u7ec3\u5b9e\u4f8b ID / \u6a21\u578b / \u6570\u636e\u96c6"}
+          placeholder={translateText("搜索训练实例 ID / 模型 / 数据集")}
           value={search}
         />
-        <select
-          className="field"
-          onChange={(event) => onModelFilterChange(event.target.value)}
-          value={modelFilter}
-        >
-          <option value="">{"\u5168\u90e8\u6a21\u578b"}</option>
+        <select className="field" onChange={(event) => onModelFilterChange(event.target.value)} value={modelFilter}>
+          <option value="">{translateText("全部模型")}</option>
           {query.data?.available_models.map((modelName) => (
             <option key={modelName} value={modelName}>
               {modelName}
             </option>
           ))}
         </select>
-        <select
-          className="field"
-          onChange={(event) => onDatasetFilterChange(event.target.value)}
-          value={datasetFilter}
-        >
-          <option value="">{"\u5168\u90e8\u6570\u636e\u96c6"}</option>
+        <select className="field" onChange={(event) => onDatasetFilterChange(event.target.value)} value={datasetFilter}>
+          <option value="">{translateText("全部数据集")}</option>
           {query.data?.available_datasets.map((dataset) => (
             <option key={dataset} value={dataset}>
               {dataset}
@@ -175,9 +159,7 @@ export function ExperimentBrowser({
                 <tr key={headerGroup.id}>
                   {headerGroup.headers.map((header) => (
                     <th key={header.id}>
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(header.column.columnDef.header, header.getContext())}
+                      {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
                     </th>
                   ))}
                 </tr>
@@ -187,9 +169,7 @@ export function ExperimentBrowser({
               {table.getRowModel().rows.map((row) => (
                 <tr key={row.id}>
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
+                    <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
                   ))}
                 </tr>
               ))}
@@ -198,7 +178,7 @@ export function ExperimentBrowser({
         ) : (
           <EmptyState
             title={I18N.state.empty}
-            body={"\u5f53\u524d\u7b5b\u9009\u6761\u4ef6\u4e0b\u6ca1\u6709\u8fd0\u884c\u8bb0\u5f55\u3002"}
+            body={translateText("当前筛选条件下没有运行记录。")}
           />
         )
       ) : null}

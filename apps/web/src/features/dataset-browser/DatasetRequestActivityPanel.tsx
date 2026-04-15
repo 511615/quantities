@@ -5,7 +5,7 @@ import { formatDate } from "../../shared/lib/format";
 import { formatJobTypeLabel, formatStageNameLabel } from "../../shared/lib/labels";
 import { EmptyState } from "../../shared/ui/StateViews";
 import { StatusPill } from "../../shared/ui/StatusPill";
-import { datasetJobDetailPath } from "./workbench";
+import { datasetJobDetailPath } from "./presentation";
 
 type DatasetRequestActivityPanelProps = {
   jobs: JobStatusView[];
@@ -33,7 +33,9 @@ export function DatasetRequestActivityPanel({
               <strong>{job.job_id}</strong>
               <span>{formatJobTypeLabel(job.job_type)}</span>
               <span>
-                {currentStage ? `${formatStageNameLabel(currentStage.name)} · ${currentStage.summary || "--"}` : "阶段待更新"}
+                {currentStage
+                  ? `${formatStageNameLabel(currentStage.name)} · ${currentStage.summary || "--"}`
+                  : "阶段待更新"}
               </span>
               <span>更新时间：{formatDate(job.updated_at)}</span>
             </div>

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+﻿import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { LaunchBacktestDrawer } from "./LaunchBacktestDrawer";
@@ -387,26 +387,26 @@ test("renders official protocol as default mode", async () => {
   expect(officialTab).toHaveClass("active");
   expect(customTab).not.toHaveClass("active");
   expect(officialTab).toBeEnabled();
-  expect(screen.getByText(/Model output must follow prediction_frame_v1/i)).toBeInTheDocument();
-  expect(screen.getByText("Official Market Dataset ID")).toBeInTheDocument();
+  expect(screen.getByText("模型输出必须遵守 prediction_frame_v1。")).toBeInTheDocument();
+  expect(screen.getByText("官方市场数据集 ID")).toBeInTheDocument();
   expect(screen.getByText("baseline_real_benchmark_dataset")).toBeInTheDocument();
-  expect(screen.getByText("Official Multimodal Dataset ID")).toBeInTheDocument();
+  expect(screen.getByText("官方多模态数据集 ID")).toBeInTheDocument();
   expect(screen.getByText("official_reddit_pullpush_multimodal_v2_fusion")).toBeInTheDocument();
-  expect(screen.getByLabelText("Official Window")).toHaveValue("90");
-  expect(screen.getByText("Latest Official Window")).toBeInTheDocument();
-  expect(screen.getByText("Actual Market Window")).toBeInTheDocument();
-  expect(screen.getByText("Official Test Window")).toBeInTheDocument();
-  expect(screen.getByText("Actual NLP Window")).toBeInTheDocument();
-  expect(screen.getByText("Official Compatibility")).toBeInTheDocument();
-  expect(screen.getByText("Official Schema Version")).toBeInTheDocument();
+  expect(screen.getByLabelText("官方窗口")).toHaveValue("90");
+  expect(screen.getByText("最新官方窗口")).toBeInTheDocument();
+  expect(screen.getByText("实际市场窗口")).toBeInTheDocument();
+  expect(screen.getByText("官方测试窗口")).toBeInTheDocument();
+  expect(screen.getByText("实际 NLP 窗口")).toBeInTheDocument();
+  expect(screen.getByText("官方兼容性")).toBeInTheDocument();
+  expect(screen.getByText("官方 Schema 版本")).toBeInTheDocument();
   expect(screen.getByText("official_multimodal_standard_v1")).toBeInTheDocument();
-  expect(screen.getAllByText("瀹樻柟鏍囧噯鐗瑰緛").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("模板规则").length).toBeGreaterThan(0);
   expect(screen.getByText("text_reddit_comment_count_1h")).toBeInTheDocument();
-  expect(screen.getByText("Archival NLP Only")).toBeInTheDocument();
+  expect(screen.getByText("仅归档型 NLP")).toBeInTheDocument();
   expect(
-    screen.getByText(/If NLP quality gates fail, the official template is blocked/i),
+    screen.getByText("如果 NLP 质量门禁失败，官方模板会被阻断。"),
   ).toBeInTheDocument();
-  await waitFor(() => expect(screen.getByText("Compatible")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText("兼容")).toBeInTheDocument());
   await waitFor(() =>
     expect(screen.getByRole("button", { name: I18N.action.submit })).toBeEnabled(),
   );
@@ -420,7 +420,7 @@ test("submits official window days for official backtest", async () => {
     expect(screen.getByRole("button", { name: I18N.action.submit })).toBeEnabled(),
   );
 
-  fireEvent.change(screen.getByLabelText("Official Window"), {
+  fireEvent.change(screen.getByLabelText("官方窗口"), {
     target: { value: "365" },
   });
   await waitFor(() =>
@@ -457,9 +457,9 @@ test("blocks official submit in the drawer when preflight reports schema incompa
 
   const submitButton = screen.getByRole("button", { name: I18N.action.submit });
   expect(submitButton).toBeDisabled();
-  expect(screen.getByText("Incompatible")).toBeInTheDocument();
-  expect(screen.getByText("Official Compatibility")).toBeInTheDocument();
-  expect(screen.getByText("Blocking Summary")).toBeInTheDocument();
+  expect(screen.getByText("不兼容")).toBeInTheDocument();
+  expect(screen.getByText("官方兼容性")).toBeInTheDocument();
+  expect(screen.getByText("阻断摘要")).toBeInTheDocument();
   expect(screen.getAllByText("text_reddit_embedding_768").length).toBeGreaterThan(0);
 
   fireEvent.click(submitButton);
@@ -524,3 +524,4 @@ test("submits dataset_ids for multimodal custom backtest", async () => {
     ),
   );
 });
+

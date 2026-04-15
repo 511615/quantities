@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor, within } from "@testing-library/react";
+﻿import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
@@ -276,11 +276,12 @@ test("flows from dataset request success CTA into models dataset-aware drawer", 
     expect(container.querySelectorAll("button").length).toBeGreaterThan(0);
   });
 
-  const openDrawerButton = Array.from(container.querySelectorAll("button")).find((button) =>
-    button.textContent?.includes("数据集"),
-  );
-  expect(openDrawerButton).toBeTruthy();
-  fireEvent.click(openDrawerButton as HTMLButtonElement);
+  const openDrawerButton = await waitFor(() => {
+    const button = container.querySelector("[data-testid=\"dataset-request-trigger\"]") as HTMLButtonElement | null;
+    expect(button).toBeTruthy();
+    return button as HTMLButtonElement;
+  });
+  fireEvent.click(openDrawerButton);
 
   await waitFor(() => {
     expect(container.querySelector(".drawer-panel")).not.toBeNull();
@@ -352,3 +353,6 @@ test("flows from dataset request success CTA into models dataset-aware drawer", 
   expect(trainDrawer?.textContent).toContain("Frontend Contract Smoke");
   expect(trainDrawer?.textContent).not.toContain("数据集预置");
 });
+
+
+

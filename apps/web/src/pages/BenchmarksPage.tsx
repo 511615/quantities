@@ -2,24 +2,21 @@ import { Link } from "react-router-dom";
 
 import { useBacktestOptions, useBenchmarks } from "../shared/api/hooks";
 import { formatDate, formatNumber } from "../shared/lib/format";
-import { I18N } from "../shared/lib/i18n";
+import { I18N, translateText } from "../shared/lib/i18n";
 import { GlossaryHint } from "../shared/ui/GlossaryHint";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 
 function localizeTemplateName(name?: string | null, templateId?: string | null) {
   if (templateId === "system::official_backtest_protocol_v1") {
-    return "官方回测协议 v1";
+    return translateText("官方回测协议 v1");
   }
   return name ?? "--";
 }
 
 function localizeTemplateDescription(description?: string | null) {
-  if (!description) {
-    return "平台统一回测模板。";
-  }
-  if (description.trim().toLowerCase() === "official protocol") {
-    return "平台统一回测模板。";
+  if (!description || description.trim().toLowerCase() === "official protocol") {
+    return translateText("平台统一回测模板。");
   }
   return description;
 }
@@ -36,37 +33,34 @@ export function BenchmarksPage() {
       {officialTemplate ? (
         <section className="panel">
           <PanelHeader
-            eyebrow={"官方协议"}
+            eyebrow={translateText("官方协议")}
             title={localizeTemplateName(officialTemplate.name, officialTemplate.template_id)}
             description={localizeTemplateDescription(officialTemplate.description)}
             action={
-              <Link
-                className="link-button"
-                to={`/comparison?official_only=1&template_id=${encodeURIComponent(officialTemplate.template_id)}`}
-              >
-                {"\u67e5\u770b\u5bf9\u6bd4"}
+              <Link className="link-button" to={`/comparison?official_only=1&template_id=${encodeURIComponent(officialTemplate.template_id)}`}>
+                {translateText("查看对比")}
               </Link>
             }
           />
           <div className="metric-grid detail-metric-grid">
             <div className="metric-tile">
-              <span>{"\u6a21\u677f ID"}</span>
+              <span>{translateText("模板 ID")}</span>
               <strong>{officialTemplate.template_id}</strong>
             </div>
             <div className="metric-tile">
-              <span>{"协议版本"}</span>
+              <span>{translateText("协议版本")}</span>
               <strong>{officialTemplate.protocol_version ?? "--"}</strong>
             </div>
             <div className="metric-tile">
-              <span>{"\u72b6\u6001"}</span>
-              <strong>{"\u4e0d\u53ef\u5220\u9664"}</strong>
+              <span>{translateText("状态")}</span>
+              <strong>{translateText("不可删除")}</strong>
             </div>
           </div>
           <div className="stack-list">
             {officialTemplate.scenario_bundle.slice(0, 4).map((item) => (
               <div className="stack-item" key={item}>
                 <strong>{item}</strong>
-                <span>{"官方压力场景包的固定组成部分"}</span>
+                <span>{translateText("官方压力场景包的固定组成部分")}</span>
               </div>
             ))}
           </div>
@@ -76,7 +70,7 @@ export function BenchmarksPage() {
         <PanelHeader
           eyebrow={I18N.nav.benchmarks}
           title={I18N.nav.benchmarks}
-          description={"\u5c06\u57fa\u51c6\u699c\u5355\u4e0e\u6a21\u578b\u5bf9\u6bd4\u5165\u53e3\u6536\u655b\u5230\u540c\u4e00\u4e2a\u5de5\u4f5c\u9762\u3002"}
+          description={translateText("将基准榜单与模型对比入口收敛到同一个工作面。")}
           action={
             <Link className="link-button" to="/comparison">
               {I18N.nav.comparison}
@@ -90,11 +84,11 @@ export function BenchmarksPage() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>{"\u57fa\u51c6\u540d\u79f0"}</th>
-                  <th>{"\u6570\u636e\u96c6"}</th>
-                  <th>{"\u5f53\u524d\u9886\u5148"}</th>
-                  <th><GlossaryHint hintKey="benchmark" termOverride={"\u5f97\u5206"} /></th>
-                  <th>{"\u66f4\u65b0\u65f6\u95f4"}</th>
+                  <th>{translateText("基准名称")}</th>
+                  <th>{translateText("数据集")}</th>
+                  <th>{translateText("当前领先")}</th>
+                  <th><GlossaryHint hintKey="benchmark" termOverride={translateText("得分")} /></th>
+                  <th>{translateText("更新时间")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -112,10 +106,7 @@ export function BenchmarksPage() {
               </tbody>
             </table>
           ) : (
-            <EmptyState
-              title={I18N.state.empty}
-              body={"\u5f53\u524d\u6ca1\u6709\u53ef\u5c55\u793a\u7684\u57fa\u51c6\u7ed3\u679c\u3002"}
-            />
+            <EmptyState title={I18N.state.empty} body={translateText("当前没有可展示的基准结果。")} />
           )
         ) : null}
       </section>

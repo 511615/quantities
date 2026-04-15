@@ -1,5 +1,4 @@
-import { I18N } from "../lib/i18n";
-import type { GlossaryKey } from "../lib/i18n";
+import { I18N, type GlossaryKey, translateText } from "../lib/i18n";
 import { InfoTooltip } from "./InfoTooltip";
 
 type GlossaryHintProps = {
@@ -28,19 +27,19 @@ export function GlossaryHint({
     <span className={`term-hint ${className ?? ""}`.trim()}>
       {!iconOnly ? <span>{term}</span> : null}
       <InfoTooltip
-        buttonLabel={`关于 ${term}`}
+        buttonLabel={`${translateText("关于")} ${term}`}
         compact
         sections={[
           {
-            title: "\u672f\u8bed\u5b9a\u4e49",
+            title: translateText("术语定义"),
             body: override?.definition ?? record.definition,
           },
           {
-            title: "\u600e\u4e48\u770b",
+            title: translateText("怎么看"),
             body: override?.howToRead ?? record.howToRead,
           },
           {
-            title: "\u4ec0\u4e48\u65f6\u5019\u8981\u8b66\u60d5",
+            title: translateText("什么时候要警惕"),
             body: override?.watchout ?? record.watchout,
           },
         ]}

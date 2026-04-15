@@ -1,32 +1,41 @@
 import type { BacktestReportView } from "../../shared/api/types";
+import { translateText } from "../../shared/lib/i18n";
+import { useChartTheme } from "../../shared/lib/chartTheme";
 import { WorkbenchChart } from "../../shared/ui/WorkbenchChart";
 
 export function BacktestPerformanceChart({ detail }: { detail: BacktestReportView }) {
+  const chartTheme = useChartTheme();
   const researchMetrics = detail.research?.metrics ?? {};
   const simulationMetrics = detail.simulation?.metrics ?? {};
 
   return (
     <WorkbenchChart
-      loadingLabel={"\u52a0\u8f7d\u5bf9\u6bd4\u56fe\u8868..."}
+      loadingLabel={translateText("加载对比图表...")}
       style={{ height: 300 }}
       option={{
         tooltip: { trigger: "axis" },
-        legend: { textStyle: { color: "#d6d2c4" } },
+        legend: { textStyle: { color: chartTheme.legendText } },
         xAxis: {
           type: "category",
           data: [
-            "\u5e74\u5316\u6536\u76ca",
-            "\u6700\u5927\u56de\u64a4",
-            "\u6362\u624b\u7387",
-            "\u5b9e\u73b0\u77ed\u7f3a",
+            translateText("年化收益"),
+            translateText("最大回撤"),
+            translateText("换手率"),
+            translateText("实现短缺"),
           ],
-          axisLabel: { color: "#b9b0a0" },
+          axisLine: { lineStyle: { color: chartTheme.axisLine } },
+          axisLabel: { color: chartTheme.axisText },
         },
-        yAxis: { type: "value", axisLabel: { color: "#b9b0a0" } },
+        yAxis: {
+          type: "value",
+          axisLabel: { color: chartTheme.axisText },
+          splitLine: { lineStyle: { color: chartTheme.splitLine } },
+        },
         series: [
           {
-            name: "\u7814\u7a76\u5f15\u64ce",
+            name: translateText("研究引擎"),
             type: "bar",
+            itemStyle: { color: chartTheme.accentAlt },
             data: [
               researchMetrics.annual_return ?? 0,
               researchMetrics.max_drawdown ?? 0,
@@ -35,8 +44,9 @@ export function BacktestPerformanceChart({ detail }: { detail: BacktestReportVie
             ],
           },
           {
-            name: "\u6a21\u62df\u5f15\u64ce",
+            name: translateText("模拟引擎"),
             type: "bar",
+            itemStyle: { color: chartTheme.accent },
             data: [
               simulationMetrics.annual_return ?? 0,
               simulationMetrics.max_drawdown ?? 0,

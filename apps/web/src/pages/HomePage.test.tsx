@@ -8,8 +8,7 @@ import { renderWithProviders } from "../test/renderWithProviders";
 
 const fetchMock = vi.fn(
   createFetchMock([
-    (url) =>
-      url.includes("/api/workbench/overview") ? jsonResponse(overviewFixture) : undefined,
+    (url) => (url.includes("/api/workbench/overview") ? jsonResponse(overviewFixture) : undefined),
     (url) =>
       url.includes("/api/launch/train/options")
         ? jsonResponse({
@@ -44,19 +43,14 @@ afterEach(() => {
   fetchMock.mockClear();
 });
 
-test("renders overview sections and recent entities", async () => {
+test("renders workbench overview sections and recent entities", async () => {
   renderWithProviders(<HomePage />);
 
-  await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "\u6700\u8fd1\u6d3b\u52a8" })).toBeInTheDocument(),
-  );
+  await waitFor(() => expect(screen.getByRole("heading", { name: "最近活动" })).toBeInTheDocument());
+
   expect(screen.getAllByText("smoke-train-run").length).toBeGreaterThan(0);
-  expect(screen.getByRole("heading", { name: "\u57fa\u51c6\u5feb\u7167" })).toBeInTheDocument();
-  expect(
-    screen.getByRole("link", { name: "baseline_family_walk_forward" }),
-  ).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "\u5feb\u901f\u5165\u53e3" })).toBeInTheDocument();
-  expect(
-    screen.getByRole("link", { name: /\u6570\u636e\u96c6.*smoke_dataset.*\u65b0\u9c9c/i }),
-  ).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "当前 benchmark 状态" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "下一步最常用的操作" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "baseline_family_walk_forward" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /数据集.*smoke_dataset.*新鲜/i })).toBeInTheDocument();
 });

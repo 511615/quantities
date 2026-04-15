@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom"
 
 import { AppShell } from "./AppShell";
 import { I18N } from "../shared/lib/i18n";
+import { UiPreferencesProvider } from "../shared/preferences/UiPreferencesContext";
 import { LoadingState } from "../shared/ui/StateViews";
 
 const HomePage = lazy(async () => ({ default: (await import("../pages/HomePage")).HomePage }));
@@ -88,8 +89,10 @@ export function App() {
   const [router] = useState(createWorkbenchRouter);
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
+    <UiPreferencesProvider>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </UiPreferencesProvider>
   );
 }

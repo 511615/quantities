@@ -4,68 +4,57 @@ import { Link } from "react-router-dom";
 
 import { LaunchTrainDrawer } from "../features/launch-training/LaunchTrainDrawer";
 import { api } from "../shared/api/client";
-import {
-  useBacktestOptions,
-  useJobStatus,
-  useJobs,
-} from "../shared/api/hooks";
+import { useBacktestOptions, useJobStatus, useJobs } from "../shared/api/hooks";
 import { formatDate } from "../shared/lib/format";
 import { formatJobTypeLabel, formatStageNameLabel } from "../shared/lib/labels";
-import { I18N } from "../shared/lib/i18n";
+import { I18N, translateText } from "../shared/lib/i18n";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 import { StatusPill } from "../shared/ui/StatusPill";
 
 const COPY = {
-  pageTitle: "\u4efb\u52a1\u4e2d\u5fc3",
-  pageDescription:
-    "\u540c\u4e00\u9875\u5185\u7edf\u4e00\u5b8c\u6210\u8bad\u7ec3\u3001\u56de\u6d4b\u53d1\u8d77\uff0cjob \u8ddf\u8e2a\uff0c\u5931\u8d25\u539f\u56e0\u6d4f\u89c8\u548c\u7ed3\u679c\u843d\u70b9\u8df3\u8f6c\u3002",
-  trainTitle: "\u53d1\u8d77\u8bad\u7ec3",
-  backtestTitle: "\u53d1\u8d77\u56de\u6d4b",
-  futureTitle: "\u6570\u636e\u5c42\u4efb\u52a1",
-  futureDescription:
-    "\u540e\u7aef\u8fd8\u6ca1\u6709\u5f00\u653e\u6570\u636e\u540c\u6b65\u548c\u6570\u636e\u96c6\u6784\u5efa\u63a5\u53e3\uff0c\u8fd9\u91cc\u5148\u4fdd\u7559\u53d7\u63a7\u5360\u4f4d\u6309\u94ae\u548c\u7edf\u4e00\u9519\u8bef\u8bed\u4e49\u3002",
-  trackedTitle: "\u5f53\u524d\u8ddf\u8e2a\u4efb\u52a1",
-  resultTitle: "\u7ed3\u679c\u843d\u70b9",
-  recentTitle: "\u6700\u8fd1\u4efb\u52a1",
-  failedTitle: "\u5931\u8d25\u4efb\u52a1",
-  noJobs: "\u6682\u65e0\u4efb\u52a1\uff0c\u8bf7\u4ece\u5de6\u4fa7\u53d1\u8d77\u8bad\u7ec3\u6216\u56de\u6d4b\u3002",
-  unsupported: "\u8be5\u63a5\u53e3\u672a\u5c31\u7eea\u3002",
-  datasetPreset: "\u6570\u636e\u96c6\u9884\u7f6e",
-  trainerPreset: "\u8bad\u7ec3\u9884\u7f6e",
-  seed: "\u968f\u673a\u79cd\u5b50",
-  experimentName: "\u5b9e\u9a8c\u540d\u79f0",
-  modelNames: "\u6a21\u578b\u540d\u79f0\uff0c\u9017\u53f7\u5206\u9694",
-  modelNamesHint: "\u8bf7\u81f3\u5c11\u8f93\u5165\u4e00\u4e2a\u6a21\u578b\u540d\u79f0\u3002",
-  runId: "\u8fd0\u884c ID",
-  predictionScope: "\u9884\u6d4b\u8303\u56f4",
-  benchmarkSymbol: "\u57fa\u51c6\u6807\u7684",
-  runIdHint: "\u8bf7\u8f93\u5165\u8fd0\u884c ID\uff08run_id\uff09\u3002",
-  benchmarkHint: "\u8bf7\u8f93\u5165\u57fa\u51c6\u6807\u7684\u3002",
-  submitSync: "\u63d0\u4ea4\u884c\u60c5\u540c\u6b65",
-  submitBuild: "\u63d0\u4ea4\u6570\u636e\u96c6\u6784\u5efa",
-  openRun: "\u8df3\u8f6c\u8fd0\u884c\u8be6\u60c5",
-  openBacktest: "\u8df3\u8f6c\u56de\u6d4b\u8be6\u60c5",
-  type: "\u7c7b\u578b",
-  updatedAt: "\u66f4\u65b0\u65f6\u95f4",
-  stage: "\u9636\u6bb5",
-  status: "\u72b6\u6001",
-  deeplinks: "\u843d\u70b9",
+  pageTitle: () => translateText("任务中心"),
+  pageDescription: () => translateText("同一页内统一完成训练、回测发起，job 跟踪，失败原因浏览和结果落点跳转。"),
+  trainTitle: () => translateText("发起训练"),
+  backtestTitle: () => translateText("发起回测"),
+  futureTitle: () => translateText("数据层任务"),
+  futureDescription: () => translateText("后端还没有开放数据同步和数据集构建接口，这里先保留受控占位按钮和统一错误语义。"),
+  trackedTitle: () => translateText("当前跟踪任务"),
+  resultTitle: () => translateText("结果落点"),
+  recentTitle: () => translateText("最近任务"),
+  failedTitle: () => translateText("失败任务"),
+  noJobs: () => translateText("暂无任务，请从左侧发起训练或回测。"),
+  unsupported: () => translateText("该接口未就绪。"),
+  datasetPreset: () => translateText("数据集预置"),
+  predictionScope: () => translateText("预测范围"),
+  benchmarkSymbol: () => translateText("基准标的"),
+  runId: () => translateText("运行 ID"),
+  runIdHint: () => translateText("请输入运行 ID（run_id）。"),
+  benchmarkHint: () => translateText("请输入基准标的。"),
+  submitSync: () => translateText("提交行情同步"),
+  submitBuild: () => translateText("提交数据集构建"),
+  openRun: () => translateText("跳转运行详情"),
+  openBacktest: () => translateText("跳转回测详情"),
+  type: () => translateText("类型"),
+  updatedAt: () => translateText("更新时间"),
+  stage: () => translateText("阶段"),
+  status: () => translateText("状态"),
+  deeplinks: () => translateText("落点"),
 } as const;
 
 function localizeBacktestOptionLabel(value: string, label?: string | null) {
   const normalized = (label ?? value).trim().toLowerCase();
   if (normalized === "smoke") {
-    return "联调样本";
+    return translateText("联调样本");
   }
   if (normalized === "real_benchmark") {
-    return "真实基准";
+    return translateText("真实基准");
   }
   if (normalized === "full") {
-    return "全量";
+    return translateText("全量");
   }
   if (normalized === "test") {
-    return "测试集";
+    return translateText("测试集");
   }
   return label ?? value;
 }
@@ -120,18 +109,15 @@ export function JobsPage() {
     },
   });
 
-  const failedJobs = useMemo(
-    () => jobs.filter((job) => job.error_message),
-    [jobs],
-  );
+  const failedJobs = useMemo(() => jobs.filter((job) => job.error_message), [jobs]);
 
   function handleBacktestSubmit() {
     if (!runId.trim()) {
-      setBacktestFormError(COPY.runIdHint);
+      setBacktestFormError(COPY.runIdHint());
       return;
     }
     if (!benchmarkSymbol.trim()) {
-      setBacktestFormError(COPY.benchmarkHint);
+      setBacktestFormError(COPY.benchmarkHint());
       return;
     }
     setUnsupportedMessage(null);
@@ -149,52 +135,38 @@ export function JobsPage() {
   return (
     <div className="page-stack">
       <section className="panel">
-        <PanelHeader
-          eyebrow={I18N.nav.jobs}
-          title={COPY.pageTitle}
-          description={COPY.pageDescription}
-        />
+        <PanelHeader eyebrow={I18N.nav.jobs} title={COPY.pageTitle()} description={COPY.pageDescription()} />
       </section>
 
       <div className="detail-grid wide-secondary">
         <div className="stack-list">
           <section className="panel">
             <PanelHeader
-              eyebrow={COPY.trainTitle}
-              title={COPY.trainTitle}
-              description={"统一复用模板驱动训练入口，避免任务中心与模型页出现不同的训练参数语义。"}
+              eyebrow={COPY.trainTitle()}
+              title={COPY.trainTitle()}
+              description={translateText("统一复用模板驱动训练入口，避免任务中心与模型页出现不同的训练参数语义。")}
             />
             <LaunchTrainDrawer
               defaultOpen
               showTrigger={false}
-              title={COPY.trainTitle}
+              title={COPY.trainTitle()}
               description={I18N.model.templateSection}
               onJobCreated={setTrackedJobId}
             />
           </section>
 
           <section className="panel">
-            <PanelHeader
-              eyebrow={COPY.backtestTitle}
-              title={COPY.backtestTitle}
-              description={I18N.model.trainedSection}
-            />
+            <PanelHeader eyebrow={COPY.backtestTitle()} title={COPY.backtestTitle()} description={I18N.model.trainedSection} />
             <div className="form-section-grid">
               <label>
-                <span>{COPY.runId}</span>
-                <input
-                  className="field"
-                  onChange={(event) => setRunId(event.target.value)}
-                  value={runId}
-                />
+                <span>{COPY.runId()}</span>
+                <input className="field" onChange={(event) => setRunId(event.target.value)} value={runId} />
               </label>
               <label>
-                <span>{COPY.datasetPreset}</span>
+                <span>{COPY.datasetPreset()}</span>
                 <select
                   className="field"
-                  onChange={(event) =>
-                    setBacktestDatasetPreset(event.target.value as "smoke" | "real_benchmark")
-                  }
+                  onChange={(event) => setBacktestDatasetPreset(event.target.value as "smoke" | "real_benchmark")}
                   value={backtestDatasetPreset}
                 >
                   {(backtestOptionsQuery.data?.dataset_presets ?? []).map((option) => (
@@ -205,7 +177,7 @@ export function JobsPage() {
                 </select>
               </label>
               <label>
-                <span>{COPY.predictionScope}</span>
+                <span>{COPY.predictionScope()}</span>
                 <select
                   className="field"
                   onChange={(event) => setPredictionScope(event.target.value as "full" | "test")}
@@ -219,18 +191,12 @@ export function JobsPage() {
                 </select>
               </label>
               <label>
-                <span>{COPY.benchmarkSymbol}</span>
-                <input
-                  className="field"
-                  onChange={(event) => setBenchmarkSymbol(event.target.value)}
-                  value={benchmarkSymbol}
-                />
+                <span>{COPY.benchmarkSymbol()}</span>
+                <input className="field" onChange={(event) => setBenchmarkSymbol(event.target.value)} value={benchmarkSymbol} />
               </label>
             </div>
             {backtestFormError ? <p className="form-error">{backtestFormError}</p> : null}
-            {backtestMutation.isError ? (
-              <p className="form-error">{(backtestMutation.error as Error).message}</p>
-            ) : null}
+            {backtestMutation.isError ? <p className="form-error">{(backtestMutation.error as Error).message}</p> : null}
             <div className="toolbar">
               <button
                 className="action-button secondary"
@@ -238,31 +204,19 @@ export function JobsPage() {
                 onClick={handleBacktestSubmit}
                 type="button"
               >
-                {backtestMutation.isPending ? "\u63d0\u4ea4\u4e2d..." : I18N.action.launchBacktest}
+                {backtestMutation.isPending ? translateText("提交中...") : I18N.action.launchBacktest}
               </button>
             </div>
           </section>
 
           <section className="panel">
-            <PanelHeader
-              eyebrow={COPY.futureTitle}
-              title={COPY.futureTitle}
-              description={COPY.futureDescription}
-            />
+            <PanelHeader eyebrow={COPY.futureTitle()} title={COPY.futureTitle()} description={COPY.futureDescription()} />
             <div className="toolbar">
-              <button
-                className="action-button secondary"
-                onClick={() => setUnsupportedMessage(COPY.unsupported)}
-                type="button"
-              >
-                {COPY.submitSync}
+              <button className="action-button secondary" onClick={() => setUnsupportedMessage(COPY.unsupported())} type="button">
+                {COPY.submitSync()}
               </button>
-              <button
-                className="action-button secondary"
-                onClick={() => setUnsupportedMessage(COPY.unsupported)}
-                type="button"
-              >
-                {COPY.submitBuild}
+              <button className="action-button secondary" onClick={() => setUnsupportedMessage(COPY.unsupported())} type="button">
+                {COPY.submitBuild()}
               </button>
             </div>
             {unsupportedMessage ? <p className="form-error">{unsupportedMessage}</p> : null}
@@ -271,15 +225,9 @@ export function JobsPage() {
 
         <div className="stack-list">
           <section className="panel">
-            <PanelHeader
-              eyebrow={COPY.trackedTitle}
-              title={COPY.trackedTitle}
-              description={trackedJobId ?? "--"}
-            />
+            <PanelHeader eyebrow={COPY.trackedTitle()} title={COPY.trackedTitle()} description={trackedJobId ?? "--"} />
             {trackedJobQuery.isLoading ? <LoadingState label={I18N.state.loading} /> : null}
-            {trackedJobQuery.isError ? (
-              <ErrorState message={(trackedJobQuery.error as Error).message} />
-            ) : null}
+            {trackedJobQuery.isError ? <ErrorState message={(trackedJobQuery.error as Error).message} /> : null}
             {trackedJob ? (
               <div className="job-box">
                 <div className="split-line">
@@ -292,29 +240,19 @@ export function JobsPage() {
                     <span>{stage.summary || "--"}</span>
                   </div>
                 ))}
-                {trackedJob.error_message ? (
-                  <p className="form-error">{trackedJob.error_message}</p>
-                ) : null}
+                {trackedJob.error_message ? <p className="form-error">{trackedJob.error_message}</p> : null}
               </div>
             ) : (
-              <EmptyState title={I18N.state.empty} body={COPY.noJobs} />
+              <EmptyState title={I18N.state.empty} body={COPY.noJobs()} />
             )}
           </section>
 
           {trackedDeeplinks ? (
             <section className="panel">
-              <PanelHeader eyebrow={COPY.resultTitle} title={COPY.resultTitle} />
+              <PanelHeader eyebrow={COPY.resultTitle()} title={COPY.resultTitle()} />
               <div className="toolbar">
-                {trackedDeeplinks.run_detail ? (
-                  <Link className="link-button" to={trackedDeeplinks.run_detail}>
-                    {COPY.openRun}
-                  </Link>
-                ) : null}
-                {trackedDeeplinks.backtest_detail ? (
-                  <Link className="link-button" to={trackedDeeplinks.backtest_detail}>
-                    {COPY.openBacktest}
-                  </Link>
-                ) : null}
+                {trackedDeeplinks.run_detail ? <Link className="link-button" to={trackedDeeplinks.run_detail}>{COPY.openRun()}</Link> : null}
+                {trackedDeeplinks.backtest_detail ? <Link className="link-button" to={trackedDeeplinks.backtest_detail}>{COPY.openBacktest()}</Link> : null}
               </div>
             </section>
           ) : null}
@@ -322,16 +260,16 @@ export function JobsPage() {
       </div>
 
       <section className="panel">
-        <PanelHeader eyebrow={COPY.recentTitle} title={COPY.recentTitle} />
+        <PanelHeader eyebrow={COPY.recentTitle()} title={COPY.recentTitle()} />
         <table className="data-table">
           <thead>
             <tr>
-              <th>任务 ID</th>
-              <th>{COPY.type}</th>
-              <th>{COPY.updatedAt}</th>
-              <th>{COPY.stage}</th>
-              <th>{COPY.status}</th>
-              <th>{COPY.deeplinks}</th>
+              <th>{translateText("任务 ID")}</th>
+              <th>{COPY.type()}</th>
+              <th>{COPY.updatedAt()}</th>
+              <th>{COPY.stage()}</th>
+              <th>{COPY.status()}</th>
+              <th>{COPY.deeplinks()}</th>
             </tr>
           </thead>
           <tbody>
@@ -340,41 +278,26 @@ export function JobsPage() {
                 <td>{job.job_id}</td>
                 <td>{formatJobTypeLabel(job.job_type)}</td>
                 <td>{formatDate(job.updated_at)}</td>
-                <td>
-                  {job.stages.length > 0
-                    ? formatStageNameLabel(job.stages[job.stages.length - 1].name)
-                    : "--"}
-                </td>
-                <td>
-                  <StatusPill status={job.status} />
-                </td>
+                <td>{job.stages.length > 0 ? formatStageNameLabel(job.stages[job.stages.length - 1].name) : "--"}</td>
+                <td><StatusPill status={job.status} /></td>
                 <td>
                   <div className="inline-link-row">
-                    {job.result?.deeplinks?.run_detail ? (
-                      <Link to={job.result.deeplinks.run_detail}>{I18N.nav.runs}</Link>
-                    ) : null}
-                    {job.result?.deeplinks?.backtest_detail ? (
-                      <Link to={job.result.deeplinks.backtest_detail}>{I18N.nav.backtests}</Link>
-                    ) : null}
-                    {job.result?.deeplinks?.review_detail ? (
-                      <Link to={job.result.deeplinks.review_detail}>{"\u5ba1\u9605"}</Link>
-                    ) : null}
+                    {job.result?.deeplinks?.run_detail ? <Link to={job.result.deeplinks.run_detail}>{I18N.nav.runs}</Link> : null}
+                    {job.result?.deeplinks?.backtest_detail ? <Link to={job.result.deeplinks.backtest_detail}>{I18N.nav.backtests}</Link> : null}
+                    {job.result?.deeplinks?.review_detail ? <Link to={job.result.deeplinks.review_detail}>{translateText("审阅")}</Link> : null}
                   </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {jobs.length === 0 ? <EmptyState title={I18N.state.empty} body={COPY.noJobs} /> : null}
+        {jobs.length === 0 ? <EmptyState title={I18N.state.empty} body={COPY.noJobs()} /> : null}
       </section>
 
       <section className="panel">
-        <PanelHeader eyebrow={COPY.failedTitle} title={COPY.failedTitle} />
+        <PanelHeader eyebrow={COPY.failedTitle()} title={COPY.failedTitle()} />
         {failedJobs.length === 0 ? (
-          <EmptyState
-            title={I18N.state.empty}
-            body={"\u5f53\u524d\u6ca1\u6709\u9700\u8981\u5904\u7406\u7684\u5931\u8d25\u4efb\u52a1\u3002"}
-          />
+          <EmptyState title={I18N.state.empty} body={translateText("当前没有需要处理的失败任务。")} />
         ) : (
           <div className="stack-list">
             {failedJobs.map((job) => (

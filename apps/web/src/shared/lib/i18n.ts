@@ -1,398 +1,558 @@
-export const I18N = {
+﻿export type Locale = "zh-CN" | "en-US";
+
+const zhCN = {
   app: {
-    brand: "\u91cf\u5316\u7814\u7a76\u5de5\u4f5c\u53f0",
-    subtitle: "\u7814\u7a76\u7ba1\u7406\u3001\u56de\u6d4b\u5206\u6790\u3001\u5bf9\u6bd4\u590d\u76d8",
-    note:
-      "\u524d\u7aef\u56f4\u7ed5\u7a33\u5b9a view model \u7ed1\u5b9a\uff0c\u4e0d\u76f4\u63a5\u4f9d\u8d56 artifacts \u5185\u90e8\u8def\u5f84\u3002",
-    navTitle: "\u7814\u7a76\u4e3b\u9aa8\u67b6",
+    brand: "量化研究工作台",
+    subtitle: "研究管理、回测分析、对比复盘",
+    note: "前端围绕稳定 view model 绑定，不直接依赖 artifacts 内部路径。",
+    navTitle: "研究主骨架",
+    settingsTitle: "界面设置",
+    languageLabel: "语言",
+    themeLabel: "主题",
+    themeLight: "浅色",
+    themeDark: "夜间",
   },
   nav: {
-    workbench: "\u5de5\u4f5c\u53f0",
-    models: "\u6a21\u578b\u7ba1\u7406",
-    datasets: "\u6570\u636e\u96c6",
-    backtests: "\u56de\u6d4b\u5206\u6790",
-    benchmarks: "\u57fa\u51c6\u5bf9\u6bd4",
-    jobs: "\u4efb\u52a1\u4e2d\u5fc3",
-    comparison: "\u6a2a\u5411\u5bf9\u6bd4",
-    runs: "\u5df2\u8bad\u7ec3\u6a21\u578b",
-    modelTemplates: "\u6a21\u578b\u6a21\u677f",
-    trainedModels: "\u5df2\u8bad\u7ec3\u6a21\u578b",
+    workbench: "工作台",
+    models: "模型管理",
+    datasets: "数据集",
+    backtests: "回测分析",
+    benchmarks: "基准对比",
+    jobs: "任务中心",
+    comparison: "横向对比",
+    runs: "已训练模型",
+    modelTemplates: "模型模板",
+    trainedModels: "已训练模型",
   },
   action: {
-    launchTrain: "\u53d1\u8d77\u8bad\u7ec3",
-    launchBacktest: "\u53d1\u8d77\u56de\u6d4b",
-    submit: "\u63d0\u4ea4",
-    cancel: "\u53d6\u6d88",
-    openDetail: "\u67e5\u770b\u8be6\u60c5",
-    openComparison: "\u8fdb\u5165\u5bf9\u6bd4",
-    preview: "\u9884\u89c8",
-    retry: "\u91cd\u8bd5",
-    createTemplate: "\u65b0\u5efa\u6a21\u677f",
-    editTemplate: "\u7f16\u8f91\u6a21\u677f",
-    duplicateTemplate: "\u590d\u5236\u6a21\u677f",
-    trainWithTemplate: "\u4f7f\u7528\u6b64\u6a21\u677f\u8bad\u7ec3",
-    delete: "\u5220\u9664",
-    save: "\u4fdd\u5b58",
-    close: "\u5173\u95ed",
-    rename: "\u91cd\u547d\u540d / \u5907\u6ce8",
-    applyDefaults: "\u586b\u5145\u63a8\u8350\u9ed8\u8ba4\u503c",
-    copyToTemplate: "\u590d\u5236\u4e3a\u65b0\u6a21\u677f",
-    confirmDelete: "\u786e\u8ba4\u5220\u9664",
+    launchTrain: "发起训练",
+    launchBacktest: "发起回测",
+    submit: "提交",
+    cancel: "取消",
+    openDetail: "查看详情",
+    openComparison: "进入对比",
+    preview: "预览",
+    retry: "重试",
+    createTemplate: "新建模板",
+    editTemplate: "编辑模板",
+    duplicateTemplate: "复制模板",
+    trainWithTemplate: "使用此模板训练",
+    delete: "删除",
+    save: "保存",
+    close: "关闭",
+    rename: "重命名 / 备注",
+    applyDefaults: "填充推荐默认值",
+    copyToTemplate: "复制为新模板",
+    confirmDelete: "确认删除",
   },
   status: {
-    queued: "\u6392\u961f\u4e2d",
-    running: "\u8fd0\u884c\u4e2d",
-    success: "\u6210\u529f",
-    failed: "\u5931\u8d25",
-    partial: "\u90e8\u5206\u53ef\u7528",
-    benchmark: "\u57fa\u51c6",
-    unknown: "\u672a\u77e5",
-    enabled: "\u5df2\u542f\u7528",
-    disabled: "\u5df2\u7981\u7528",
-    archived: "\u5df2\u9690\u85cf",
+    queued: "排队中",
+    running: "运行中",
+    success: "成功",
+    failed: "失败",
+    partial: "部分可用",
+    benchmark: "基准",
+    unknown: "未知",
+    enabled: "已启用",
+    disabled: "已禁用",
+    archived: "已隐藏",
   },
   sourceType: {
-    run: "\u5df2\u8bad\u7ec3\u5b9e\u4f8b",
-    benchmark: "\u57fa\u51c6\u6761\u76ee",
+    run: "已训练实例",
+    benchmark: "基准条目",
   },
   stage: {
-    prepare: "\u6570\u636e\u51c6\u5907",
-    train: "\u8bad\u7ec3",
-    predict: "\u9884\u6d4b",
-    backtest: "\u56de\u6d4b",
+    prepare: "数据准备",
+    train: "训练",
+    predict: "预测",
+    backtest: "回测",
   },
   state: {
-    loading: "\u52a0\u8f7d\u4e2d...",
-    requestFailed: "\u8bf7\u6c42\u5931\u8d25",
-    empty: "\u6682\u65e0\u6570\u636e",
-    selectArtifact: "\u8bf7\u5148\u9009\u62e9\u5de5\u4ef6",
+    loading: "加载中...",
+    requestFailed: "请求失败",
+    empty: "暂无数据",
+    selectArtifact: "请先选择工件",
   },
   model: {
-    templateSection: "\u6a21\u677f\u4f1a\u4f5c\u4e3a\u53d1\u8d77\u8bad\u7ec3\u7684\u9ed8\u8ba4\u914d\u7f6e\u6e90\u3002",
-    trainedSection: "\u57fa\u4e8e\u5f53\u524d artifacts \u805a\u5408\u5df2\u8bad\u7ec3\u6a21\u578b\u5b9e\u4f8b\uff0c\u652f\u6301\u53d1\u8d77\u56de\u6d4b\u548c\u590d\u7528\u914d\u7f6e\u3002",
-    basicInfo: "\u57fa\u7840\u4fe1\u606f",
-    trainingParams: "\u901a\u7528\u8bad\u7ec3\u53c2\u6570",
-    algorithmParams: "\u7b97\u6cd5\u4e13\u5c5e\u53c2\u6570",
-    advancedParams: "\u9ad8\u7ea7\u53c2\u6570",
-    deleteTemplateMessage:
-      "\u5220\u9664\u540e\u5c06\u79fb\u9664\u8be5\u6a21\u677f\u7684\u672c\u5730\u914d\u7f6e\u8bb0\u5f55\uff0c\u4e0d\u4f1a\u5220\u9664\u5df2\u8bad\u7ec3\u4ea7\u7269\u3002",
-    deleteRunMessage:
-      "\u5f53\u524d\u5220\u9664\u4e3a\u5de5\u4f5c\u53f0\u89c6\u56fe\u4e2d\u7684\u672c\u5730\u9690\u85cf\uff0c\u4e0d\u4f1a\u6e05\u7406\u540e\u7aef artifact\u3002",
+    templateSection: "模板会作为发起训练的默认配置源。",
+    trainedSection: "基于当前 artifacts 聚合已训练模型实例，支持发起回测和复用配置。",
+    basicInfo: "基础信息",
+    trainingParams: "通用训练参数",
+    algorithmParams: "算法专属参数",
+    advancedParams: "高级参数",
+    deleteTemplateMessage: "删除后会移除该模板的本地配置记录，不会删除已训练产物。",
+    deleteRunMessage: "当前删除为工作台视图中的本地隐藏，不会清理后端 artifact。",
   },
   dataset: {
-    listTitle: "\u6570\u636e\u96c6\u5217\u8868",
-    detailTitle: "\u6570\u636e\u96c6\u8be6\u60c5",
-    candlesTitle: "\u5386\u53f2 K \u7ebf\u6d4f\u89c8",
-    noDataset: "\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u7528\u6570\u636e\u96c6\u6458\u8981\u3002",
+    listTitle: "数据集列表",
+    detailTitle: "数据集详情",
+    candlesTitle: "历史 K 线浏览",
+    noDataset: "当前还没有可用数据集摘要。",
   },
   glossary: {
     mae: {
       term: "MAE",
-      definition:
-        "\u5e73\u5747\u7edd\u5bf9\u8bef\u5dee\uff0c\u7528\u6765\u8861\u91cf\u9884\u6d4b\u503c\u4e0e\u771f\u5b9e\u503c\u7684\u5e73\u5747\u504f\u5dee\u3002",
-      howToRead:
-        "\u540c\u4e00\u6570\u636e\u96c6\u548c\u6807\u7b7e\u5c3a\u5ea6\u4e0b\uff0c\u901a\u5e38\u662f\u8d8a\u4f4e\u8d8a\u597d\uff0c\u8981\u7ed3\u5408\u57fa\u51c6\u6216\u57fa\u51c6\u6a21\u578b\u4e00\u8d77\u770b\u3002",
-      watchout:
-        "\u5982\u679c MAE \u5f88\u4f4e\u4f46\u56de\u6d4b\u8868\u73b0\u5e76\u4e0d\u597d\uff0c\u8bf4\u660e\u76ee\u6807\u53ef\u80fd\u4e0e\u4ea4\u6613\u7ed3\u679c\u8fde\u63a5\u4e0d\u591f\u76f4\u63a5\u3002",
+      definition: "平均绝对误差，用来衡量预测值与真实值的平均偏差。",
+      howToRead: "在同一数据集和标签尺度下，通常越低越好。",
+      watchout: "如果 MAE 很低但回测并不理想，目标可能与交易结果并不直接对应。",
     },
     max_drawdown: {
-      term: "\u6700\u5927\u56de\u64a4",
-      definition:
-        "\u7d2f\u8ba1\u6536\u76ca\u66f2\u7ebf\u4ece\u9636\u6bb5\u9ad8\u70b9\u56de\u843d\u5230\u4f4e\u70b9\u7684\u6700\u5927\u8dcc\u5e45\u3002",
-      howToRead:
-        "\u7528\u6765\u770b\u7b56\u7565\u5728\u6700\u5dee\u65f6\u523b\u53ef\u80fd\u627f\u53d7\u591a\u5927\u635f\u5931\uff0c\u8981\u548c\u5e74\u5316\u6536\u76ca\u4e00\u8d77\u8bc4\u4f30\u3002",
-      watchout:
-        "\u5982\u679c\u56de\u64a4\u5f02\u5e38\u653e\u5927\uff0c\u800c turnover \u6216\u5b9e\u73b0\u77ed\u7f3a\u4e5f\u5728\u62ac\u5347\uff0c\u901a\u5e38\u610f\u5473\u7b56\u7565\u7a33\u5b9a\u6027\u4e0d\u8db3\u3002",
+      term: "最大回撤",
+      definition: "累计收益曲线从阶段高点回落到低点的最大跌幅。",
+      howToRead: "用于衡量策略最差时刻可能承受的损失，要与收益一起看。",
+      watchout: "高回撤通常意味着策略稳定性不足或风险约束不够。",
     },
     turnover: {
-      term: "\u6362\u624b\u7387",
-      definition:
-        "\u6307\u7ec4\u5408\u5728\u7ed9\u5b9a\u5468\u671f\u5185\u7684\u4ea4\u6613\u5f3a\u5ea6\uff0c\u53cd\u6620\u8c03\u4ed3\u6709\u591a\u9891\u7e41\u3002",
-      howToRead:
-        "\u6362\u624b\u8d8a\u9ad8\u5f80\u5f80\u8bf4\u660e\u4ea4\u6613\u6b21\u6570\u6216\u4ed3\u4f4d\u53d8\u5316\u66f4\u5927\uff0c\u6210\u672c\u4e5f\u66f4\u654f\u611f\u3002",
-      watchout:
-        "\u5982\u679c\u7b56\u7565\u6536\u76ca\u4e0d\u9ad8\uff0c\u4f46 turnover \u5f88\u9ad8\uff0c\u901a\u5e38\u610f\u5473\u5728\u7528\u66f4\u591a\u4ea4\u6613\u6210\u672c\u6362\u53d6\u6709\u9650 alpha\u3002",
+      term: "换手率",
+      definition: "组合在给定周期内的交易强度，反映调仓频率。",
+      howToRead: "换手越高，交易次数和成本敏感度通常也越高。",
+      watchout: "高换手但收益不高，往往是在用更多交易成本换取有限 alpha。",
     },
     implementation_shortfall: {
-      term: "\u5b9e\u73b0\u77ed\u7f3a",
-      definition:
-        "\u7406\u60f3\u6210\u4ea4\u7ed3\u679c\u4e0e\u5b9e\u9645\u6267\u884c\u7ed3\u679c\u4e4b\u95f4\u7684\u640d\u8017\u3002",
-      howToRead:
-        "\u6570\u503c\u8d8a\u5927\uff0c\u8bf4\u660e\u7b56\u7565\u53d7\u6ed1\u70b9\u3001\u6210\u4ea4\u8d28\u91cf\u6216\u6d41\u52a8\u6027\u7684\u5f71\u54cd\u8d8a\u660e\u663e\u3002",
-      watchout:
-        "\u5982\u679c research \u5f15\u64ce\u8868\u73b0\u5f88\u597d\uff0c\u4f46 shortfall \u6301\u7eed\u653e\u5927\uff0c\u8bf4\u660e\u7b56\u7565\u53ef\u80fd\u96be\u4ee5\u5b9e\u76d8\u843d\u5730\u3002",
-    },
-    consistency_check: {
-      term: "\u4e00\u81f4\u6027\u68c0\u67e5",
-      definition:
-        "\u5bf9\u6bd4 research \u4e0e simulation \u5f15\u64ce\u5728\u540c\u4e00\u8f93\u5165\u4e0b\u7684\u7ed3\u679c\u662f\u5426\u5728\u9884\u671f\u5bb9\u5dee\u5185\u3002",
-      howToRead:
-        "\u901a\u8fc7\u8bf4\u660e\u56de\u6d4b\u7ba1\u7ebf\u66f4\u53ef\u4fe1\uff1b\u672a\u901a\u8fc7\u5219\u8981\u7ee7\u7eed\u6392\u67e5\u6570\u636e\u3001\u4ea4\u6613\u5047\u8bbe\u6216\u5f15\u64ce\u5dee\u5f02\u3002",
-      watchout:
-        "\u5982\u679c\u4e00\u81f4\u6027\u68c0\u67e5\u5931\u8d25\uff0c\u4e0d\u5efa\u8bae\u76f4\u63a5\u57fa\u4e8e\u8be5\u56de\u6d4b\u4e0b\u7ed3\u8bba\u3002",
-    },
-    prediction_scope: {
-      term: "\u9884\u6d4b\u8303\u56f4",
-      definition:
-        "\u6307\u8bad\u7ec3\u540e\u9884\u6d4b\u662f\u9488\u5bf9 full \u5168\u91cf\u6837\u672c\uff0c\u8fd8\u662f test \u6d4b\u8bd5\u5207\u7247\u751f\u6210\u3002",
-      howToRead:
-        "\u7528 full \u66f4\u9002\u5408\u56de\u6d4b\u6d41\u7a0b\u6f14\u7ec3\uff0ctest \u66f4\u9002\u5408\u770b\u6837\u672c\u5916\u8bc4\u4f30\u3002",
-      watchout:
-        "\u5982\u679c\u5c06 full \u7ed3\u679c\u76f4\u63a5\u5f53\u4f5c\u6837\u672c\u5916\u8868\u73b0\uff0c\u5bb9\u6613\u4f4e\u4f30\u8fc7\u62df\u5408\u98ce\u9669\u3002",
+      term: "实现短缺",
+      definition: "理想成交结果与实际执行结果之间的损耗。",
+      howToRead: "数值越大，说明滑点、成交质量或流动性影响越明显。",
+      watchout: "研究引擎表现很好但 shortfall 持续放大时，实盘落地风险很高。",
     },
     benchmark: {
-      term: "\u57fa\u51c6\u6d4b\u8bd5",
-      definition:
-        "\u5728\u540c\u4e00\u6570\u636e\u7a97\u53e3\u3001\u76f8\u540c\u89c4\u5219\u4e0b\u5bf9\u591a\u4e2a\u6a21\u578b\u8fdb\u884c\u7edf\u4e00\u8bc4\u4f30\u3002",
-      howToRead:
-        "\u5b83\u7528\u6765\u770b\u6a21\u578b\u4e4b\u95f4\u8c01\u66f4\u7a33\u5b9a\uff0c\u4e0d\u8981\u53ea\u770b\u51a0\u519b\u6a21\u578b\uff0c\u4e5f\u8981\u770b\u6574\u4f53\u6392\u540d\u548c\u6ce2\u52a8\u3002",
-      watchout:
-        "\u5982\u679c\u57fa\u51c6\u6392\u884c\u699c\u5e38\u5e38\u6362\u51a0\u519b\uff0c\u800c\u6307\u6807\u5dee\u8ddd\u53c8\u5f88\u5c0f\uff0c\u8bf4\u660e\u5f53\u524d\u7ed3\u8bba\u53ef\u80fd\u4e0d\u592a\u7a33\u3002",
-    },
-    epochs: {
-      term: "\u8bad\u7ec3\u8f6e\u6b21",
-      definition:
-        "\u6a21\u578b\u5b8c\u6574\u904d\u5386\u4e00\u6b21\u8bad\u7ec3\u6570\u636e\u96c6\u7684\u6b21\u6570\u3002",
-      howToRead:
-        "\u8f6e\u6b21\u8d8a\u591a\uff0c\u6a21\u578b\u80fd\u5b66\u5230\u66f4\u591a\u4fe1\u606f\uff0c\u4f46\u4e5f\u66f4\u5bb9\u6613\u8fc7\u62df\u5408\u3002",
-      watchout:
-        "\u5982\u679c\u9a8c\u8bc1\u6307\u6807\u5f00\u59cb\u53d8\u5dee\uff0c\u4f46 epochs \u8fd8\u5728\u63d0\u5347\uff0c\u5c31\u8981\u8003\u8651 early stop \u6216\u964d\u4f4e\u8f6e\u6b21\u3002",
-    },
-    learning_rate: {
-      term: "\u5b66\u4e60\u7387",
-      definition:
-        "\u6bcf\u6b21\u53c2\u6570\u66f4\u65b0\u65f6\u7684\u6b65\u957f\uff0c\u51b3\u5b9a\u6a21\u578b\u5b66\u4e60\u7684\u5feb\u6162\u3002",
-      howToRead:
-        "\u8f83\u5c0f\u7684 learning rate \u66f4\u7a33\uff0c\u4f46\u8bad\u7ec3\u66f4\u6162\uff1b\u8f83\u5927\u5219\u66f4\u5feb\uff0c\u4f46\u53ef\u80fd\u632f\u8361\u6216\u53d1\u6563\u3002",
-      watchout:
-        "\u5982\u679c loss \u5927\u5e45\u9707\u8361\u6216\u9a8c\u8bc1\u96c6\u4e0d\u7a33\u5b9a\uff0c\u4f18\u5148\u68c0\u67e5 learning rate \u662f\u5426\u8fc7\u9ad8\u3002",
-    },
-    tree_depth: {
-      term: "\u6811\u6df1\u5ea6",
-      definition:
-        "\u6811\u6a21\u578b\u5355\u68f5\u51b3\u7b56\u6811\u53ef\u4ee5\u5411\u4e0b\u5206\u88c2\u7684\u6700\u5927\u5c42\u6570\u3002",
-      howToRead:
-        "\u6811\u8d8a\u6df1\uff0c\u6a21\u578b\u80fd\u62df\u5408\u66f4\u590d\u6742\u7684\u975e\u7ebf\u6027\u5173\u7cfb\uff0c\u4f46\u590d\u6742\u5ea6\u548c\u8fc7\u62df\u5408\u98ce\u9669\u4e5f\u66f4\u9ad8\u3002",
-      watchout:
-        "\u5982\u679c\u8bad\u7ec3\u96c6\u8868\u73b0\u8fdc\u597d\u4e8e\u9a8c\u8bc1\u96c6\uff0c\u800c tree depth \u8f83\u5927\uff0c\u8981\u8003\u8651\u56de\u6536\u6811\u7684\u590d\u6742\u5ea6\u3002",
-    },
-    regularization: {
-      term: "\u6b63\u5219\u5316",
-      definition:
-        "\u901a\u8fc7\u5bf9\u6a21\u578b\u590d\u6742\u5ea6\u65bd\u52a0\u7ea6\u675f\uff0c\u51cf\u5c11\u8fc7\u62df\u5408\u98ce\u9669\u3002",
-      howToRead:
-        "\u6b63\u5219\u5316\u66f4\u5f3a\u4e00\u822c\u4f1a\u8ba9\u6a21\u578b\u66f4\u4fdd\u5b88\uff0c\u66f4\u4f9d\u8d56\u7a33\u5b9a\u7279\u5f81\u800c\u4e0d\u662f\u5076\u7136\u6ce2\u52a8\u3002",
-      watchout:
-        "\u5982\u679c\u7ea6\u675f\u8fc7\u5f3a\uff0c\u53ef\u80fd\u4f1a\u8ba9\u6a21\u578b\u5b66\u4e0d\u5230\u5173\u952e\u4fe1\u53f7\uff0c\u8bad\u7ec3\u548c\u9a8c\u8bc1\u6307\u6807\u90fd\u4f1a\u4e00\u8d77\u53d8\u5dee\u3002",
-    },
-    batch_size: {
-      term: "\u6279\u5927\u5c0f",
-      definition:
-        "\u6bcf\u4e00\u6b21\u68af\u5ea6\u66f4\u65b0\u65f6\u540c\u65f6\u53c2\u4e0e\u8fd0\u7b97\u7684\u6837\u672c\u6570\u91cf\u3002",
-      howToRead:
-        "\u8f83\u5927\u7684 batch \u8ba1\u7b97\u66f4\u7a33\u5b9a\uff0c\u8f83\u5c0f\u7684 batch \u53ef\u80fd\u66f4\u5feb\u627e\u5230\u5c40\u90e8\u7ed3\u6784\u3002",
-      watchout:
-        "\u5982\u679c\u663e\u5b58\u538b\u529b\u6216\u68af\u5ea6\u4e0d\u7a33\u5b9a\uff0c\u9700\u8981\u8054\u5408 batch size \u4e0e learning rate \u4e00\u8d77\u8c03\u6574\u3002",
-    },
-    as_of_time: {
-      term: "as_of_time",
-      definition:
-        "\u8868\u793a\u8fd9\u4efd\u6570\u636e\u5728\u4ec0\u4e48\u53ef\u7528\u65f6\u70b9\u88ab\u56fa\u5b9a\u4e0b\u6765\uff0c\u6a21\u578b\u53ea\u80fd\u770b\u5230\u8fd9\u4e2a\u65f6\u70b9\u4e4b\u524d\u53ef\u5f97\u7684\u4fe1\u606f\u3002",
-      howToRead:
-        "\u8981\u548c\u6570\u636e\u7ec8\u70b9\u4e00\u8d77\u770b\uff0c\u786e\u8ba4\u8fd9\u4efd\u6570\u636e\u5bf9\u5e94\u7684\u7814\u7a76\u65f6\u70b9\u662f\u4e0d\u662f\u4f60\u9700\u8981\u7684\u90a3\u4e2a\u5207\u7247\u3002",
-      watchout:
-        "\u5982\u679c as_of_time \u665a\u4e8e\u4f60\u5b9e\u9645\u56de\u6d4b\u53ef\u89c2\u6d4b\u5230\u7684\u65f6\u70b9\uff0c\u5c31\u6709\u53ef\u80fd\u51fa\u73b0\u524d\u89c6\u6cc4\u6f0f\u3002",
-    },
-    freshness: {
-      term: "\u65b0\u9c9c\u5ea6",
-      definition:
-        "\u8868\u793a\u8fd9\u4efd\u6570\u636e\u79bb\u5f53\u524d\u53ef\u7528\u7684\u5e02\u573a\u72b6\u6001\u6709\u591a\u8fdc\uff0c\u5b83\u53cd\u6620\u4f60\u770b\u5230\u7684\u662f\u4e0d\u662f\u6700\u65b0\u7248\u672c\u3002",
-      howToRead:
-        "\u8981\u540c\u65f6\u770b\u66f4\u65b0\u65f6\u95f4\u3001\u6570\u636e\u7ec8\u70b9\u548c\u5b9e\u9645\u7814\u7a76\u76ee\u6807\uff0c\u5386\u53f2\u590d\u76d8\u53ef\u4ee5\u63a5\u53d7\u8f7b\u5fae\u6ede\u540e\uff0c\u4f46\u5f53\u524d\u7814\u7a76\u4e0d\u884c\u3002",
-      watchout:
-        "\u5982\u679c\u6570\u636e\u660e\u663e\u8fc7\u65f6\uff0c\u8bad\u7ec3\u548c\u56de\u6d4b\u7ed3\u8bba\u5f80\u5f80\u4e0d\u518d\u4ee3\u8868\u73b0\u5728\u7684\u5e02\u573a\u73af\u5883\u3002",
-    },
-    label_horizon: {
-      term: "\u6807\u7b7e\u7a97\u53e3",
-      definition:
-        "\u8868\u793a\u6bcf\u4e2a\u6837\u672c\u8981\u9884\u6d4b\u672a\u6765\u591a\u5c11\u4e2a bar \u6216\u591a\u957f\u65f6\u95f4\u7684\u7ed3\u679c\u3002",
-      howToRead:
-        "\u7a97\u53e3\u8d8a\u77ed\u8d8a\u504f\u77ed\u7ebf\uff0c\u8d8a\u957f\u8d8a\u504f\u4e2d\u671f\u6216\u8de8\u5468\u671f\u5224\u65ad\uff0c\u4e0d\u540c\u7a97\u53e3\u4e0b\u7684\u6307\u6807\u4e0d\u5e94\u76f4\u63a5\u786c\u6bd4\u3002",
-      watchout:
-        "\u5982\u679c\u6807\u7b7e\u7a97\u53e3\u4e0e\u4f60\u7684\u4ea4\u6613\u6301\u6709\u5468\u671f\u4e0d\u5339\u914d\uff0c\u6a21\u578b\u5373\u4f7f\u8bef\u5dee\u5f88\u4f4e\u4e5f\u96be\u4ee5\u8f6c\u5316\u6210\u53ef\u7528\u7ed3\u8bba\u3002",
-    },
-    split_strategy: {
-      term: "\u5207\u5206\u65b9\u5f0f",
-      definition:
-        "\u6307\u8bad\u7ec3\u3001\u9a8c\u8bc1\u3001\u6d4b\u8bd5\u6837\u672c\u662f\u6309\u4ec0\u4e48\u89c4\u5219\u62c6\u5f00\u7684\uff0c\u5b83\u51b3\u5b9a\u4f60\u662f\u5426\u5728\u62ff\u201c\u672a\u6765\u201d\u9a8c\u8bc1\u6a21\u578b\u3002",
-      howToRead:
-        "\u65f6\u5e8f\u95ee\u9898\u901a\u5e38\u4f18\u5148\u770b\u65f6\u95f4\u5207\u5206\uff0c\u786e\u4fdd\u9a8c\u8bc1\u96c6\u548c\u6d4b\u8bd5\u96c6\u4e0d\u4f1a\u770b\u5230\u672a\u6765\u65f6\u70b9\u7684\u4fe1\u606f\u3002",
-      watchout:
-        "\u5207\u5206\u7b56\u7565\u4e0d\u5408\u7406\u65f6\uff0c\u9ad8\u5206\u5f88\u53ef\u80fd\u53ea\u662f\u6cc4\u6f0f\u51fa\u6765\u7684\u3002",
-    },
-    sample_policy: {
-      term: "\u6837\u672c\u7b56\u7565",
-      definition:
-        "\u8bf4\u660e\u54ea\u4e9b\u6837\u672c\u4f1a\u8fdb\u5165\u8bad\u7ec3\uff0c\u7f3a\u5931\u6807\u7b7e\u600e\u4e48\u5904\u7406\uff0c\u4ee5\u53ca\u662f\u5426\u5bf9\u5386\u53f2\u957f\u5ea6\u6216\u5b9e\u4f53\u8986\u76d6\u6709\u9650\u5236\u3002",
-      howToRead:
-        "\u5b83\u4f1a\u76f4\u63a5\u5f71\u54cd\u6837\u672c\u91cf\u3001\u6807\u7b7e\u53ef\u7528\u7387\u548c\u6a21\u578b\u80fd\u5b66\u5230\u7684\u4fe1\u606f\u5bc6\u5ea6\u3002",
-      watchout:
-        "\u7b56\u7565\u592a\u4e25\u683c\u4f1a\u5bfc\u81f4\u6837\u672c\u8fc7\u5c11\uff0c\u592a\u5bbd\u677e\u5219\u53ef\u80fd\u5f15\u5165\u5927\u91cf\u810f\u6570\u636e\u6216\u4e0d\u53ef\u4ea4\u6613\u6837\u672c\u3002",
-    },
-    temporal_safety: {
-      term: "\u65f6\u95f4\u5b89\u5168",
-      definition:
-        "\u6307\u6570\u636e\u6784\u5efa\u662f\u5426\u9075\u5b88\u201c\u53ea\u80fd\u4f7f\u7528\u5f53\u65f6\u80fd\u770b\u5230\u7684\u4fe1\u606f\u201d\u8fd9\u6761\u65f6\u5e8f\u57fa\u672c\u89c4\u5219\u3002",
-      howToRead:
-        "\u8981\u8054\u5408 as_of_time\u3001available_time \u548c split \u8fb9\u754c\u4e00\u8d77\u770b\uff0c\u786e\u8ba4\u4e0d\u5b58\u5728\u524d\u89c6\u4fe1\u606f\u6df7\u5165\u3002",
-      watchout:
-        "\u53ea\u8981\u65f6\u95f4\u5bf9\u9f50\u51fa\u4e00\u6b21\u9519\uff0c\u6574\u4e2a\u7814\u7a76\u7ed3\u8bba\u90fd\u53ef\u80fd\u88ab\u6c61\u67d3\u3002",
-    },
-    missing_ratio: {
-      term: "\u7f3a\u5931\u7387",
-      definition:
-        "\u6307\u5173\u952e\u5b57\u6bb5\u4e2d\u7f3a\u5931\u503c\u6240\u5360\u7684\u6bd4\u4f8b\uff0c\u5b83\u53cd\u6620\u8fd9\u4efd\u6570\u636e\u6709\u591a\u5b8c\u6574\u3002",
-      howToRead:
-        "\u6570\u503c\u4f4e\u5e76\u4e0d\u4ee3\u8868\u5b8c\u5168\u6ca1\u95ee\u9898\uff0c\u8fd8\u8981\u770b\u7f3a\u5931\u662f\u968f\u673a\u7684\uff0c\u8fd8\u662f\u96c6\u4e2d\u5728\u67d0\u4e9b\u6ce2\u52a8\u65f6\u6bb5\u3002",
-      watchout:
-        "\u5982\u679c\u7f3a\u5931\u4e3b\u8981\u51fa\u73b0\u5728\u5267\u70c8\u884c\u60c5\u65f6\u6bb5\uff0c\u98ce\u9669\u8fdc\u6bd4\u8868\u9762\u6570\u5b57\u66f4\u5927\u3002",
-    },
-    duplicate_rows: {
-      term: "\u91cd\u590d\u7387",
-      definition:
-        "\u6307\u540c\u4e00\u65f6\u70b9\u3001\u540c\u4e00\u5b9e\u4f53\u7684\u6570\u636e\u662f\u5426\u88ab\u91cd\u590d\u5199\u5165\uff0c\u5b83\u4f1a\u76f4\u63a5\u626d\u66f2\u6837\u672c\u91cf\u3002",
-      howToRead:
-        "\u91cd\u590d\u8d8a\u591a\uff0c\u8d8a\u8981\u8b66\u60d5\u6570\u636e\u6e90\u5408\u5e76\u3001\u53bb\u91cd\u903b\u8f91\u6216 ingest \u6d41\u7a0b\u672c\u8eab\u6709\u95ee\u9898\u3002",
-      watchout:
-        "\u91cd\u590d\u6570\u636e\u4f1a\u8ba9\u6837\u672c\u91cf\u865a\u9ad8\uff0c\u4e5f\u4f1a\u626d\u66f2\u56de\u6d4b\u548c\u8bad\u7ec3\u8bef\u5dee\u3002",
-    },
-    feature_dimensions: {
-      term: "\u7279\u5f81\u7ef4\u5ea6",
-      definition:
-        "\u6307\u6a21\u578b\u53ef\u4ee5\u4f7f\u7528\u7684\u8f93\u5165\u7279\u5f81\u7684\u6570\u91cf\u548c\u7c7b\u578b\u5206\u5e03\uff0c\u4e0d\u53ea\u662f\u201c\u6709\u591a\u5c11\u5217\u201d\u3002",
-      howToRead:
-        "\u9664\u4e86\u770b\u6570\u91cf\uff0c\u66f4\u8981\u770b\u5b83\u4eec\u662f\u4e0d\u662f\u8986\u76d6\u4ef7\u683c\u3001\u6210\u4ea4\u91cf\u3001\u6ce2\u52a8\u3001\u7ed3\u6784\u6027\u7b49\u5173\u952e\u4fe1\u606f\u3002",
-      watchout:
-        "\u7ef4\u5ea6\u5f88\u591a\u4e0d\u4ee3\u8868\u66f4\u5f3a\uff0c\u5982\u679c\u7279\u5f81\u591a\u4f46\u8d28\u91cf\u5dee\uff0c\u53cd\u800c\u66f4\u5bb9\u6613\u8fc7\u62df\u5408\u3002",
-    },
-    label_columns: {
-      term: "\u6807\u7b7e\u5217",
-      definition:
-        "\u6307\u6a21\u578b\u8981\u5b66\u4f1a\u9884\u6d4b\u7684\u76ee\u6807\u5b57\u6bb5\uff0c\u5b83\u51b3\u5b9a\u4f60\u8bad\u7ec3\u51fa\u6765\u7684\u6a21\u578b\u7a76\u7adf\u5728\u5bf9\u4ec0\u4e48\u8d1f\u8d23\u3002",
-      howToRead:
-        "\u5148\u786e\u8ba4\u6807\u7b7e\u5b9a\u4e49\u662f\u5426\u548c\u4f60\u7684\u4ea4\u6613\u6216\u7814\u7a76\u76ee\u6807\u4e00\u81f4\uff0c\u518d\u53bb\u770b\u6a21\u578b\u6307\u6807\u597d\u4e0d\u597d\u3002",
-      watchout:
-        "\u5982\u679c\u6807\u7b7e\u5b9a\u4e49\u672c\u8eab\u5c31\u4e0d\u5bf9\uff0c\u518d\u597d\u7684\u6a21\u578b\u4e5f\u53ea\u662f\u628a\u9519\u7684\u76ee\u6807\u5b66\u5f97\u66f4\u7cbe\u51c6\u800c\u5df2\u3002",
-    },
-    data_coverage: {
-      term: "\u6570\u636e\u8986\u76d6\u8303\u56f4",
-      definition:
-        "\u6307\u8fd9\u4efd\u6570\u636e\u5305\u542b\u54ea\u4e9b\u8d44\u4ea7\u6216\u5b9e\u4f53\u3001\u4ec0\u4e48\u9891\u7387\u3001\u8986\u76d6\u591a\u957f\u65f6\u95f4\u3002",
-      howToRead:
-        "\u8986\u76d6\u8d8a\u5b8c\u6574\uff0c\u8d8a\u9002\u5408\u505a\u6cdb\u5316\u7814\u7a76\uff1b\u8986\u76d6\u8d8a\u7a84\uff0c\u8d8a\u9002\u5408\u5c40\u90e8\u8bd5\u9a8c\u548c\u8054\u8c03\u3002",
-      watchout:
-        "\u5982\u679c\u53ea\u8986\u76d6\u77ed\u7a97\u53e3\u6216\u5355\u4e00\u5e02\u573a\u9636\u6bb5\uff0c\u6a21\u578b\u5f88\u53ef\u80fd\u5bf9\u5f53\u4e0b\u73af\u5883\u8fc7\u62df\u5408\u3002",
+      term: "基准测试",
+      definition: "在相同数据窗口和规则下，对多个模型做统一评估。",
+      howToRead: "除了看冠军，也要看整体排名与波动是否稳定。",
+      watchout: "如果榜首频繁轮换且差距很小，当前结论往往并不稳。",
     },
     data_domain: {
       term: "数据域",
-      definition:
-        "指这份数据首先属于市场、衍生品、链上、宏观还是情绪 / 事件中的哪一类业务域。",
-      howToRead:
-        "先看数据域，再看来源、交易所、标的和频率，能更快判断它应该放在哪条研究链路里。",
-      watchout:
-        "把不同数据域当成同一种数据去看，最容易误读字段含义、刷新节奏和可训练性。",
+      definition: "数据首先属于市场、衍生品、链上、宏观还是情绪事件等业务域。",
+      howToRead: "先确认数据域，再理解来源、频率和用途。",
+      watchout: "把不同数据域混为一谈，最容易误解字段意义和更新时间。",
     },
     dataset_type: {
-      term: "数据类型",
-      definition:
-        "指这份资产当前是展示切片、训练面板、特征快照还是融合训练面板，决定它更适合浏览还是直接用于训练。",
-      howToRead:
-        "同一数据域下也可能有多种数据类型。先分清类型，再决定是看图、查详情，还是直接发起训练。",
-      watchout:
-        "不要把“能浏览”的切片误当成“能训练”的面板，也不要把上游快照直接当成最终训练集。",
+      term: "数据集类型",
+      definition: "说明这份数据是展示切片、训练面板、特征快照还是融合面板。",
+      howToRead: "先分清类型，再决定是浏览、检查还是直接进入训练。",
+      watchout: "能浏览的数据不一定适合训练。",
     },
-    training_panel: {
-      term: "训练面板",
-      definition:
-        "已经把特征、标签、切分规则和可训练样本整理到统一表结构中的数据集，通常可以直接进入训练链路。",
-      howToRead:
-        "重点看样本量、标签窗口、切分方式和时间安全约束，而不只是看字段多少。",
-      watchout:
-        "训练面板不等于一定安全可用，仍然要检查 freshness、temporal safety 和 missing feature 处理规则。",
+    feature_dimensions: {
+      term: "特征维度",
+      definition: "模型可使用的输入特征数量与类型分布。",
+      howToRead: "不仅看数量，还要看是否覆盖价格、成交量、波动和结构信息。",
+      watchout: "维度很多不代表更强，低质量特征会放大过拟合风险。",
     },
-    display_slice: {
-      term: "展示切片",
-      definition:
-        "主要用于浏览、查样本和理解数据内容的展示型数据集，不默认代表它已经具备训练所需的标签和切分。",
-      howToRead:
-        "更适合看 coverage、series、字段示例和更新时间，帮助决定值不值得继续往训练链路推进。",
-      watchout:
-        "展示切片常常缺少标签、统一样本策略或显式切分，不能直接当成训练面板使用。",
+    freshness: {
+      term: "新鲜度",
+      definition: "数据距离当前可用市场状态有多远，反映是否是较新的版本。",
+      howToRead: "要结合更新时间、数据终点和研究目标一起判断。",
+      watchout: "明显过时的数据很容易让训练和回测结论失真。",
+    },
+    label_horizon: {
+      term: "标签窗口",
+      definition: "每个样本需要预测未来多少个 bar 或多长时间。",
+      howToRead: "窗口越短越偏短线，越长越偏中期或跨周期判断。",
+      watchout: "标签窗口与策略持有周期不匹配时，低误差也未必有用。",
+    },
+    learning_rate: {
+      term: "学习率",
+      definition: "每次参数更新时的步长，决定模型学习快慢。",
+      howToRead: "学习率小更稳但更慢，大学习率更快但更容易震荡。",
+      watchout: "loss 剧烈波动时，通常先检查学习率是否过高。",
+    },
+    regularization: {
+      term: "正则化",
+      definition: "通过约束模型复杂度来降低过拟合风险。",
+      howToRead: "正则化更强时，模型往往更保守、更依赖稳定信号。",
+      watchout: "约束过强会让模型学不到关键模式。",
+    },
+    sample_policy: {
+      term: "样本策略",
+      definition: "说明哪些样本进入训练、如何处理缺失标签，以及覆盖范围限制。",
+      howToRead: "它直接影响样本量、标签可用率和模型能学到的信息密度。",
+      watchout: "过严会导致样本太少，过松会带入大量脏数据。",
     },
     selection_mode: {
       term: "选择方式",
-      definition:
-        "指请求数据时按什么规则选实体，例如手动列表、按数量选择或按标签过滤。",
-      howToRead:
-        "它决定 universe 是显式指定出来的，还是由筛选规则动态生成出来的。",
-      watchout:
-        "如果选择方式和标的数量、标签、标的不匹配，实际拿到的研究对象可能和预期不同。",
-    },
-    alignment_policy: {
-      term: "对齐策略",
-      definition:
-        "说明不同实体、不同频率或不同数据域的观测值要按什么时点和键进行对齐。",
-      howToRead:
-        "做跨域融合时尤其关键，要同时看 join key、available_time 约束和是否允许 as-of 对齐。",
-      watchout:
-        "对齐策略不清楚时，很容易把未来才可见的数据对到了过去样本上，直接造成前视泄漏。",
-    },
-    missing_feature_policy: {
-      term: "缺失特征策略",
-      definition:
-        "说明某些特征在部分样本上缺失时，是直接丢样本、保留并打标，还是允许一定比例缺失。",
-      howToRead:
-        "它会直接影响 usable samples、覆盖率和融合训练面板的稳定性。",
-      watchout:
-        "过于宽松会把脏样本带进训练，过于严格又可能把样本量削得太小。",
-    },
-    entity_scope: {
-      term: "实体范围",
-      definition:
-        "指这份数据覆盖的是单资产、多资产、宏观序列还是事件流等哪一类研究对象范围。",
-      howToRead:
-        "它能帮助你快速判断是做单标的切片分析，还是做跨实体统一面板。",
-      watchout:
-        "实体范围看错时，常常会误解样本条数、标的预览和训练结果的可泛化边界。",
+      definition: "请求数据时按什么规则选择研究对象，例如手动列表或前 N 个标的。",
+      howToRead: "它决定研究 universe 是显式指定还是动态筛选生成。",
+      watchout: "选择方式与标的范围不匹配时，实际研究对象可能偏离预期。",
     },
     snapshot_version: {
       term: "快照版本",
-      definition:
-        "指当前这份数据资产在某次构建后的固定版本标识，用来区分不同时间或不同配置生成出的快照。",
-      howToRead:
-        "比较结果时要确认是不是同一版本，避免把不同窗口或不同构建配置的结果混在一起。",
-      watchout:
-        "如果只看 display name 不看 snapshot version，很容易把两份结构接近但内容不同的数据误认为同一份。",
+      definition: "当前数据资产在某次构建后的固定版本标识。",
+      howToRead: "比较结果时要先确认是否基于同一版本。",
+      watchout: "只看显示名不看版本，很容易误把不同快照当成同一份数据。",
     },
-    quality_status: {
-      term: "质量状态",
-      definition:
-        "对当前数据质量的汇总判断，通常会结合缺失率、重复键、覆盖情况和构建时的质量检查结果。",
-      howToRead:
-        "先看状态，再结合质量摘要和 checks 判断问题是轻微提醒，还是已经影响训练与回测的可靠性。",
-      watchout:
-        "质量状态只是入口信号，真正决定能不能用，还要结合 temporal safety、freshness 和样本策略一起看。",
+    split_strategy: {
+      term: "切分方式",
+      definition: "训练、验证和测试样本按什么规则拆分。",
+      howToRead: "时序问题通常优先看时间切分，确认没有未来信息泄漏。",
+      watchout: "切分策略不合理时，高分常常只是泄漏带来的假象。",
     },
-    series_kind: {
-      term: "序列类型",
-      definition:
-        "指某条时间序列在数据集中扮演的角色，例如输入序列、融合输入序列或标签序列。",
-      howToRead:
-        "浏览 series 时先看 kind，再看 data_domain 和 coverage，能更快定位它属于上游输入还是训练目标。",
-      watchout:
-        "不同 series kind 的刷新时点和用途可能完全不同，不能只因为都叫 series 就混着理解。",
+    training_panel: {
+      term: "训练面板",
+      definition: "已将特征、标签与切分规则整理到统一表结构中的训练数据集。",
+      howToRead: "重点看样本量、标签窗口、切分方式和时间安全约束。",
+      watchout: "训练面板不等于一定安全可用，仍需检查 freshness 与 temporal safety。",
+    },
+    tree_depth: {
+      term: "树深度",
+      definition: "树模型单棵决策树可以向下分裂的最大层数。",
+      howToRead: "树越深，拟合能力越强，但过拟合风险也更高。",
+      watchout: "训练集显著好于验证集且树深度较大时，要警惕复杂度过高。",
     },
   },
 } as const;
 
-export type GlossaryKey = keyof typeof I18N.glossary;
+type DeepStringCatalog<T> = {
+  [K in keyof T]: T[K] extends string ? string : DeepStringCatalog<T[K]>;
+};
+
+export type I18nCatalog = DeepStringCatalog<typeof zhCN>;
+
+const enUS: I18nCatalog = {
+  app: {
+    brand: "Quant Research Workbench",
+    subtitle: "Research ops, backtest analysis, and side-by-side review",
+    note: "The frontend binds to stable view models and does not depend on artifact internals.",
+    navTitle: "Research Navigation",
+    settingsTitle: "Interface",
+    languageLabel: "Language",
+    themeLabel: "Theme",
+    themeLight: "Light",
+    themeDark: "Night",
+  },
+  nav: {
+    workbench: "Workbench",
+    models: "Models",
+    datasets: "Datasets",
+    backtests: "Backtests",
+    benchmarks: "Benchmarks",
+    jobs: "Jobs",
+    comparison: "Comparison",
+    runs: "Runs",
+    modelTemplates: "Templates",
+    trainedModels: "Trained Models",
+  },
+  action: {
+    launchTrain: "Launch Training",
+    launchBacktest: "Launch Backtest",
+    submit: "Submit",
+    cancel: "Cancel",
+    openDetail: "View Details",
+    openComparison: "Open Comparison",
+    preview: "Preview",
+    retry: "Retry",
+    createTemplate: "Create Template",
+    editTemplate: "Edit Template",
+    duplicateTemplate: "Duplicate Template",
+    trainWithTemplate: "Train From Template",
+    delete: "Delete",
+    save: "Save",
+    close: "Close",
+    rename: "Rename / Notes",
+    applyDefaults: "Apply Suggested Defaults",
+    copyToTemplate: "Copy As Template",
+    confirmDelete: "Confirm Delete",
+  },
+  status: {
+    queued: "Queued",
+    running: "Running",
+    success: "Success",
+    failed: "Failed",
+    partial: "Partial",
+    benchmark: "Benchmark",
+    unknown: "Unknown",
+    enabled: "Enabled",
+    disabled: "Disabled",
+    archived: "Hidden",
+  },
+  sourceType: {
+    run: "Trained Run",
+    benchmark: "Benchmark Entry",
+  },
+  stage: {
+    prepare: "Prepare",
+    train: "Train",
+    predict: "Predict",
+    backtest: "Backtest",
+  },
+  state: {
+    loading: "Loading...",
+    requestFailed: "Request failed",
+    empty: "No data",
+    selectArtifact: "Select an artifact first",
+  },
+  model: {
+    templateSection: "Templates act as the default configuration source when launching training.",
+    trainedSection: "Trained runs aggregated from current artifacts, ready for backtests and reuse.",
+    basicInfo: "Basic Info",
+    trainingParams: "Training Parameters",
+    algorithmParams: "Algorithm Parameters",
+    advancedParams: "Advanced Parameters",
+    deleteTemplateMessage: "Deleting a template removes the local config record only.",
+    deleteRunMessage: "Deleting a run here only hides it in the workbench view.",
+  },
+  dataset: {
+    listTitle: "Dataset List",
+    detailTitle: "Dataset Detail",
+    candlesTitle: "Historical Candles",
+    noDataset: "No dataset summary is available yet.",
+  },
+  glossary: zhCN.glossary,
+};
+
+const TEXT_TRANSLATIONS: Record<string, Record<Locale, string>> = {
+  "API / BFF": { "zh-CN": "API / BFF", "en-US": "API / BFF" },
+  "中": { "zh-CN": "中", "en-US": "中" },
+  "EN": { "zh-CN": "EN", "en-US": "EN" },
+  "全部": { "zh-CN": "全部", "en-US": "All" },
+  "全部状态": { "zh-CN": "全部状态", "en-US": "All statuses" },
+  "全部模型": { "zh-CN": "全部模型", "en-US": "All models" },
+  "全部数据集": { "zh-CN": "全部数据集", "en-US": "All datasets" },
+  "保存中...": { "zh-CN": "保存中...", "en-US": "Saving..." },
+  "提交中...": { "zh-CN": "提交中...", "en-US": "Submitting..." },
+  "删除中...": { "zh-CN": "删除中...", "en-US": "Deleting..." },
+  "删除失败": { "zh-CN": "删除失败", "en-US": "Delete failed" },
+  "无告警": { "zh-CN": "无告警", "en-US": "No warnings" },
+  "详情": { "zh-CN": "详情", "en-US": "Details" },
+  "审阅": { "zh-CN": "审阅", "en-US": "Review" },
+  "名称": { "zh-CN": "名称", "en-US": "Name" },
+  "说明": { "zh-CN": "说明", "en-US": "Description" },
+  "模型类型": { "zh-CN": "模型类型", "en-US": "Model Type" },
+  "默认训练预置": { "zh-CN": "默认训练预置", "en-US": "Default Trainer Preset" },
+  "显示名称": { "zh-CN": "显示名称", "en-US": "Display Name" },
+  "研究备注": { "zh-CN": "研究备注", "en-US": "Research Notes" },
+  "关于": { "zh-CN": "关于", "en-US": "About" },
+  "术语定义": { "zh-CN": "术语定义", "en-US": "Definition" },
+  "怎么看": { "zh-CN": "怎么看", "en-US": "How to read it" },
+  "什么时候要警惕": { "zh-CN": "什么时候要警惕", "en-US": "When to be cautious" },
+  "当前没有可展示的工作台概览数据。": { "zh-CN": "当前没有可展示的工作台概览数据。", "en-US": "No workbench overview data is available yet." },
+  "任务状态为失败，建议先回到任务中心查看阶段和错误说明。": { "zh-CN": "任务状态为失败，建议先回到任务中心查看阶段和错误说明。", "en-US": "This job failed. Check the jobs page first for stage details and the error message." },
+  "告警": { "zh-CN": "告警", "en-US": "Warnings" },
+  "条": { "zh-CN": "条", "en-US": "items" },
+  "状态": { "zh-CN": "状态", "en-US": "Status" },
+  "首页只保留最近活动、快速入口和风险提示，降低首屏噪声，让研究操作更直接。": { "zh-CN": "首页只保留最近活动、快速入口和风险提示，降低首屏噪声，让研究操作更直接。", "en-US": "The home page keeps only recent activity, quick entry points, and risk signals so research actions stay focused." },
+  "最近活动": { "zh-CN": "最近活动", "en-US": "Recent Activity" },
+  "从训练实例、回测和任务三条主线反映当前研究流转状态。": { "zh-CN": "从训练实例、回测和任务三条主线反映当前研究流转状态。", "en-US": "Shows current research flow across runs, backtests, and jobs." },
+  "快速入口": { "zh-CN": "快速入口", "en-US": "Quick Links" },
+  "按研究操作流视角进入模型、数据集、回测和基准对比。": { "zh-CN": "按研究操作流视角进入模型、数据集、回测和基准对比。", "en-US": "Jump into models, datasets, backtests, and benchmarks from the research workflow view." },
+  "最近": { "zh-CN": "最近", "en-US": "Latest" },
+  "条回测结果": { "zh-CN": "条回测结果", "en-US": "backtest results" },
+  "暂无基准": { "zh-CN": "暂无基准", "en-US": "No benchmark yet" },
+  "风险提示": { "zh-CN": "风险提示", "en-US": "Risk Signals" },
+  "将失败任务、高告警回测和数据新鲜度收在同一侧边栏上。": { "zh-CN": "将失败任务、高告警回测和数据新鲜度收在同一侧边栏上。", "en-US": "Keeps failed jobs, risky backtests, and dataset freshness together in one sidebar." },
+  "当前没有新的高风险项，可继续浏览最近训练实例或基准对比。": { "zh-CN": "当前没有新的高风险项，可继续浏览最近训练实例或基准对比。", "en-US": "No new high-risk items right now. You can keep browsing recent runs or benchmark comparisons." },
+  "风险可控": { "zh-CN": "风险可控", "en-US": "Risk Under Control" },
+  "基准快照": { "zh-CN": "基准快照", "en-US": "Benchmark Snapshot" },
+  "首页只保留可扫读的基准概览，详细对比在基准页完成。": { "zh-CN": "首页只保留可扫读的基准概览，详细对比在基准页完成。", "en-US": "The home page keeps only a skim-friendly benchmark snapshot. Deep comparison lives on benchmark pages." },
+  "当前领先": { "zh-CN": "当前领先", "en-US": "Current Leader" },
+  "得分": { "zh-CN": "得分", "en-US": "Score" },
+  "暂无基准摘要。": { "zh-CN": "暂无基准摘要。", "en-US": "No benchmark summary yet." },
+  "回测列表": { "zh-CN": "回测列表", "en-US": "Backtest List" },
+  "按状态筛选并进入回测报告详情。": { "zh-CN": "按状态筛选并进入回测报告详情。", "en-US": "Filter by status and open detailed backtest reports." },
+  "搜索回测 ID / 训练实例 ID": { "zh-CN": "搜索回测 ID / 训练实例 ID", "en-US": "Search backtest ID / run ID" },
+  "回测 ID": { "zh-CN": "回测 ID", "en-US": "Backtest ID" },
+  "训练实例 ID": { "zh-CN": "训练实例 ID", "en-US": "Run ID" },
+  "年化收益": { "zh-CN": "年化收益", "en-US": "Annual Return" },
+  "操作": { "zh-CN": "操作", "en-US": "Actions" },
+  "官方协议门禁未通过，结果仅可用于排错，不参与官方比较。": { "zh-CN": "官方协议门禁未通过，结果仅可用于排错，不参与官方比较。", "en-US": "Official gate checks failed. This result is only for debugging and is excluded from official comparison." },
+  "当前过滤条件下没有回测记录。": { "zh-CN": "当前过滤条件下没有回测记录。", "en-US": "No backtest records match the current filters." },
+  "数据更新": { "zh-CN": "数据更新", "en-US": "Data Update" },
+  "列表信息": { "zh-CN": "列表信息", "en-US": "List Info" },
+  "回测记录": { "zh-CN": "回测记录", "en-US": "Backtest Records" },
+  "将永久删除回测记录，并清理对应报告产物。训练实例会保留，但这条回测不会继续显示。": { "zh-CN": "将永久删除回测记录，并清理对应报告产物。训练实例会保留，但这条回测不会继续显示。", "en-US": "This will permanently delete the backtest record and its report artifacts. The training run stays, but this backtest will no longer be shown." },
+  "删除回测": { "zh-CN": "删除回测", "en-US": "Delete Backtest" },
+  "没有找到对应的基准详情。": { "zh-CN": "没有找到对应的基准详情。", "en-US": "No matching benchmark detail was found." },
+  "包含排行榜、验证摘要与可追溯工件入口。": { "zh-CN": "包含排行榜、验证摘要与可追溯工件入口。", "en-US": "Includes ranking, validation summary, and traceable artifact entry points." },
+  "数据集": { "zh-CN": "数据集", "en-US": "Dataset" },
+  "窗口数": { "zh-CN": "窗口数", "en-US": "Window Count" },
+  "更新时间": { "zh-CN": "更新时间", "en-US": "Updated At" },
+  "排行榜": { "zh-CN": "排行榜", "en-US": "Leaderboard" },
+  "模型排名": { "zh-CN": "模型排名", "en-US": "Model Ranking" },
+  "基于 MAE 的横向对比，关键术语全部收敛为 hover 问号解释。": { "zh-CN": "基于 MAE 的横向对比，关键术语全部收敛为 hover 问号解释。", "en-US": "A side-by-side comparison based on MAE, with glossary help moved into hover tooltips." },
+  "排名": { "zh-CN": "排名", "en-US": "Rank" },
+  "算法族": { "zh-CN": "算法族", "en-US": "Family" },
+  "测试集 MAE": { "zh-CN": "测试集 MAE", "en-US": "Test MAE" },
+  "基准结果中没有排行榜数据。": { "zh-CN": "基准结果中没有排行榜数据。", "en-US": "The benchmark result does not contain leaderboard data." },
+  "告警摘要": { "zh-CN": "告警摘要", "en-US": "Warning Summary" },
+  "当前基准没有额外告警。": { "zh-CN": "当前基准没有额外告警。", "en-US": "This benchmark has no extra warnings." },
+  "工件": { "zh-CN": "工件", "en-US": "Artifacts" },
+  "基准产物": { "zh-CN": "基准产物", "en-US": "Benchmark Artifacts" },
+  "返回基准列表": { "zh-CN": "返回基准列表", "en-US": "Back to Benchmarks" },
+  "官方回测协议 v1": { "zh-CN": "官方回测协议 v1", "en-US": "Official Backtest Protocol v1" },
+  "平台统一回测模板。": { "zh-CN": "平台统一回测模板。", "en-US": "Platform-wide official backtest template." },
+  "官方协议": { "zh-CN": "官方协议", "en-US": "Official Protocol" },
+  "查看对比": { "zh-CN": "查看对比", "en-US": "View Comparison" },
+  "模板 ID": { "zh-CN": "模板 ID", "en-US": "Template ID" },
+  "协议版本": { "zh-CN": "协议版本", "en-US": "Protocol Version" },
+  "不可删除": { "zh-CN": "不可删除", "en-US": "Read-only" },
+  "官方压力场景包的固定组成部分": { "zh-CN": "官方压力场景包的固定组成部分", "en-US": "A fixed part of the official stress scenario bundle." },
+  "将基准榜单与模型对比入口收敛到同一个工作面。": { "zh-CN": "将基准榜单与模型对比入口收敛到同一个工作面。", "en-US": "Brings benchmark ranking and model comparison entry points into one workspace." },
+  "基准名称": { "zh-CN": "基准名称", "en-US": "Benchmark Name" },
+  "当前没有可展示的基准结果。": { "zh-CN": "当前没有可展示的基准结果。", "en-US": "No benchmark results are available yet." },
+  "当前已切换到官方模板过滤视图。请从回测详情页的“查看同模板对比”进入，或在 URL 中附带运行参数。": { "zh-CN": "当前已切换到官方模板过滤视图。请从回测详情页的“查看同模板对比”进入，或在 URL 中附带运行参数。", "en-US": "You are viewing the official-template-only filter. Enter from a backtest detail page or include run params in the URL." },
+  "请先从运行页勾选多个训练实例进入对比，或传入基准参数。": { "zh-CN": "请先从运行页勾选多个训练实例进入对比，或传入基准参数。", "en-US": "Select multiple runs from the runs page first, or pass benchmark parameters." },
+  "模型性能对比": { "zh-CN": "模型性能对比", "en-US": "Model Comparison" },
+  "当前仅展示官方模板下的回测结果，便于在相同标准下比较。": { "zh-CN": "当前仅展示官方模板下的回测结果，便于在相同标准下比较。", "en-US": "Only official-template results are shown right now for apples-to-apples comparison." },
+  "统一展示训练指标、基准表现和回测结果。": { "zh-CN": "统一展示训练指标、基准表现和回测结果。", "en-US": "Shows training metrics, benchmark performance, and backtest results in one view." },
+  "散点图": { "zh-CN": "散点图", "en-US": "Scatter" },
+  "测试集 MAE 与年化收益": { "zh-CN": "测试集 MAE 与年化收益", "en-US": "Test MAE vs Annual Return" },
+  "条形图": { "zh-CN": "条形图", "en-US": "Bars" },
+  "回撤与换手": { "zh-CN": "回撤与换手", "en-US": "Drawdown and Turnover" },
+  "表格": { "zh-CN": "表格", "en-US": "Table" },
+  "对比结果": { "zh-CN": "对比结果", "en-US": "Comparison Results" },
+  "标签": { "zh-CN": "标签", "en-US": "Label" },
+  "来源": { "zh-CN": "来源", "en-US": "Source" },
+  "模板": { "zh-CN": "模板", "en-US": "Template" },
+  "门禁": { "zh-CN": "门禁", "en-US": "Gate" },
+  "训练 MAE": { "zh-CN": "训练 MAE", "en-US": "Train MAE" },
+  "验证 MAE": { "zh-CN": "验证 MAE", "en-US": "Validation MAE" },
+  "官方模板": { "zh-CN": "官方模板", "en-US": "Official Template" },
+  "实验与运行": { "zh-CN": "实验与运行", "en-US": "Experiments and Runs" },
+  "创建时间": { "zh-CN": "创建时间", "en-US": "Created At" },
+  "支持搜索、筛选、排序与批量勾选进行对比。": { "zh-CN": "支持搜索、筛选、排序与批量勾选进行对比。", "en-US": "Supports search, filtering, sorting, and multi-select comparison." },
+  "搜索训练实例 ID / 模型 / 数据集": { "zh-CN": "搜索训练实例 ID / 模型 / 数据集", "en-US": "Search run ID / model / dataset" },
+  "当前筛选条件下没有运行记录。": { "zh-CN": "当前筛选条件下没有运行记录。", "en-US": "No run records match the current filters." },
+  "任务中心": { "zh-CN": "任务中心", "en-US": "Job Center" },
+  "同一页内统一完成训练、回测发起，job 跟踪，失败原因浏览和结果落点跳转。": { "zh-CN": "同一页内统一完成训练、回测发起，job 跟踪，失败原因浏览和结果落点跳转。", "en-US": "Launch training and backtests, track jobs, inspect failures, and jump to result destinations from one page." },
+  "发起训练": { "zh-CN": "发起训练", "en-US": "Launch Training" },
+  "发起回测": { "zh-CN": "发起回测", "en-US": "Launch Backtest" },
+  "数据层任务": { "zh-CN": "数据层任务", "en-US": "Data Tasks" },
+  "后端还没有开放数据同步和数据集构建接口，这里先保留受控占位按钮和统一错误语义。": { "zh-CN": "后端还没有开放数据同步和数据集构建接口，这里先保留受控占位按钮和统一错误语义。", "en-US": "Backend endpoints for data sync and dataset build are not open yet, so this area keeps controlled placeholders and consistent error semantics." },
+  "当前跟踪任务": { "zh-CN": "当前跟踪任务", "en-US": "Tracked Job" },
+  "结果落点": { "zh-CN": "结果落点", "en-US": "Result Links" },
+  "最近任务": { "zh-CN": "最近任务", "en-US": "Recent Jobs" },
+  "失败任务": { "zh-CN": "失败任务", "en-US": "Failed Jobs" },
+  "暂无任务，请从左侧发起训练或回测。": { "zh-CN": "暂无任务，请从左侧发起训练或回测。", "en-US": "No jobs yet. Launch training or a backtest from the left side." },
+  "该接口未就绪。": { "zh-CN": "该接口未就绪。", "en-US": "This endpoint is not ready yet." },
+  "数据集预置": { "zh-CN": "数据集预置", "en-US": "Dataset Preset" },
+  "预测范围": { "zh-CN": "预测范围", "en-US": "Prediction Scope" },
+  "基准标的": { "zh-CN": "基准标的", "en-US": "Benchmark Symbol" },
+  "运行 ID": { "zh-CN": "运行 ID", "en-US": "Run ID" },
+  "请输入运行 ID（run_id）。": { "zh-CN": "请输入运行 ID（run_id）。", "en-US": "Please enter a run ID." },
+  "请输入基准标的。": { "zh-CN": "请输入基准标的。", "en-US": "Please enter a benchmark symbol." },
+  "提交行情同步": { "zh-CN": "提交行情同步", "en-US": "Submit Market Sync" },
+  "提交数据集构建": { "zh-CN": "提交数据集构建", "en-US": "Submit Dataset Build" },
+  "跳转运行详情": { "zh-CN": "跳转运行详情", "en-US": "Open Run Detail" },
+  "跳转回测详情": { "zh-CN": "跳转回测详情", "en-US": "Open Backtest Detail" },
+  "类型": { "zh-CN": "类型", "en-US": "Type" },
+  "任务 ID": { "zh-CN": "任务 ID", "en-US": "Job ID" },
+  "当前没有需要处理的失败任务。": { "zh-CN": "当前没有需要处理的失败任务。", "en-US": "There are no failed jobs that need attention right now." },
+  "联调样本": { "zh-CN": "联调样本", "en-US": "Smoke Sample" },
+  "真实基准": { "zh-CN": "真实基准", "en-US": "Real Benchmark" },
+  "全量": { "zh-CN": "全量", "en-US": "Full" },
+  "测试集": { "zh-CN": "测试集", "en-US": "Test" },
+  "统一复用模板驱动训练入口，避免任务中心与模型页出现不同的训练参数语义。": { "zh-CN": "统一复用模板驱动训练入口，避免任务中心与模型页出现不同的训练参数语义。", "en-US": "Reuses the same template-driven training entry so Jobs and Models stay aligned on training semantics." },
+  "训练任务": { "zh-CN": "训练任务", "en-US": "Training Job" },
+  "回测任务": { "zh-CN": "回测任务", "en-US": "Backtest Job" },
+  "数据申请": { "zh-CN": "数据申请", "en-US": "Dataset Request" },
+  "数据闭环编排": { "zh-CN": "数据闭环编排", "en-US": "Dataset Pipeline" },
+  "数据准备": { "zh-CN": "数据准备", "en-US": "Data Prepare" },
+  "数据构建": { "zh-CN": "数据构建", "en-US": "Dataset Build" },
+  "数据采集": { "zh-CN": "数据采集", "en-US": "Data Acquisition" },
+  "可训练": { "zh-CN": "可训练", "en-US": "Trainable" },
+  "需留意": { "zh-CN": "需留意", "en-US": "Needs Attention" },
+  "暂不可训练": { "zh-CN": "暂不可训练", "en-US": "Not Trainable Yet" },
+  "申请基础数据": { "zh-CN": "申请基础数据", "en-US": "Request Base Data" },
+  "构建基础数据": { "zh-CN": "构建基础数据", "en-US": "Build Base Data" },
+  "基础就绪校验": { "zh-CN": "基础就绪校验", "en-US": "Base Readiness Check" },
+  "构建融合数据": { "zh-CN": "构建融合数据", "en-US": "Build Fusion Data" },
+  "融合就绪校验": { "zh-CN": "融合就绪校验", "en-US": "Fusion Readiness Check" },
+  "申请数据": { "zh-CN": "申请数据", "en-US": "Request Data" },
+  "就绪校验": { "zh-CN": "就绪校验", "en-US": "Readiness Check" },
+  "跟踪摘要": { "zh-CN": "跟踪摘要", "en-US": "Tracking Summary" },
+  "训练清单": { "zh-CN": "训练清单", "en-US": "Training Manifest" },
+  "旧版清单": { "zh-CN": "旧版清单", "en-US": "Legacy Manifest" },
+  "模型状态": { "zh-CN": "模型状态", "en-US": "Model State" },
+  "模型元数据": { "zh-CN": "模型元数据", "en-US": "Model Metadata" },
+  "特征重要性": { "zh-CN": "特征重要性", "en-US": "Feature Importance" },
+  "评估摘要": { "zh-CN": "评估摘要", "en-US": "Evaluation Summary" },
+  "预测结果": { "zh-CN": "预测结果", "en-US": "Prediction Frame" },
+  "基准 JSON": { "zh-CN": "基准 JSON", "en-US": "Benchmark JSON" },
+  "基准 Markdown": { "zh-CN": "基准 Markdown", "en-US": "Benchmark Markdown" },
+  "基准 CSV": { "zh-CN": "基准 CSV", "en-US": "Benchmark CSV" },
+  "研究引擎结果": { "zh-CN": "研究引擎结果", "en-US": "Research Engine Result" },
+  "仿真引擎结果": { "zh-CN": "仿真引擎结果", "en-US": "Simulation Engine Result" },
+  "模拟引擎结果": { "zh-CN": "模拟引擎结果", "en-US": "Simulation Engine Result" },
+  "回测报告": { "zh-CN": "回测报告", "en-US": "Backtest Report" },
+  "模拟报告": { "zh-CN": "模拟报告", "en-US": "Simulation Report" },
+  "报告": { "zh-CN": "报告", "en-US": "Report" },
+  "诊断": { "zh-CN": "诊断", "en-US": "Diagnostics" },
+  "回测诊断": { "zh-CN": "回测诊断", "en-US": "Backtest Diagnostics" },
+  "泄漏审计": { "zh-CN": "泄漏审计", "en-US": "Leakage Audit" },
+  "收益分解": { "zh-CN": "收益分解", "en-US": "PnL Breakdown" },
+  "回测收益分解": { "zh-CN": "回测收益分解", "en-US": "Backtest PnL Breakdown" },
+  "持仓": { "zh-CN": "持仓", "en-US": "Positions" },
+  "回测持仓路径": { "zh-CN": "回测持仓路径", "en-US": "Backtest Positions Path" },
+  "委托": { "zh-CN": "委托", "en-US": "Orders" },
+  "成交": { "zh-CN": "成交", "en-US": "Fills" },
+  "压力场景": { "zh-CN": "压力场景", "en-US": "Stress Scenarios" },
+  "新鲜": { "zh-CN": "新鲜", "en-US": "Fresh" },
+  "偏旧": { "zh-CN": "偏旧", "en-US": "Stale" },
+  "延迟": { "zh-CN": "延迟", "en-US": "Delayed" },
+  "加载对比图表...": { "zh-CN": "加载对比图表...", "en-US": "Loading comparison chart..." },
+  "实现短缺": { "zh-CN": "实现短缺", "en-US": "Implementation Shortfall" },
+  "研究引擎": { "zh-CN": "研究引擎", "en-US": "Research Engine" },
+  "模拟引擎": { "zh-CN": "模拟引擎", "en-US": "Simulation Engine" },
+  "加载场景图表...": { "zh-CN": "加载场景图表...", "en-US": "Loading scenario chart..." },
+  "加载条形图...": { "zh-CN": "加载条形图...", "en-US": "Loading bar chart..." },
+  "加载散点图...": { "zh-CN": "加载散点图...", "en-US": "Loading scatter chart..." },
+  "测试集平均绝对误差": { "zh-CN": "测试集平均绝对误差", "en-US": "Average Test MAE" },
+  "加载 K 线中...": { "zh-CN": "加载 K 线中...", "en-US": "Loading candlestick chart..." },
+  "价格": { "zh-CN": "价格", "en-US": "Price" },
+  "5日均线": { "zh-CN": "5日均线", "en-US": "MA5" },
+  "10日均线": { "zh-CN": "10日均线", "en-US": "MA10" },
+  "成交量": { "zh-CN": "成交量", "en-US": "Volume" },
+};
+
+export type GlossaryKey = keyof I18nCatalog["glossary"];
+
+const catalogs: Record<Locale, I18nCatalog> = {
+  "zh-CN": zhCN,
+  "en-US": enUS,
+};
+
+let currentLocale: Locale = "zh-CN";
+
+export function setI18nLocale(locale: Locale) {
+  currentLocale = locale;
+}
+
+export function getCurrentLocale(): Locale {
+  return currentLocale;
+}
+
+export function getI18n(locale: Locale = currentLocale): I18nCatalog {
+  return catalogs[locale];
+}
+
+export function translateText(value: string, locale: Locale = currentLocale): string {
+  return TEXT_TRANSLATIONS[value]?.[locale] ?? value;
+}
+
+function getAtPath(value: unknown, path: PropertyKey[]): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (typeof current !== "object" || current === null) {
+      return undefined;
+    }
+    current = (current as Record<PropertyKey, unknown>)[segment];
+  }
+  return current;
+}
+
+function createCatalogProxy(path: PropertyKey[] = []): unknown {
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        const nextPath = [...path, property];
+        const value = getAtPath(getI18n(), nextPath);
+        if (value && typeof value === "object") {
+          return createCatalogProxy(nextPath);
+        }
+        return value;
+      },
+    },
+  );
+}
+
+export const I18N = createCatalogProxy() as I18nCatalog;

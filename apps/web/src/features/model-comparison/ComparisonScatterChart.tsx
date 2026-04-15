@@ -1,27 +1,37 @@
 import type { ComparisonRowView } from "../../shared/api/types";
+import { translateText } from "../../shared/lib/i18n";
+import { useChartTheme } from "../../shared/lib/chartTheme";
 import { WorkbenchChart } from "../../shared/ui/WorkbenchChart";
 
 export function ComparisonScatterChart({ rows }: { rows: ComparisonRowView[] }) {
+  const chartTheme = useChartTheme();
+
   return (
     <WorkbenchChart
-      loadingLabel={"\u52a0\u8f7d\u6563\u70b9\u56fe..."}
+      loadingLabel={translateText("加载散点图...")}
       style={{ height: 320 }}
       option={{
         tooltip: { trigger: "item" },
         xAxis: {
           type: "value",
-          name: "测试集平均绝对误差",
-          axisLabel: { color: "#b9b0a0" },
+          name: translateText("测试集平均绝对误差"),
+          nameTextStyle: { color: chartTheme.axisText },
+          axisLine: { lineStyle: { color: chartTheme.axisLine } },
+          axisLabel: { color: chartTheme.axisText },
         },
         yAxis: {
           type: "value",
-          name: "\u5e74\u5316\u6536\u76ca",
-          axisLabel: { color: "#b9b0a0" },
+          name: translateText("年化收益"),
+          nameTextStyle: { color: chartTheme.axisText },
+          axisLine: { lineStyle: { color: chartTheme.axisLine } },
+          axisLabel: { color: chartTheme.axisText },
+          splitLine: { lineStyle: { color: chartTheme.splitLine } },
         },
         series: [
           {
             type: "scatter",
             symbolSize: 16,
+            itemStyle: { color: chartTheme.accent },
             data: rows.map((row) => [
               row.mean_test_mae ?? row.train_mae ?? 0,
               row.annual_return ?? 0,

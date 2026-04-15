@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+﻿import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -58,10 +58,10 @@ const DEFAULT_IDENTIFIER_BY_DOMAIN: Record<string, string> = {
 };
 const DEFAULT_SYMBOL = "BTCUSDT";
 const DOMAIN_LABELS: Record<string, string> = {
-  market: "市场数据",
-  macro: "宏观数据",
-  on_chain: "链上数据",
-  sentiment_events: "情绪 / 事件数据",
+  market: "甯傚満鏁版嵁",
+  macro: "瀹忚鏁版嵁",
+  on_chain: "閾句笂鏁版嵁",
+  sentiment_events: "鎯呯华 / 浜嬩欢鏁版嵁",
 };
 
 function dateInputValue(date: Date) {
@@ -99,34 +99,34 @@ function domainLabel(domain: string) {
 function localizeRequestOptionLabel(value: string, label?: string | null) {
   const normalized = (label ?? value).trim().toLowerCase();
   if (normalized === "news_archive") {
-    return "新闻归档";
+    return "鏂伴椈褰掓。";
   }
   if (normalized === "gnews") {
-    return "Google 新闻";
+    return "Google 鏂伴椈";
   }
   if (normalized === "reddit_archive") {
-    return "Reddit 历史归档";
+    return "Reddit 鍘嗗彶褰掓。";
   }
   if (normalized === "manual_list") {
-    return "手动列表";
+    return "鎵嬪姩鍒楄〃";
   }
   if (normalized === "top_n") {
     return "前 N 个标的";
   }
   if (normalized === "binance") {
-    return "币安";
+    return "甯佸畨";
   }
   if (normalized === "baseline_market_features") {
-    return "基础市场特征";
+    return "鍩虹甯傚満鐗瑰緛";
   }
   if (normalized === "time_series") {
-    return "时间序列切分";
+    return "鏃堕棿搴忓垪鍒囧垎";
   }
   if (normalized === "available_time_safe_asof") {
     return "按可用时间安全对齐";
   }
   if (normalized === "single_domain") {
-    return "单域产出";
+    return "鍗曞煙浜у嚭";
   }
   return label ?? value;
 }
@@ -513,6 +513,7 @@ export function DatasetRequestDrawer({
   return (
     <div className="drawer-wrap">
       <button
+        data-testid="dataset-request-trigger"
         className={triggerTone === "secondary" ? "action-button secondary" : "action-button"}
         onClick={() => setOpen((value) => !value)}
         type="button"
@@ -627,7 +628,7 @@ export function DatasetRequestDrawer({
                       </label>
 
                       <label>
-                        <span>{"来源"}</span>
+                        <span>{"鏉ユ簮"}</span>
                         <select
                           className="field"
                           onChange={(event) =>
@@ -669,7 +670,7 @@ export function DatasetRequestDrawer({
                       {draft.dataDomain === "market" ? (
                         <>
                           <label>
-                            <span>{"交易所"}</span>
+                            <span>{"浜ゆ槗鎵€"}</span>
                             <select
                               className="field"
                               onChange={(event) =>
@@ -712,7 +713,7 @@ export function DatasetRequestDrawer({
                           </label>
 
                           <label>
-                            <span>{"标的"}</span>
+                            <span>{"鏍囩殑"}</span>
                             <input
                               className="field"
                               onChange={(event) =>
@@ -737,7 +738,7 @@ export function DatasetRequestDrawer({
                                 identifier: event.target.value,
                               }))
                             }
-                            placeholder={DEFAULT_IDENTIFIER_BY_DOMAIN[draft.dataDomain] ?? "请输入标识符"}
+                            placeholder={DEFAULT_IDENTIFIER_BY_DOMAIN[draft.dataDomain] ?? "璇疯緭鍏ユ爣璇嗙"}
                             value={draft.identifier}
                           />
                         </label>
@@ -816,3 +817,4 @@ export function DatasetRequestDrawer({
     </div>
   );
 }
+

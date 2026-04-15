@@ -3,6 +3,8 @@ import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { render } from "@testing-library/react";
 
+import { UiPreferencesProvider } from "../shared/preferences/UiPreferencesContext";
+
 export function renderWithProviders(ui: ReactElement, initialPath = "/") {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -14,9 +16,10 @@ export function renderWithProviders(ui: ReactElement, initialPath = "/") {
   });
 
   return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialPath]}>{ui}</MemoryRouter>
-    </QueryClientProvider>,
+    <UiPreferencesProvider>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialPath]}>{ui}</MemoryRouter>
+      </QueryClientProvider>
+    </UiPreferencesProvider>,
   );
 }
-

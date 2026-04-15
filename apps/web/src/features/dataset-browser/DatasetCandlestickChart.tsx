@@ -1,5 +1,7 @@
 import type { EChartsOption } from "echarts";
 
+import { useChartTheme } from "../../shared/lib/chartTheme";
+import { translateText } from "../../shared/lib/i18n";
 import { WorkbenchChart } from "../../shared/ui/WorkbenchChart";
 
 export type CandlePoint = {
@@ -24,6 +26,7 @@ export function DatasetCandlestickChart({
   showMA10,
   showVolume,
 }: DatasetCandlestickChartProps) {
+  const chartTheme = useChartTheme();
   const categories = candles.map((item) => item.time);
   const values = candles.map((item) => [item.open, item.close, item.low, item.high]);
   const volumes = candles.map((item) => item.volume);
@@ -34,12 +37,12 @@ export function DatasetCandlestickChart({
     tooltip: { trigger: "axis" },
     legend: {
       top: 0,
-      textStyle: { color: "#b8b09e" },
+      textStyle: { color: chartTheme.legendText },
       data: [
-        "\u4ef7\u683c",
-        ...(showMA5 ? ["5日均线"] : []),
-        ...(showMA10 ? ["10日均线"] : []),
-        ...(showVolume ? ["成交量"] : []),
+        translateText("价格"),
+        ...(showMA5 ? [translateText("5日均线")] : []),
+        ...(showMA10 ? [translateText("10日均线")] : []),
+        ...(showVolume ? [translateText("成交量")] : []),
       ],
     },
     grid: [
@@ -51,8 +54,8 @@ export function DatasetCandlestickChart({
         type: "category" as const,
         data: categories,
         boundaryGap: true,
-        axisLine: { lineStyle: { color: "rgba(213, 207, 193, 0.2)" } },
-        axisLabel: { color: "#b8b09e", hideOverlap: true },
+        axisLine: { lineStyle: { color: chartTheme.axisLine } },
+        axisLabel: { color: chartTheme.axisText, hideOverlap: true },
       },
       ...(showVolume
         ? [
@@ -61,7 +64,7 @@ export function DatasetCandlestickChart({
               gridIndex: 1,
               data: categories,
               boundaryGap: true,
-              axisLine: { lineStyle: { color: "rgba(213, 207, 193, 0.2)" } },
+              axisLine: { lineStyle: { color: chartTheme.axisLine } },
               axisLabel: { show: false },
             },
           ]
@@ -70,15 +73,15 @@ export function DatasetCandlestickChart({
     yAxis: [
       {
         scale: true,
-        axisLabel: { color: "#b8b09e" },
-        splitLine: { lineStyle: { color: "rgba(213, 207, 193, 0.08)" } },
+        axisLabel: { color: chartTheme.axisText },
+        splitLine: { lineStyle: { color: chartTheme.splitLine } },
       },
       ...(showVolume
         ? [
             {
               gridIndex: 1,
               scale: true,
-              axisLabel: { color: "#b8b09e" },
+              axisLabel: { color: chartTheme.axisText },
               splitLine: { show: false },
             },
           ]
@@ -90,56 +93,56 @@ export function DatasetCandlestickChart({
     ],
     series: [
       {
-        name: "\u4ef7\u683c",
+        name: translateText("价格"),
         type: "candlestick" as const,
         data: values,
         itemStyle: {
-          color: "#c7ff73",
-          color0: "#ff8d70",
-          borderColor: "#c7ff73",
-          borderColor0: "#ff8d70",
+          color: chartTheme.accent,
+          color0: chartTheme.danger,
+          borderColor: chartTheme.accent,
+          borderColor0: chartTheme.danger,
         },
       },
       ...(showMA5
         ? [
             {
-              name: "5日均线",
+              name: translateText("5日均线"),
               type: "line" as const,
               data: movingAverage(closes, 5),
               smooth: true,
               showSymbol: false,
-              lineStyle: { width: 1.6, color: "#7fe3ff" },
+              lineStyle: { width: 1.6, color: chartTheme.accentAlt },
             },
           ]
         : []),
       ...(showMA10
         ? [
             {
-              name: "10日均线",
+              name: translateText("10日均线"),
               type: "line" as const,
               data: movingAverage(closes, 10),
               smooth: true,
               showSymbol: false,
-              lineStyle: { width: 1.6, color: "#ffc37d" },
+              lineStyle: { width: 1.6, color: chartTheme.warning },
             },
           ]
         : []),
       ...(showVolume
         ? [
             {
-              name: "成交量",
+              name: translateText("成交量"),
               type: "bar" as const,
               xAxisIndex: 1,
               yAxisIndex: 1,
               data: volumes,
-              itemStyle: { color: "rgba(199, 255, 115, 0.4)" },
+              itemStyle: { color: `${chartTheme.accent}88` },
             },
           ]
         : []),
     ],
   };
 
-  return <WorkbenchChart loadingLabel="\u52a0\u8f7d K \u7ebf\u4e2d..." option={option} style={{ height: 420 }} />;
+  return <WorkbenchChart loadingLabel={translateText("加载 K 线中...")} option={option} style={{ height: 420 }} />;
 }
 
 function movingAverage(values: number[], windowSize: number): Array<number | "-"> {

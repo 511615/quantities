@@ -24,12 +24,7 @@ export function HomePage() {
   }
 
   if (!overviewQuery.data) {
-    return (
-      <EmptyState
-        body={"\u5f53\u524d\u6ca1\u6709\u53ef\u5c55\u793a\u7684\u5de5\u4f5c\u53f0\u6982\u89c8\u6570\u636e\u3002"}
-        title={I18N.state.empty}
-      />
-    );
+    return <EmptyState body="当前没有可展示的工作台概览数据。" title={I18N.state.empty} />;
   }
 
   const overview = mapOverviewView(overviewQuery.data);
@@ -37,42 +32,57 @@ export function HomePage() {
     ...overview.recentJobs.filter((job) => job.status === "failed").map((job) => ({
       id: job.job_id,
       title: `${formatJobTypeLabel(job.job_type)} / ${job.job_id}`,
-      body: "\u4efb\u52a1\u72b6\u6001\u4e3a\u5931\u8d25\uff0c\u5efa\u8bae\u5148\u56de\u5230\u4efb\u52a1\u4e2d\u5fc3\u67e5\u770b\u9636\u6bb5\u548c\u9519\u8bef\u8bf4\u660e\u3002",
+      body: "任务状态为失败，建议先回到任务中心查看阶段和错误说明。",
     })),
     ...overview.recentBacktests
       .filter((item) => item.warning_count > 0 || item.status === "failed")
       .map((item) => ({
         id: item.backtest_id,
-        title: `${item.backtest_id}`,
-        body: `\u544a\u8b66 ${item.warning_count} \u6761 / \u72b6\u6001 ${formatStatusLabel(item.status)}`,
+        title: item.backtest_id,
+        body: `告警 ${item.warning_count} 条 / 状态 ${formatStatusLabel(item.status)}`,
       })),
   ].slice(0, 4);
 
   return (
     <div className="page-stack">
-      <section className="hero-strip compact-hero">
-        <div>
+      <section className="page-header-shell">
+        <div className="page-header-main">
           <div className="eyebrow">{I18N.nav.workbench}</div>
           <h1>{I18N.app.brand}</h1>
-          <p>
-            {
-              "\u9996\u9875\u53ea\u4fdd\u7559\u6700\u8fd1\u6d3b\u52a8\u3001\u5feb\u901f\u5165\u53e3\u548c\u98ce\u9669\u63d0\u793a\uff0c\u964d\u4f4e\u9996\u5c4f\u566a\u58f0\uff0c\u8ba9\u7814\u7a76\u64cd\u4f5c\u66f4\u76f4\u63a5\u3002"
-            }
-          </p>
+          <p>把最近活动、关键入口和风险提示压缩到同一屏里，让你先看清现在发生了什么，再决定下一步。</p>
         </div>
-        <div className="hero-actions">
+        <div className="page-header-actions">
           <LaunchTrainDrawer />
           <LaunchBacktestDrawer />
         </div>
       </section>
 
-      <div className="workspace-grid">
+      <div className="summary-grid">
+        <div className="summary-card">
+          <span>最近训练</span>
+          <strong>{overview.recentRuns.length}</strong>
+        </div>
+        <div className="summary-card">
+          <span>最近回测</span>
+          <strong>{overview.recentBacktests.length}</strong>
+        </div>
+        <div className="summary-card">
+          <span>最近任务</span>
+          <strong>{overview.recentJobs.length}</strong>
+        </div>
+        <div className="summary-card">
+          <span>数据新鲜度</span>
+          <strong>{formatFreshnessLabel(overview.freshness?.freshness)}</strong>
+        </div>
+      </div>
+
+      <div className="workspace-grid workspace-grid-balanced">
         <section className="workspace-primary page-stack">
           <section className="panel">
             <PanelHeader
-              eyebrow={"\u6700\u8fd1\u6d3b\u52a8"}
-              title={"\u6700\u8fd1\u6d3b\u52a8"}
-              description={"\u4ece\u8bad\u7ec3\u5b9e\u4f8b\u3001\u56de\u6d4b\u548c\u4efb\u52a1\u4e09\u6761\u4e3b\u7ebf\u53cd\u6620\u5f53\u524d\u7814\u7a76\u6d41\u8f6c\u72b6\u6001\u3002"}
+              eyebrow="当前流转"
+              title="最近活动"
+              description="用同一视角跟踪训练、回测和任务状态，不再把它们分散在不同页面才能看全。"
             />
             <div className="activity-list">
               {overview.recentRuns.slice(0, 3).map((item) => (
@@ -81,8 +91,7 @@ export function HomePage() {
                   <div className="activity-copy">
                     <Link to={`/models/trained/${encodeURIComponent(item.run_id)}`}>{item.run_id}</Link>
                     <span>
-                      {item.model_name} / {item.dataset_id ?? "--"} / <GlossaryHint hintKey="mae" />
-                      {" "}
+                      {item.model_name} / {item.dataset_id ?? "--"} / <GlossaryHint hintKey="mae" />{" "}
                       {formatNumber(item.primary_metric_value)}
                     </span>
                   </div>
@@ -95,9 +104,7 @@ export function HomePage() {
                   <div className="activity-copy">
                     <Link to={`/backtests/${encodeURIComponent(item.backtest_id)}`}>{item.backtest_id}</Link>
                     <span>
-                      <GlossaryHint hintKey="max_drawdown" /> {formatNumber(item.max_drawdown)} / {"\u544a\u8b66 "}
-                      {item.warning_count}
-                      {" \u6761"}
+                      <GlossaryHint hintKey="max_drawdown" /> {formatNumber(item.max_drawdown)} / 告警 {item.warning_count} 条
                     </span>
                   </div>
                   <StatusPill status={item.status} />
@@ -108,9 +115,7 @@ export function HomePage() {
                   <div className="activity-badge">{I18N.nav.jobs}</div>
                   <div className="activity-copy">
                     <Link to="/jobs">{job.job_id}</Link>
-                    <span>
-                      {formatJobTypeLabel(job.job_type)} / {formatDate(job.updated_at)}
-                    </span>
+                    <span>{formatJobTypeLabel(job.job_type)} / {formatDate(job.updated_at)}</span>
                   </div>
                   <StatusPill status={job.status} />
                 </div>
@@ -120,9 +125,9 @@ export function HomePage() {
 
           <section className="panel">
             <PanelHeader
-              eyebrow={"\u5feb\u901f\u5165\u53e3"}
-              title={"\u5feb\u901f\u5165\u53e3"}
-              description={"\u6309\u7814\u7a76\u64cd\u4f5c\u6d41\u89c6\u89d2\u8fdb\u5165\u6a21\u578b\u3001\u6570\u636e\u96c6\u3001\u56de\u6d4b\u548c\u57fa\u51c6\u5bf9\u6bd4\u3002"}
+              eyebrow="关键入口"
+              title="下一步最常用的操作"
+              description="把模型、数据集、回测和基准入口做成清晰的工作流跳板，而不是四块同质化卡片。"
             />
             <div className="quick-link-grid">
               <Link className="nav-panel-link" to="/models">
@@ -131,18 +136,15 @@ export function HomePage() {
               </Link>
               <Link className="nav-panel-link" to="/datasets">
                 <strong>{I18N.nav.datasets}</strong>
-                <span>
-                  {overview.freshness?.dataset_id ?? "--"} /{" "}
-                  {formatFreshnessLabel(overview.freshness?.freshness)}
-                </span>
+                <span>{overview.freshness?.dataset_id ?? "--"} / {formatFreshnessLabel(overview.freshness?.freshness)}</span>
               </Link>
               <Link className="nav-panel-link" to="/backtests">
                 <strong>{I18N.nav.backtests}</strong>
-                <span>{`\u6700\u8fd1 ${overview.recentBacktests.length} \u6761\u56de\u6d4b\u7ed3\u679c`}</span>
+                <span>最近 {overview.recentBacktests.length} 条回测结果</span>
               </Link>
               <Link className="nav-panel-link" to="/benchmarks">
                 <strong>{I18N.nav.benchmarks}</strong>
-                <span>{overview.recentBenchmarks[0]?.benchmark_name ?? "\u6682\u65e0\u57fa\u51c6"}</span>
+                <span>{overview.recentBenchmarks[0]?.benchmark_name ?? "暂无基准"}</span>
               </Link>
             </div>
           </section>
@@ -151,9 +153,9 @@ export function HomePage() {
         <aside className="workspace-sidebar page-stack">
           <section className="panel">
             <PanelHeader
-              eyebrow={"\u98ce\u9669\u63d0\u793a"}
-              title={"\u98ce\u9669\u63d0\u793a"}
-              description={"\u5c06\u5931\u8d25\u4efb\u52a1\u3001\u9ad8\u544a\u8b66\u56de\u6d4b\u548c\u6570\u636e\u65b0\u9c9c\u5ea6\u6536\u5728\u540c\u4e00\u4fa7\u8fb9\u4e0a\u3002"}
+              eyebrow="待处理项"
+              title="风险提示"
+              description="失败任务、高告警回测和可疑结果优先出现在右侧，帮助你先处理风险。"
             />
             {riskItems.length > 0 ? (
               <div className="stack-list">
@@ -165,18 +167,15 @@ export function HomePage() {
                 ))}
               </div>
             ) : (
-              <EmptyState
-                body={"\u5f53\u524d\u6ca1\u6709\u65b0\u7684\u9ad8\u98ce\u9669\u9879\uff0c\u53ef\u7ee7\u7eed\u6d4f\u89c8\u6700\u8fd1\u8bad\u7ec3\u5b9e\u4f8b\u6216\u57fa\u51c6\u5bf9\u6bd4\u3002"}
-                title={"\u98ce\u9669\u53ef\u63a7"}
-              />
+              <EmptyState body="当前没有新的高风险项，可继续浏览最近训练实例或基准对比。" title="风险可控" />
             )}
           </section>
 
           <section className="panel">
             <PanelHeader
-              eyebrow={"\u57fa\u51c6\u5feb\u7167"}
-              title={"\u57fa\u51c6\u5feb\u7167"}
-              description={"\u9996\u9875\u53ea\u4fdd\u7559\u53ef\u626b\u63cf\u7684\u57fa\u51c6\u6982\u89c8\uff0c\u8be6\u7ec6\u5bf9\u6bd4\u5728\u57fa\u51c6\u9875\u5b8c\u6210\u3002"}
+              eyebrow="基准快照"
+              title="当前 benchmark 状态"
+              description="首页只保留适合扫读的 benchmark 摘要，详细分析统一收敛到 benchmark 页。"
             />
             {overview.recentBenchmarks.length > 0 ? (
               <div className="stack-list">
@@ -184,14 +183,12 @@ export function HomePage() {
                   <div className="stack-item align-start" key={item.benchmark_name}>
                     <Link to={`/benchmarks/${encodeURIComponent(item.benchmark_name)}`}>{item.benchmark_name}</Link>
                     <span>{item.dataset_id}</span>
-                    <span>
-                      {`\u5f53\u524d\u9886\u5148 ${item.top_model_name ?? "--"} / \u5f97\u5206 ${formatNumber(item.top_model_score)}`}
-                    </span>
+                    <span>当前领先 {item.top_model_name ?? "--"} / 得分 {formatNumber(item.top_model_score)}</span>
                   </div>
                 ))}
               </div>
             ) : (
-              <EmptyState body={"\u6682\u65e0\u57fa\u51c6\u6458\u8981\u3002"} title={I18N.state.empty} />
+              <EmptyState body="暂无基准摘要。" title={I18N.state.empty} />
             )}
           </section>
         </aside>

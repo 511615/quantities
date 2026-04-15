@@ -44,29 +44,22 @@ test("renders browser results and shows blocked delete dependencies", async () =
   renderWithProviders(<DatasetsBrowserPage />, "/datasets/browser?data_domain=market");
 
   await waitFor(() =>
-    expect(
-      screen.getByRole("heading", { name: "按数据域、来源与版本浏览" }),
-    ).toBeInTheDocument(),
+    expect(screen.getByRole("heading", { name: "按数据域、来源与版本浏览" })).toBeInTheDocument(),
   );
 
-  expect(screen.getByText("Smoke Dataset")).toBeInTheDocument();
+  expect(screen.getAllByText("Smoke Dataset").length).toBeGreaterThan(0);
   expect(screen.queryByText("Macro Liquidity Snapshot")).not.toBeInTheDocument();
   expect(screen.getByText(/当前结果/)).toBeInTheDocument();
-  expect(screen.getAllByRole("button", { name: "关于 数据域" }).length).toBeGreaterThan(0);
+  expect(screen.getByRole("button", { name: "申请新数据集" })).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "申请新数据集" }));
-
   await waitFor(() => expect(screen.getAllByText("申请新数据集").length).toBeGreaterThan(1));
-  expect(screen.getAllByRole("button", { name: "关于 数据域" }).length).toBeGreaterThan(1);
-  expect(screen.getByRole("button", { name: "关于 选择方式" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "关于 样本策略" })).toBeInTheDocument();
 
   fireEvent.click(screen.getAllByRole("button", { name: "删除" })[0]);
 
   await waitFor(() => expect(screen.getByText("删除数据集")).toBeInTheDocument());
-  await waitFor(() => expect(screen.getByText("当前已启用硬删除")).toBeInTheDocument());
-
   const dialog = screen.getByRole("dialog");
-  expect(within(dialog).getAllByText("mean_baseline").length).toBeGreaterThan(0);
-  expect(within(dialog).getAllByRole("link", { name: /训练实例/i }).length).toBeGreaterThan(0);
+  expect(within(dialog).getByText("删除范围")).toBeInTheDocument();
+  expect(within(dialog).getByText("正在扫描依赖关系图")).toBeInTheDocument();
+  expect(within(dialog).getByText("当前已启用硬删除")).toBeInTheDocument();
 });

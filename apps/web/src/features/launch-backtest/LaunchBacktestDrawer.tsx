@@ -324,23 +324,23 @@ export function LaunchBacktestDrawer({
   const officialSubmitBlocked =
     mode === "official" && officialCompatibilityBlocked;
   const officialBlockingSummary = officialPreflightPending
-    ? "Checking official compatibility. Please wait."
+    ? "正在检查官方兼容性，请稍候。"
     : officialPreflightError ??
       (!officialPreflight && mode === "official" && runId.trim()
-        ? "Official compatibility checks have not completed yet."
+        ? "官方兼容性检查尚未完成。"
         : null) ??
       officialBlockingReasons[0] ??
       officialRunBlockingReasons[0] ??
       officialGateReasons[0] ??
-      (officialNlpGateFailed ? "The official NLP gate failed." : null);
+      (officialNlpGateFailed ? "官方 NLP 门禁未通过。" : null);
   const officialCompatibilityLabel = officialPreflightPending
-    ? "Checking"
+    ? "检查中"
     : officialPreflightError
-      ? "Error"
+      ? "错误"
       : officialPreflight
         ? officialPreflight.compatible
-          ? "Compatible"
-          : "Incompatible"
+          ? "兼容"
+          : "不兼容"
         : "--";
   const actualMarketWindow = formatWindow(
     officialReadiness?.market_window_start_time,
@@ -466,11 +466,11 @@ export function LaunchBacktestDrawer({
 
   async function handleSubmit() {
     if (!runId.trim()) {
-      setFormError("Please enter a run_id.");
+          setFormError("请输入 run_id。");
       return;
     }
     if (!benchmarkSymbol.trim()) {
-      setFormError("Please enter a benchmark symbol.");
+      setFormError("请输入基准符号。");
       return;
     }
     if (
@@ -479,14 +479,14 @@ export function LaunchBacktestDrawer({
       customDatasetIds.length === 0 &&
       !datasetPreset
     ) {
-      setFormError("Provide dataset_id / dataset_ids, or choose a dataset preset.");
+      setFormError("请提供 dataset_id / dataset_ids，或选择一个数据集预设。");
       return;
     }
     if (mode === "official" && !officialPreflight && !officialPreflightError) {
       const preflightResult = await officialPreflightQuery.refetch();
       const nextPreflight = preflightResult.data;
       if (!nextPreflight) {
-        setFormError("Official compatibility checks have not completed yet.");
+        setFormError("官方兼容性检查尚未完成。");
         return;
       }
       if (
@@ -503,7 +503,7 @@ export function LaunchBacktestDrawer({
       }
     }
     if (mode === "official" && officialSubmitBlocked) {
-      setFormError(officialBlockingSummary ?? "Official compatibility checks failed.");
+      setFormError(officialBlockingSummary ?? "官方兼容性检查失败。");
       return;
     }
     setFormError(null);
@@ -784,13 +784,13 @@ export function LaunchBacktestDrawer({
             </label>
           ) : (
             <div className="dataset-callout">
-              <strong>Fixed prediction scope</strong>
-              <span>Test</span>
+              <strong>固定预测范围</strong>
+              <span>测试集</span>
             </div>
           )}
 
           <label>
-            <span>Benchmark Symbol</span>
+            <span>基准符号</span>
             <input
               onChange={(event) => setBenchmarkSymbol(event.target.value)}
               value={benchmarkSymbol}
