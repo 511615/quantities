@@ -20,6 +20,14 @@ class ModelFamily(StrEnum):
     SEQUENCE = "sequence"
 
 
+class CanonicalModality(StrEnum):
+    MARKET = "market"
+    MACRO = "macro"
+    ON_CHAIN = "on_chain"
+    DERIVATIVES = "derivatives"
+    NLP = "nlp"
+
+
 class TrackingBackend(StrEnum):
     FILE = "file"
     MLFLOW = "mlflow"

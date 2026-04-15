@@ -11,7 +11,7 @@ import type {
 } from "../shared/api/types";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
 import { I18N } from "../shared/lib/i18n";
-import { formatArtifactLabel } from "../shared/lib/labels";
+import { formatArtifactLabel, formatModalityLabel } from "../shared/lib/labels";
 import {
   localizeBacktestGateDetail,
   localizeBacktestGateReason,
@@ -119,10 +119,26 @@ function protocolLabel(key: string) {
     actual_market_end_time: "实际市场结束时间",
     actual_backtest_start_time: "官方测试开始时间",
     actual_backtest_end_time: "官方测试结束时间",
-    actual_nlp_start_time: "实际文本信号开始时间",
-    actual_nlp_end_time: "实际文本信号结束时间",
+    actual_nlp_start_time: "实际 NLP 覆盖开始时间",
+    actual_nlp_end_time: "实际 NLP 覆盖结束时间",
   };
   return labels[key] ?? localizeBacktestMetadata(key);
+}
+
+function researchBackendLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    native: "Native（仓内研究引擎）",
+    vectorbt: "vectorbt（旁路矩阵研究）",
+  };
+  return labels[value ?? ""] ?? (value ?? "--");
+}
+
+function portfolioMethodLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    proportional: "Proportional（现有信号归一）",
+    skfolio_mean_risk: "skfolio Mean-Risk（可选优化）",
+  };
+  return labels[value ?? ""] ?? (value ?? "--");
 }
 
 function formatProtocolValue(key: string, value: string | null | undefined) {
@@ -137,9 +153,10 @@ function formatProtocolValue(key: string, value: string | null | undefined) {
 
 function templateRequirements(protocol: NonNullable<BacktestReportView["protocol"]>) {
   const items = [
-    "时间窗对齐：实际文本信号采集窗口必须与官方市场窗口保持一致。",
-    "仅允许归档型 NLP 数据源：news_archive、reddit_archive、gdelt。",
-    "NLP 质量门禁一旦失败，官方 / 系统模板会被硬阻断。",
+    "时间窗对齐：所有非市场模态都必须绑定到同一官方滚动窗口。",
+    "非市场模态统一挂到官方多模态 benchmark，不允许自由替换成其他窗口。",
+    "如果包含 NLP 信号，则只允许归档型 NLP 数据源：news_archive、reddit_archive、gdelt。",
+    "如果 NLP 质量门禁失败，官方 / 系统模板会被硬阻断。",
     protocol.template?.output_contract_version
       ? `模型输出必须遵守 ${protocol.template.output_contract_version}。`
       : null,
@@ -433,19 +450,26 @@ export function BacktestReportPage() {
     protocol?.actual_nlp_start_time,
     protocol?.actual_nlp_end_time,
   );
+  const requiredModalities = protocol?.required_modalities ?? [];
+  const officialBenchmarkDatasetIds =
+    protocol?.official_dataset_ids?.length
+      ? protocol.official_dataset_ids
+      : [protocol?.official_market_dataset_id, protocol?.official_multimodal_dataset_id].filter(
+          (item): item is string => Boolean(item),
+        );
   const isOfficialTemplate = Boolean(protocol?.template?.official);
   const isOfficialResultInvalid = isOfficialTemplate && protocol?.gate_status === "failed";
   const headlineStatusLabel = isOfficialTemplate
     ? isOfficialResultInvalid
       ? "不可用于官方比较"
       : protocol?.gate_status === "warning"
-        ? "协议门禁没有通过，这条历史回测记录只能作为排错样本，不能当作有效官方结果使用。"
-                : "这条回测没有形成实际成交，页面中的收益和风险指标不具备解释价值。"
+        ? "需复核"
+        : "可用于官方比较"
     : detail.passed_consistency_checks === null
       ? "--"
       : detail.passed_consistency_checks
-        ? "协议门禁没有通过，这条历史回测记录只能作为排错样本，不能当作有效官方结果使用。"
-                : "这条回测没有形成实际成交，页面中的收益和风险指标不具备解释价值。";
+        ? "通过"
+        : "未通过";
 
   return (
     <div className="page-stack">
@@ -453,7 +477,7 @@ export function BacktestReportPage() {
         <PanelHeader
           eyebrow={I18N.nav.backtests}
           title={detail.backtest_id}
-          description="这里汇总展示研究结果与仿真结果，方便在同一处核对系统模板、实际市场窗口、官方测试窗口和实际文本信号窗口。"
+          description="这里汇总展示研究结果与仿真结果，方便在同一处核对系统模板、实际市场窗口、官方测试窗口和多模态对齐情况。"
         />
         {isOfficialTemplate && (isOfficialResultInvalid || noTradeOutcome) ? (
           <div
@@ -518,6 +542,14 @@ export function BacktestReportPage() {
                 : "--"}
             </span>
           </div>
+          <div className="stack-item align-start">
+            <strong>研究后端</strong>
+            <span>{researchBackendLabel(detail.research_backend)}</span>
+          </div>
+          <div className="stack-item align-start">
+            <strong>组合构建</strong>
+            <span>{portfolioMethodLabel(detail.portfolio_method)}</span>
+          </div>
         </div>
       </section>
 
@@ -529,7 +561,7 @@ export function BacktestReportPage() {
           <PanelHeader
             eyebrow={protocol.template?.official ? "官方协议" : "回测协议"}
             title={localizeBacktestTemplateName(protocol.template?.name, protocol.template?.template_id)}
-            description="官方 / 系统模板要求固定时间窗对齐、只使用归档型文本信号数据源，并且必须通过文本质量门禁。"
+            description="官方 / 系统模板要求按同一滚动窗口对齐多模态信号；若包含 NLP，还必须通过归档源与质量门禁。"
             action={
               protocol.template?.template_id ? (
                 <Link
@@ -555,7 +587,7 @@ export function BacktestReportPage() {
               <strong>{gateStatusLabel(protocol.gate_status)}</strong>
             </div>
             <div className="metric-tile">
-              <span>NLP 门禁</span>
+              <span>NLP 质量门禁</span>
               <strong>{gateStatusLabel(protocol.nlp_gate_status)}</strong>
             </div>
           </div>
@@ -597,19 +629,62 @@ export function BacktestReportPage() {
                   </span>
                 </div>
                 <div className="stack-item align-start">
-                  <strong>官方多模态数据集 ID</strong>
-                  <span className="table-title-cell">
-                    {protocol.official_multimodal_dataset_id ? (
-                      <Link
-                        to={`/datasets/${encodeURIComponent(protocol.official_multimodal_dataset_id)}`}
-                      >
-                        {protocol.official_multimodal_dataset_id}
-                      </Link>
-                    ) : (
-                      "--"
-                    )}
+                  <strong>要求模态</strong>
+                  <span>
+                    {requiredModalities.length > 0
+                      ? requiredModalities.map((modality) => formatModalityLabel(modality)).join(" / ")
+                      : "--"}
                   </span>
                 </div>
+                <div className="stack-item align-start">
+                  <strong>官方 benchmark 数据集</strong>
+                  <span className="table-title-cell">
+                    {officialBenchmarkDatasetIds.length > 0
+                      ? officialBenchmarkDatasetIds.map((datasetId) => (
+                          <Link key={datasetId} to={`/datasets/${encodeURIComponent(datasetId)}`}>
+                            {datasetId}
+                          </Link>
+                        ))
+                      : "--"}
+                  </span>
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          {detail.alignment ? (
+            <section className="panel">
+              <PanelHeader
+                eyebrow="模态对齐"
+                title="实际回测使用的数据与对齐方式"
+                description="这里展示本次回测实际绑定的数据集、模态和对齐策略，方便确认是否真的走到了五模态路径。"
+              />
+              <div className="stack-list">
+                <div className="stack-item align-start">
+                  <strong>对齐状态</strong>
+                  <span>{detail.alignment.alignment_status ?? "--"}</span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>融合策略</strong>
+                  <span>{detail.alignment.fusion_strategy ?? "--"}</span>
+                </div>
+                {(detail.alignment.datasets ?? []).map((dataset) => (
+                  <div className="stack-item align-start" key={dataset.dataset_id}>
+                    <strong>{dataset.role ?? "dataset"}</strong>
+                    <span className="table-title-cell">
+                      <Link to={`/datasets/${encodeURIComponent(dataset.dataset_id)}`}>
+                        {dataset.dataset_id}
+                      </Link>
+                    </span>
+                    <span>{`模态：${formatModalityLabel(dataset.modality)}`}</span>
+                  </div>
+                ))}
+                {(detail.alignment.notes ?? []).map((note) => (
+                  <div className="stack-item align-start" key={note}>
+                    <strong>对齐说明</strong>
+                    <span>{note}</span>
+                  </div>
+                ))}
               </div>
             </section>
           ) : null}
@@ -631,7 +706,7 @@ export function BacktestReportPage() {
                   <span>{officialTestWindow}</span>
                 </div>
                 <div className="stack-item align-start">
-                  <strong>实际文本信号窗口</strong>
+                  <strong>实际 NLP 覆盖窗口</strong>
                   <span>{actualNlpWindow}</span>
                 </div>
               </div>
@@ -666,8 +741,11 @@ export function BacktestReportPage() {
               <div className="stack-list">
                 {protocol.gate_results.map((item) => (
                   <div className="stack-item align-start" key={item.key}>
-                    <strong>{`${localizeBacktestGateLabel(item.label)} / ${item.passed ? "协议门禁没有通过，这条历史回测记录只能作为排错样本，不能当作有效官方结果使用。"
-                : "这条回测没有形成实际成交，页面中的收益和风险指标不具备解释价值。"}`}</strong>
+                    <strong>
+                      {`${localizeBacktestGateLabel(item.label)} / ${gateStatusLabel(
+                        item.passed === null ? "warning" : item.passed ? "passed" : "failed",
+                      )}`}
+                    </strong>
                     <span>{localizeBacktestGateDetail(item.detail)}</span>
                   </div>
                 ))}

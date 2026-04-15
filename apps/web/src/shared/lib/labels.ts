@@ -7,21 +7,21 @@ const STATUS_LABELS: Record<string, string> = {
   failed: I18N.status.failed,
   error: I18N.status.failed,
   partial: I18N.status.partial,
-  ready: "\u53ef\u8bad\u7ec3",
-  warning: "\u9700\u7559\u610f",
-  not_ready: "\u6682\u4e0d\u53ef\u8bad\u7ec3",
+  ready: "可训练",
+  warning: "需留意",
+  not_ready: "暂不可训练",
   benchmark: I18N.status.benchmark,
   unknown: I18N.status.unknown,
 };
 
 const JOB_TYPE_LABELS: Record<string, string> = {
-  train: "\u8bad\u7ec3\u4efb\u52a1",
-  backtest: "\u56de\u6d4b\u4efb\u52a1",
-  dataset_request: "\u6570\u636e\u7533\u8bf7",
-  dataset_pipeline: "\u95ed\u73af\u7f16\u6392",
-  prepare: "\u6570\u636e\u51c6\u5907",
-  build: "\u6570\u636e\u6784\u5efa",
-  acquisition: "\u6570\u636e\u91c7\u96c6",
+  train: "训练任务",
+  backtest: "回测任务",
+  dataset_request: "数据申请",
+  dataset_pipeline: "闭环编排",
+  prepare: "数据准备",
+  build: "数据构建",
+  acquisition: "数据采集",
 };
 
 const SOURCE_TYPE_LABELS: Record<string, string> = {
@@ -30,58 +30,68 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
 };
 
 const STAGE_NAME_LABELS: Record<string, string> = {
-  acquire_base: "\u7533\u8bf7\u57fa\u7840\u6570\u636e",
-  prepare_base: "\u6784\u5efa\u57fa\u7840\u6570\u636e",
-  readiness_base: "\u57fa\u7840\u5c31\u7eea\u6821\u9a8c",
-  build_fusion: "\u6784\u5efa\u878d\u5408\u6570\u636e",
-  readiness_fusion: "\u878d\u5408\u5c31\u7eea\u6821\u9a8c",
+  acquire_base: "申请基础数据",
+  prepare_base: "构建基础数据",
+  readiness_base: "基础就绪校验",
+  build_fusion: "构建融合数据",
+  readiness_fusion: "融合就绪校验",
   prepare: I18N.stage.prepare,
   train: I18N.stage.train,
   predict: I18N.stage.predict,
   backtest: I18N.stage.backtest,
-  acquire: "\u7533\u8bf7\u6570\u636e",
-  readiness: "\u5c31\u7eea\u6821\u9a8c",
+  acquire: "申请数据",
+  readiness: "就绪校验",
 };
 
 const ARTIFACT_LABELS: Record<string, string> = {
-  tracking_summary: "\u8ddf\u8e2a\u6458\u8981",
-  train_manifest: "\u8bad\u7ec3\u6e05\u5355",
-  legacy_manifest: "\u65e7\u7248\u6e05\u5355",
-  model_state: "\u6a21\u578b\u72b6\u6001",
-  model_metadata: "\u6a21\u578b\u5143\u6570\u636e",
-  feature_importance: "\u7279\u5f81\u91cd\u8981\u6027",
-  evaluation_summary: "\u8bc4\u4f30\u6458\u8981",
-  prediction_frame: "\u9884\u6d4b\u7ed3\u679c",
-  benchmark_json: "\u57fa\u51c6 JSON",
-  benchmark_markdown: "\u57fa\u51c6 Markdown",
-  benchmark_csv: "\u57fa\u51c6 CSV",
-  research_result: "\u7814\u7a76\u5f15\u64ce\u7ed3\u679c",
-  simulation_result: "\u4eff\u771f\u5f15\u64ce\u7ed3\u679c",
-  research_backtest_result: "\u7814\u7a76\u5f15\u64ce\u7ed3\u679c",
-  simulation_backtest_result: "\u6a21\u62df\u5f15\u64ce\u7ed3\u679c",
-  backtest_report: "\u56de\u6d4b\u62a5\u544a",
-  simulation_backtest_report: "\u6a21\u62df\u62a5\u544a",
-  report: "\u62a5\u544a",
-  diagnostics: "\u8bca\u65ad",
-  backtest_diagnostics: "\u56de\u6d4b\u8bca\u65ad",
-  leakage_audit: "\u6cc4\u6f0f\u5ba1\u8ba1",
-  backtest_leakage: "\u6cc4\u6f0f\u5ba1\u8ba1",
-  pnl: "\u6536\u76ca\u5206\u89e3",
-  backtest_pnl: "\u56de\u6d4b\u6536\u76ca\u5206\u89e3",
-  positions: "\u6301\u4ed3",
-  backtest_positions: "\u56de\u6d4b\u6301\u4ed3\u8def\u5f84",
-  orders: "\u59d4\u6258",
-  fills: "\u6210\u4ea4",
-  scenario_summary: "\u538b\u529b\u573a\u666f",
-  scenarios: "\u538b\u529b\u573a\u666f",
-  backtest_scenarios: "\u56de\u6d4b\u538b\u529b\u573a\u666f",
+  tracking_summary: "跟踪摘要",
+  train_manifest: "训练清单",
+  legacy_manifest: "旧版清单",
+  model_state: "模型状态",
+  model_metadata: "模型元数据",
+  feature_importance: "特征重要性",
+  evaluation_summary: "评估摘要",
+  prediction_frame: "预测结果",
+  benchmark_json: "基准 JSON",
+  benchmark_markdown: "基准 Markdown",
+  benchmark_csv: "基准 CSV",
+  research_result: "研究引擎结果",
+  simulation_result: "仿真引擎结果",
+  research_backtest_result: "研究引擎结果",
+  simulation_backtest_result: "模拟引擎结果",
+  backtest_report: "回测报告",
+  simulation_backtest_report: "模拟报告",
+  report: "报告",
+  diagnostics: "诊断",
+  backtest_diagnostics: "回测诊断",
+  leakage_audit: "泄漏审计",
+  backtest_leakage: "泄漏审计",
+  pnl: "收益分解",
+  backtest_pnl: "回测收益分解",
+  positions: "持仓",
+  backtest_positions: "回测持仓路径",
+  orders: "委托",
+  fills: "成交",
+  scenario_summary: "压力场景",
+  scenarios: "压力场景",
+  backtest_scenarios: "回测压力场景",
 };
 
 const FRESHNESS_LABELS: Record<string, string> = {
-  fresh: "\u65b0\u9c9c",
-  stale: "\u504f\u65e7",
-  delayed: "\u5ef6\u8fdf",
-  unknown: "\u672a\u77e5",
+  fresh: "新鲜",
+  stale: "偏旧",
+  delayed: "延迟",
+  unknown: "未知",
+};
+
+const MODALITY_LABELS: Record<string, string> = {
+  market: "市场",
+  macro: "宏观",
+  on_chain: "链上",
+  derivatives: "衍生品",
+  multimodal_bundle: "多模态特征集",
+  sentiment_events: "NLP",
+  nlp: "NLP",
 };
 
 export function formatStatusLabel(status: string | null | undefined): string {
@@ -112,4 +122,9 @@ export function formatArtifactLabel(kind: string | null | undefined, fallback?: 
 export function formatFreshnessLabel(freshness: string | null | undefined): string {
   const normalized = (freshness ?? "unknown").toLowerCase();
   return FRESHNESS_LABELS[normalized] ?? (freshness || "--");
+}
+
+export function formatModalityLabel(modality: string | null | undefined): string {
+  const normalized = (modality ?? "").toLowerCase();
+  return MODALITY_LABELS[normalized] ?? (modality || "--");
 }

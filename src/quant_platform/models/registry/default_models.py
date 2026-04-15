@@ -191,17 +191,30 @@ def _default_model_config() -> ModelConfig:
                     "entrypoint": (
                         "quant_platform.models.advanced.multimodal_fusion.MultimodalFusionModel"
                     ),
-                    "input_adapter_key": "market_text_aligned",
+                    "input_adapter_key": "multimodal_aligned_v2",
                     "prediction_adapter_key": "standard_prediction",
                     "artifact_adapter_key": "json_manifest",
                     "capabilities": [
                         "sequence_input",
-                        "aligned_text",
-                        "allow_missing_text",
+                        "aligned_multimodal",
+                        "allow_missing_modalities",
                         "moe_router_ready",
                     ],
                     "default_hyperparams": {
                         "lookback": 3,
+                        "modality_order": [
+                            "market",
+                            "macro",
+                            "on_chain",
+                            "derivatives",
+                            "nlp",
+                        ],
+                        "modality_feature_prefixes": {
+                            "macro": ["macro_"],
+                            "on_chain": ["onchain_", "on_chain_"],
+                            "derivatives": ["derivatives_", "derivative_", "futures_", "perp_"],
+                            "nlp": ["text_", "sentiment_", "news_"],
+                        },
                         "text_feature_prefixes": ["text_", "sentiment_", "news_"],
                         "fusion_strategy": "late_score_blend",
                     },

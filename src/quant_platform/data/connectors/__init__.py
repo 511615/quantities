@@ -1,4 +1,6 @@
+from quant_platform.data.connectors.ccxt_market import CcxtMarketConnector
 from quant_platform.data.connectors.contract_only import ContractOnlyConnector
+from quant_platform.data.connectors.derivatives import BinanceFuturesMetricsConnector
 from quant_platform.data.connectors.macro import FredSeriesConnector
 from quant_platform.data.connectors.market import (
     BinanceSpotKlinesConnector,
@@ -17,8 +19,10 @@ from quant_platform.data.connectors.sentiment import (
 )
 
 __all__ = [
+    "CcxtMarketConnector",
     "BinanceSpotKlinesConnector",
     "BitstampArchiveConnector",
+    "BinanceFuturesMetricsConnector",
     "ContractOnlyConnector",
     "DefiLlamaConnector",
     "FredSeriesConnector",

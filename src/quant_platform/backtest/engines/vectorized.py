@@ -164,6 +164,7 @@ class ResearchBacktestEngine:
             ),
             strategy_config=strategy_config,
             risk_constraints=risk_constraints,
+            market_bars=market_bars,
         )
         targets.sort(key=lambda item: item[1])
         parent_orders: list[ParentOrder] = []

@@ -336,6 +336,32 @@ class JobService:
                     recommended=True,
                 )
             ],
+            research_backends=[
+                PresetOptionView(
+                    value="native",
+                    label="Native research",
+                    description="Current in-repo research engine.",
+                    recommended=True,
+                ),
+                PresetOptionView(
+                    value="vectorbt",
+                    label="vectorbt",
+                    description="Optional matrix backtest adapter for explicit side-by-side research runs.",
+                ),
+            ],
+            portfolio_methods=[
+                PresetOptionView(
+                    value="proportional",
+                    label="Proportional",
+                    description="Current signal-normalization portfolio construction.",
+                    recommended=True,
+                ),
+                PresetOptionView(
+                    value="skfolio_mean_risk",
+                    label="skfolio mean-risk",
+                    description="Optional signal-informed mean-risk optimizer for multi-asset runs.",
+                ),
+            ],
             default_benchmark_symbol="BTCUSDT",
             default_official_window_days=OFFICIAL_DEFAULT_WINDOW_DAYS,
             constraints={
@@ -347,6 +373,14 @@ class JobService:
                 "default_prediction_scope_by_mode": {
                     "official": official_template.fixed_prediction_scope,
                     "custom": "full",
+                },
+                "research_backend": {
+                    "default": "native",
+                    "allowed_values": ["native", "vectorbt"],
+                },
+                "portfolio_method": {
+                    "default": "proportional",
+                    "allowed_values": ["proportional", "skfolio_mean_risk"],
                 },
                 "official_window_days": {
                     "default": OFFICIAL_DEFAULT_WINDOW_DAYS,
@@ -675,6 +709,8 @@ class JobService:
                     prediction_frame_uri=prediction_artifact.uri,
                     benchmark_symbol=benchmark_symbol,
                     mode=request.mode,
+                    research_backend=request.research_backend,
+                    portfolio_method=request.portfolio_method,
                 ),
                 dataset_ref=dataset_ref,
                 benchmark_name="workbench_backtest",
@@ -695,6 +731,8 @@ class JobService:
             template_name=template.name,
             official=template.official,
             protocol_version=template.protocol_version,
+            research_backend=request.research_backend,
+            portfolio_method=request.portfolio_method,
         )
 
     def _run_composed_backtest_job(
@@ -884,6 +922,8 @@ class JobService:
                     prediction_frame_uri=prediction_artifact.uri,
                     benchmark_symbol=benchmark_symbol,
                     mode=request.mode,
+                    research_backend=request.research_backend,
+                    portfolio_method=request.portfolio_method,
                 ),
                 dataset_ref=market_dataset_ref,
                 benchmark_name="workbench_backtest",
@@ -904,6 +944,8 @@ class JobService:
             template_name=template.name,
             official=template.official,
             protocol_version=template.protocol_version,
+            research_backend=request.research_backend,
+            portfolio_method=request.portfolio_method,
         )
 
     def _run_model_composition_job(
@@ -1409,6 +1451,32 @@ class JobService:
             normalized.append({**item, "weight": float(item.get("weight", 0.0) or 0.0) / total_weight})
         return normalized
 
+    @staticmethod
+    def _modality_sort_key(modality: str) -> int:
+        order = {"market": 0, "macro": 1, "on_chain": 2, "derivatives": 3, "nlp": 4}
+        return order.get(modality, len(order))
+
+    def _feature_modalities(self, feature_names: list[str]) -> list[str]:
+        detected: set[str] = set()
+        for feature_name in feature_names:
+            normalized = feature_name.strip().lower()
+            if normalized.startswith(("sentiment_", "text_", "news_")):
+                detected.add("nlp")
+                continue
+            if normalized.startswith("macro_"):
+                detected.add("macro")
+                continue
+            if normalized.startswith(("onchain_", "on_chain_")):
+                detected.add("on_chain")
+                continue
+            if normalized.startswith(("derivatives_", "derivative_", "futures_", "perp_")):
+                detected.add("derivatives")
+                continue
+            detected.add("market")
+        if not detected:
+            return ["market"]
+        return sorted(detected, key=self._modality_sort_key)
+
     def _has_market_features(self, feature_names: list[str]) -> bool:
         prefixes = ("sentiment_", "text_", "news_")
         return any(not name.startswith(prefixes) for name in feature_names)
@@ -1421,17 +1489,19 @@ class JobService:
         feature_names: list[str],
     ) -> str:
         normalized = self._normalize_modality(data_domain)
-        has_text_features = self._uses_text_features(feature_names)
-        has_market_features = self._has_market_features(feature_names)
-        if has_text_features and has_market_features:
+        feature_modalities = self._feature_modalities(feature_names)
+        if len(feature_modalities) > 1:
             raise JobExecutionError(
-                f"Source run '{run_id}' mixes market and text features and cannot be used as a single official modality."
+                f"Source run '{run_id}' mixes modalities {', '.join(feature_modalities)} and cannot be used as a single-modality source."
             )
-        if has_text_features:
-            return "nlp"
-        if has_market_features and normalized in {"unknown", "market"}:
+        detected = feature_modalities[0] if feature_modalities else "market"
+        if normalized in {"unknown", detected}:
+            return detected
+        if normalized == "market" and detected == "market":
             return "market"
-        return normalized
+        raise JobExecutionError(
+            f"Source run '{run_id}' declares modality '{normalized}' but its feature schema resolves to '{detected}'."
+        )
 
     @staticmethod
     def _prediction_row_key(row: PredictionRow) -> tuple[str, tuple[tuple[str, str], ...]]:
@@ -1445,6 +1515,12 @@ class JobService:
         normalized = (data_domain or "").strip().lower()
         if normalized == "market":
             return "market"
+        if normalized == "macro":
+            return "macro"
+        if normalized in {"on_chain", "onchain", "on-chain"}:
+            return "on_chain"
+        if normalized in {"derivatives", "derivative", "futures", "perp", "perpetual"}:
+            return "derivatives"
         if normalized in {"sentiment_events", "sentiment", "text", "news", "nlp"}:
             return "nlp"
         return normalized or "unknown"
@@ -2087,15 +2163,21 @@ class JobService:
         prediction_frame_uri: str,
         benchmark_symbol: str,
         mode: str,
+        research_backend: str,
+        portfolio_method: str,
     ) -> BacktestRequest:
         if mode == "official":
             return build_official_backtest_request(
                 prediction_frame_uri=prediction_frame_uri,
                 benchmark_symbol=benchmark_symbol,
+                research_backend=research_backend,
+                portfolio_method=portfolio_method,
             )
         return build_custom_backtest_request(
             prediction_frame_uri=prediction_frame_uri,
             benchmark_symbol=benchmark_symbol,
+            research_backend=research_backend,
+            portfolio_method=portfolio_method,
         )
 
     def _resolve_backtest_template_for_launch(
@@ -2152,7 +2234,7 @@ class JobService:
     def _ensure_official_benchmark_sync(
         self,
         *,
-        requires_text_features: bool,
+        requires_multimodal_benchmark: bool,
         window_days: int | None = None,
     ) -> None:
         windows_to_validate = (
@@ -2165,7 +2247,7 @@ class JobService:
             try:
                 self._resolve_official_benchmark_context(
                     window_days=candidate_window_days,
-                    requires_text_features=requires_text_features,
+                    requires_multimodal_benchmark=requires_multimodal_benchmark,
                 )
             except JobExecutionError as exc:
                 unresolved_windows.append((candidate_window_days, str(exc)))
@@ -2173,7 +2255,7 @@ class JobService:
         if not unresolved_windows:
             return
 
-        if requires_text_features:
+        if requires_multimodal_benchmark:
             try:
                 self.workbench.ensure_official_multimodal_benchmark()
             except Exception as exc:  # pragma: no cover - defensive wrapper for materialization failures
@@ -2182,7 +2264,7 @@ class JobService:
             try:
                 self._resolve_official_benchmark_context(
                     window_days=candidate_window_days,
-                    requires_text_features=requires_text_features,
+                    requires_multimodal_benchmark=requires_multimodal_benchmark,
                 )
             except JobExecutionError as exc:
                 raise JobExecutionError(
@@ -2193,7 +2275,7 @@ class JobService:
         self,
         *,
         window_days: int,
-        requires_text_features: bool,
+        requires_multimodal_benchmark: bool,
     ) -> dict[str, object]:
         market_dataset_id = OFFICIAL_MARKET_BENCHMARK_DATASET_ID
         multimodal_dataset_id = OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
@@ -2204,11 +2286,11 @@ class JobService:
             raise JobExecutionError(
                 f"Official market benchmark dataset '{market_dataset_id}' is not available."
             )
-        if multimodal_detail is None and requires_text_features:
+        if multimodal_detail is None and requires_multimodal_benchmark:
             raise JobExecutionError(
                 f"Official multimodal benchmark dataset '{multimodal_dataset_id}' is not available."
             )
-        if multimodal_readiness is None and requires_text_features:
+        if multimodal_readiness is None and requires_multimodal_benchmark:
             raise JobExecutionError(
                 f"Official multimodal benchmark dataset '{multimodal_dataset_id}' has no readiness record."
             )
@@ -2227,15 +2309,15 @@ class JobService:
         )
         if market_end is None or market_start is None:
             raise JobExecutionError("Official rolling benchmark is missing required time-range metadata.")
-        if requires_text_features and (multimodal_end is None or multimodal_start is None):
-            raise JobExecutionError("Official rolling benchmark is missing required NLP time-range metadata.")
-        window_end = min(market_end, multimodal_end) if requires_text_features and multimodal_end else market_end
+        if requires_multimodal_benchmark and (multimodal_end is None or multimodal_start is None):
+            raise JobExecutionError("Official rolling benchmark is missing required multimodal time-range metadata.")
+        window_end = min(market_end, multimodal_end) if requires_multimodal_benchmark and multimodal_end else market_end
         window_start = window_end - timedelta(days=window_days)
         if window_start < market_start:
             raise JobExecutionError(
                 f"Official market benchmark does not have {window_days} days of recent history."
             )
-        if requires_text_features and multimodal_start is not None and window_start < multimodal_start:
+        if requires_multimodal_benchmark and multimodal_start is not None and window_start < multimodal_start:
             raise JobExecutionError(
                 f"Official multimodal benchmark does not have {window_days} days of recent history."
             )
@@ -2327,6 +2409,30 @@ class JobService:
         identifiers = self._dataset_identifier_set(detail)
         return vendor, identifiers
 
+    def _official_expected_auxiliary_contracts(self) -> dict[str, tuple[str | None, set[str]]]:
+        detail = self.workbench.get_dataset_detail(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
+        if detail is None:
+            raise JobExecutionError(
+                f"Official multimodal benchmark dataset '{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}' is not available."
+            )
+        acquisition_profile = detail.acquisition_profile or {}
+        contracts: dict[str, tuple[str | None, set[str]]] = {}
+        for modality in ("macro", "on_chain", "derivatives"):
+            matched_specs = [
+                item
+                for item in (acquisition_profile.get("source_specs") or [])
+                if isinstance(item, dict) and self._normalize_modality(self._str(item.get("data_domain"))) == modality
+            ]
+            vendor = self._contract_vendor(matched_specs[0].get("source_vendor")) if matched_specs else None
+            identifiers = {
+                token
+                for item in matched_specs
+                for value in [item.get("identifier")]
+                if (token := self._contract_token(value))
+            }
+            contracts[modality] = (vendor, identifiers)
+        return contracts
+
     def _source_dataset_id_for_modality(self, item: dict[str, object], modality: str) -> str | None:
         datasets = item.get("datasets")
         if isinstance(datasets, list):
@@ -2354,7 +2460,7 @@ class JobService:
         *,
         request_run_id: str,
         run_manifest: dict[str, object],
-        requires_text_features: bool,
+        required_modalities: list[str],
     ) -> list[str]:
         composition = run_manifest.get("composition")
         source_specs: list[dict[str, object]] = []
@@ -2399,8 +2505,23 @@ class JobService:
                 raise JobExecutionError(
                     f"Run '{request_run_id}' is missing dataset metadata required for official preflight."
                 )
-            modality = self._dataset_modality(dataset_id) or ("sentiment_events" if requires_text_features else "market")
-            source_specs.append({"run_id": request_run_id, "modality": modality, "dataset_id": dataset_id})
+            resolved_modalities = [
+                self._normalize_modality(modality)
+                for modality in required_modalities
+                if self._normalize_modality(modality) != "unknown"
+            ]
+            if not resolved_modalities:
+                inferred = self._normalize_modality(self._dataset_modality(dataset_id))
+                resolved_modalities = [inferred if inferred != "unknown" else "market"]
+            for modality in dict.fromkeys(resolved_modalities):
+                source_specs.append(
+                    {
+                        "run_id": request_run_id,
+                        "modality": modality,
+                        "dataset_id": dataset_id,
+                        "dataset_ids": [dataset_id],
+                    }
+                )
         return self._official_source_contract_reasons_for_specs(
             request_run_id=request_run_id,
             source_specs=source_specs,
@@ -2414,6 +2535,7 @@ class JobService:
     ) -> list[str]:
         official_market_vendor, official_market_symbols = self._official_expected_market_contract()
         official_nlp_vendor, official_nlp_identifiers = self._official_expected_nlp_contract()
+        official_aux_contracts = self._official_expected_auxiliary_contracts()
         reasons: list[str] = []
         for spec in source_specs:
             source_run_id = self._str(spec.get("run_id")) or request_run_id
@@ -2473,76 +2595,105 @@ class JobService:
                     )
                 continue
 
-            sentiment_spec = next(
-                (
+            if modality == "nlp":
+                sentiment_spec = next(
+                    (
+                        item
+                        for item in source_specs_profile
+                        if self._normalize_modality(self._str(item.get("data_domain"))) == "nlp"
+                        or self._normalize_modality(self._str(item.get("data_domain"))) == "sentiment_events"
+                    ),
+                    None,
+                )
+                source_vendor = self._contract_vendor(
+                    (sentiment_spec or {}).get("source_vendor") if isinstance(sentiment_spec, dict) else None
+                ) or self._contract_vendor(detail.dataset.source_vendor) or self._contract_vendor(
+                    acquisition_profile.get("source_vendor")
+                )
+                fusion_source_identifiers = [
+                    item.get("identifier")
+                    for item in (acquisition_profile.get("fusion_sources") or [])
+                    if isinstance(item, dict)
+                    and self._normalize_modality(self._str(item.get("data_domain"))) in {"nlp", "sentiment_events"}
+                ]
+                source_identifiers = (
+                    {
+                        token
+                        for value in [
+                            (sentiment_spec or {}).get("identifier") if isinstance(sentiment_spec, dict) else None,
+                            *fusion_source_identifiers,
+                        ]
+                        if (token := self._contract_token(value))
+                    }
+                    or self._dataset_identifier_set(detail)
+                )
+                if source_vendor != official_nlp_vendor:
+                    reasons.append(
+                        f"Source run '{source_run_id}' uses NLP vendor '{source_vendor or '--'}' instead of the official vendor '{official_nlp_vendor or '--'}'."
+                    )
+                if source_identifiers != official_nlp_identifiers:
+                    reasons.append(
+                        f"Source run '{source_run_id}' uses NLP identifiers {sorted(source_identifiers) or ['--']} instead of the official identifiers {sorted(official_nlp_identifiers) or ['--']}."
+                    )
+                market_anchor_dataset_id = self._str(acquisition_profile.get("market_anchor_dataset_id"))
+                if not market_anchor_dataset_id:
+                    for candidate in acquisition_profile.get("source_dataset_ids") or []:
+                        resolved = self._str(candidate)
+                        if resolved and self._dataset_modality(resolved) == "market":
+                            market_anchor_dataset_id = resolved
+                            break
+                if market_anchor_dataset_id:
+                    market_anchor_detail = self.workbench.get_dataset_detail(market_anchor_dataset_id)
+                    if market_anchor_detail is None:
+                        reasons.append(
+                            f"Source run '{source_run_id}' references market anchor dataset '{market_anchor_dataset_id}' but it is not available."
+                        )
+                    else:
+                        anchor_vendor = self._contract_vendor(
+                            market_anchor_detail.dataset.source_vendor
+                        ) or self._contract_vendor((market_anchor_detail.acquisition_profile or {}).get("source_vendor"))
+                        anchor_symbols = self._market_symbol_set(market_anchor_detail)
+                        if anchor_vendor != official_market_vendor:
+                            reasons.append(
+                                f"Source run '{source_run_id}' uses market anchor vendor '{anchor_vendor or '--'}' instead of the official vendor '{official_market_vendor or '--'}'."
+                            )
+                        if anchor_symbols != official_market_symbols:
+                            reasons.append(
+                                f"Source run '{source_run_id}' uses market anchor symbols {sorted(anchor_symbols) or ['--']} instead of the official symbols {sorted(official_market_symbols) or ['--']}."
+                            )
+                label_source_vendor = self._contract_vendor(acquisition_profile.get("label_source_vendor"))
+                if label_source_vendor and label_source_vendor != official_market_vendor:
+                    reasons.append(
+                        f"Source run '{source_run_id}' uses label source vendor '{label_source_vendor}' instead of the official market vendor '{official_market_vendor or '--'}'."
+                    )
+                continue
+
+            if modality in {"macro", "on_chain", "derivatives"}:
+                matched_specs = [
                     item
                     for item in source_specs_profile
-                    if self._normalize_modality(self._str(item.get("data_domain"))) == "nlp"
-                    or self._normalize_modality(self._str(item.get("data_domain"))) == "sentiment_events"
-                ),
-                None,
-            )
-            source_vendor = self._contract_vendor(
-                (sentiment_spec or {}).get("source_vendor") if isinstance(sentiment_spec, dict) else None
-            ) or self._contract_vendor(detail.dataset.source_vendor) or self._contract_vendor(
-                acquisition_profile.get("source_vendor")
-            )
-            fusion_source_identifiers = [
-                item.get("identifier")
-                for item in (acquisition_profile.get("fusion_sources") or [])
-                if isinstance(item, dict)
-                and self._normalize_modality(self._str(item.get("data_domain"))) in {"nlp", "sentiment_events"}
-            ]
-            source_identifiers = (
-                {
+                    if self._normalize_modality(self._str(item.get("data_domain"))) == modality
+                ]
+                source_vendor = self._contract_vendor(
+                    matched_specs[0].get("source_vendor") if matched_specs else None
+                ) or self._contract_vendor(detail.dataset.source_vendor) or self._contract_vendor(
+                    acquisition_profile.get("source_vendor")
+                )
+                source_identifiers = {
                     token
-                    for value in [
-                        (sentiment_spec or {}).get("identifier") if isinstance(sentiment_spec, dict) else None,
-                        *fusion_source_identifiers,
-                    ]
+                    for value in [item.get("identifier") for item in matched_specs]
                     if (token := self._contract_token(value))
-                }
-                or self._dataset_identifier_set(detail)
-            )
-            if source_vendor != official_nlp_vendor:
-                reasons.append(
-                    f"Source run '{source_run_id}' uses NLP vendor '{source_vendor or '--'}' instead of the official vendor '{official_nlp_vendor or '--'}'."
-                )
-            if source_identifiers != official_nlp_identifiers:
-                reasons.append(
-                    f"Source run '{source_run_id}' uses NLP identifiers {sorted(source_identifiers) or ['--']} instead of the official identifiers {sorted(official_nlp_identifiers) or ['--']}."
-                )
-            market_anchor_dataset_id = self._str(acquisition_profile.get("market_anchor_dataset_id"))
-            if not market_anchor_dataset_id:
-                for candidate in acquisition_profile.get("source_dataset_ids") or []:
-                    resolved = self._str(candidate)
-                    if resolved and self._dataset_modality(resolved) == "market":
-                        market_anchor_dataset_id = resolved
-                        break
-            if market_anchor_dataset_id:
-                market_anchor_detail = self.workbench.get_dataset_detail(market_anchor_dataset_id)
-                if market_anchor_detail is None:
+                } or self._dataset_identifier_set(detail)
+                official_vendor, official_identifiers = official_aux_contracts.get(modality, (None, set()))
+                if source_vendor != official_vendor:
                     reasons.append(
-                        f"Source run '{source_run_id}' references market anchor dataset '{market_anchor_dataset_id}' but it is not available."
+                        f"Source run '{source_run_id}' uses {modality} vendor '{source_vendor or '--'}' instead of the official vendor '{official_vendor or '--'}'."
                     )
-                else:
-                    anchor_vendor = self._contract_vendor(
-                        market_anchor_detail.dataset.source_vendor
-                    ) or self._contract_vendor((market_anchor_detail.acquisition_profile or {}).get("source_vendor"))
-                    anchor_symbols = self._market_symbol_set(market_anchor_detail)
-                    if anchor_vendor != official_market_vendor:
-                        reasons.append(
-                            f"Source run '{source_run_id}' uses market anchor vendor '{anchor_vendor or '--'}' instead of the official vendor '{official_market_vendor or '--'}'."
-                        )
-                    if anchor_symbols != official_market_symbols:
-                        reasons.append(
-                            f"Source run '{source_run_id}' uses market anchor symbols {sorted(anchor_symbols) or ['--']} instead of the official symbols {sorted(official_market_symbols) or ['--']}."
-                        )
-            label_source_vendor = self._contract_vendor(acquisition_profile.get("label_source_vendor"))
-            if label_source_vendor and label_source_vendor != official_market_vendor:
-                reasons.append(
-                    f"Source run '{source_run_id}' uses label source vendor '{label_source_vendor}' instead of the official market vendor '{official_market_vendor or '--'}'."
-                )
+                if source_identifiers != official_identifiers:
+                    reasons.append(
+                        f"Source run '{source_run_id}' uses {modality} identifiers {sorted(source_identifiers) or ['--']} instead of the official identifiers {sorted(official_identifiers) or ['--']}."
+                    )
+                continue
         return list(dict.fromkeys(reasons))
 
     def _official_composition_contract_summary(
@@ -2551,6 +2702,7 @@ class JobService:
     ) -> dict[str, object]:
         official_market_vendor, official_market_symbols = self._official_expected_market_contract()
         official_nlp_vendor, official_nlp_identifiers = self._official_expected_nlp_contract()
+        official_aux_contracts = self._official_expected_auxiliary_contracts()
         return {
             "contract_version": "official_multimodal_composition_v1",
             "official_market_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
@@ -2559,6 +2711,13 @@ class JobService:
             "official_market_symbols": sorted(official_market_symbols),
             "official_nlp_vendor": official_nlp_vendor,
             "official_nlp_identifiers": sorted(official_nlp_identifiers),
+            "official_auxiliary_contracts": {
+                modality: {
+                    "vendor": vendor,
+                    "identifiers": sorted(identifiers),
+                }
+                for modality, (vendor, identifiers) in official_aux_contracts.items()
+            },
             "source_run_ids": [
                 self._str(item.get("run_id"))
                 for item in source_specs
@@ -2608,6 +2767,11 @@ class JobService:
         return any(name.startswith(prefixes) for name in feature_names)
 
     @staticmethod
+    def _uses_auxiliary_features(feature_names: list[str]) -> bool:
+        prefixes = ("macro_", "onchain_", "on_chain_", "derivatives_", "derivative_", "futures_", "perp_")
+        return any(name.startswith(prefixes) for name in feature_names)
+
+    @staticmethod
     def _dedupe_feature_names(feature_names: list[str]) -> list[str]:
         deduped: list[str] = []
         seen: set[str] = set()
@@ -2623,17 +2787,29 @@ class JobService:
         *,
         run_manifest: dict[str, object],
         run_metadata: dict[str, object],
-    ) -> tuple[list[str], bool]:
+    ) -> tuple[list[str], list[str], bool, bool]:
         composition = run_manifest.get("composition")
         if not isinstance(composition, dict):
             fallback_ref = self._read_dataset_ref(OFFICIAL_MARKET_BENCHMARK_DATASET_ID)
             feature_names = self._feature_names_for_run(run_metadata, fallback_ref)
-            return feature_names, self._uses_text_features(feature_names)
+            required_modalities = self._feature_modalities(feature_names)
+            requires_text_features = "nlp" in required_modalities
+            requires_multimodal_benchmark = any(
+                modality != "market" for modality in required_modalities
+            )
+            return (
+                feature_names,
+                required_modalities,
+                requires_text_features,
+                requires_multimodal_benchmark,
+            )
         source_runs = composition.get("source_runs")
         if not isinstance(source_runs, list) or not source_runs:
             raise JobExecutionError("Composed run is missing source run metadata required for official preflight.")
         required_feature_names: list[str] = []
+        required_modalities: list[str] = []
         requires_text_features = False
+        requires_multimodal_benchmark = False
         for item in source_runs:
             if not isinstance(item, dict):
                 continue
@@ -2652,10 +2828,20 @@ class JobService:
             fallback_ref = self._read_dataset_ref(fallback_dataset_id)
             source_feature_names = self._feature_names_for_run(source_metadata, fallback_ref)
             required_feature_names.extend(source_feature_names)
-            requires_text_features = requires_text_features or modality != "market" or self._uses_text_features(
-                source_feature_names
+            required_modalities.append(modality)
+            requires_text_features = requires_text_features or self._uses_text_features(source_feature_names) or modality == "nlp"
+            requires_multimodal_benchmark = (
+                requires_multimodal_benchmark
+                or modality != "market"
+                or self._uses_auxiliary_features(source_feature_names)
+                or self._uses_text_features(source_feature_names)
             )
-        return self._dedupe_feature_names(required_feature_names), requires_text_features
+        return (
+            self._dedupe_feature_names(required_feature_names),
+            list(dict.fromkeys(sorted(required_modalities, key=self._modality_sort_key))),
+            requires_text_features,
+            requires_multimodal_benchmark,
+        )
 
     def _evaluate_official_backtest_preflight(
         self,
@@ -2666,13 +2852,24 @@ class JobService:
     ) -> BacktestLaunchPreflightView:
         template_id = request.template_id or official_backtest_template().template_id
         window_days = self._resolve_official_window_days(request)
-        required_feature_names, requires_text_features = self._required_official_feature_names(
+        (
+            required_feature_names,
+            required_modalities,
+            requires_text_features,
+            requires_multimodal_benchmark,
+        ) = self._required_official_feature_names(
             run_manifest=run_manifest,
             run_metadata=run_metadata,
         )
-        target_dataset_id = (
-            OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID if requires_text_features else OFFICIAL_MARKET_BENCHMARK_DATASET_ID
+        requires_auxiliary_features = any(
+            modality in {"macro", "on_chain", "derivatives"} for modality in required_modalities
         )
+        target_dataset_id = (
+            OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID if requires_multimodal_benchmark else OFFICIAL_MARKET_BENCHMARK_DATASET_ID
+        )
+        official_dataset_ids = [OFFICIAL_MARKET_BENCHMARK_DATASET_ID]
+        if requires_multimodal_benchmark:
+            official_dataset_ids.append(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
         available_feature_names: list[str] = []
         blocking_reasons: list[str] = []
         nlp_gate_status = "not_required"
@@ -2701,10 +2898,18 @@ class JobService:
                 + ", ".join(missing_feature_names)
             )
 
+        blocking_reasons.extend(
+            self._official_source_contract_reasons(
+                request_run_id=request.run_id,
+                run_manifest=run_manifest,
+                required_modalities=required_modalities,
+            )
+        )
+
         try:
             official_context = self._resolve_official_benchmark_context(
                 window_days=window_days,
-                requires_text_features=requires_text_features,
+                requires_multimodal_benchmark=requires_multimodal_benchmark,
             )
             official_window_start_time = official_context["window_start"]
             official_window_end_time = official_context["window_end"]
@@ -2732,9 +2937,14 @@ class JobService:
             official_benchmark_version=official_benchmark_version,
             official_market_dataset_id=OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
             official_multimodal_dataset_id=OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+            official_dataset_ids=official_dataset_ids,
+            required_modalities=required_modalities,
             official_window_start_time=official_window_start_time,
             official_window_end_time=official_window_end_time,
             requires_text_features=requires_text_features,
+            requires_nlp_features=requires_text_features,
+            requires_auxiliary_features=requires_auxiliary_features,
+            requires_multimodal_benchmark=requires_multimodal_benchmark,
             required_feature_names=required_feature_names,
             available_official_feature_names=available_feature_names,
             missing_official_feature_names=missing_feature_names,
@@ -2746,7 +2956,7 @@ class JobService:
     def _official_base_dataset_id_for_features(self, feature_names: list[str]) -> str:
         preferred_ids = (
             [OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID]
-            if self._uses_text_features(feature_names)
+            if self._uses_text_features(feature_names) or self._uses_auxiliary_features(feature_names)
             else [OFFICIAL_MARKET_BENCHMARK_DATASET_ID, OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID]
         )
         for dataset_id in preferred_ids:
@@ -2876,16 +3086,28 @@ class JobService:
             )
         window_days = self._resolve_official_window_days(request)
         self._ensure_official_benchmark_sync(
-            requires_text_features=preflight.requires_text_features,
+            requires_multimodal_benchmark=bool(preflight.requires_multimodal_benchmark),
             window_days=window_days,
         )
         official_context = self._resolve_official_benchmark_context(
             window_days=window_days,
-            requires_text_features=preflight.requires_text_features,
+            requires_multimodal_benchmark=bool(preflight.requires_multimodal_benchmark),
         )
         context.start_stage("prepare", "Resolving official rolling benchmark")
         base_dataset_id = self._official_base_dataset_id_for_features(preflight.required_feature_names)
         base_feature_names = preflight.required_feature_names
+        required_modalities = [
+            self._normalize_modality(modality)
+            for modality in preflight.required_modalities
+            if self._normalize_modality(modality) != "unknown"
+        ] or ["market"]
+        non_market_modalities = [modality for modality in required_modalities if modality != "market"]
+        bundle_modality = (
+            non_market_modalities[0] if len(non_market_modalities) == 1 else "multimodal_bundle"
+        )
+        official_dataset_ids = [OFFICIAL_MARKET_BENCHMARK_DATASET_ID]
+        if base_dataset_id == OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID:
+            official_dataset_ids.append(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
         base_readiness = self.workbench.get_dataset_readiness(base_dataset_id)
         if base_readiness is None:
             raise JobExecutionError(
@@ -2930,6 +3152,7 @@ class JobService:
             label_horizon=self._dataset_label_horizon(base_dataset_id),
             lookback_bucket=self._dataset_lookback_bucket(base_dataset_id),
             metadata_summary=metadata_summary,
+            required_modalities=required_modalities,
             official_benchmark_version=str(official_context["benchmark_version"]),
             official_window_days=window_days,
             official_window_start_time=official_context["window_start"].isoformat(),
@@ -2940,6 +3163,7 @@ class JobService:
                 if base_dataset_id == OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
                 else None
             ),
+            official_dataset_ids=official_dataset_ids,
         )
         protocol_metadata.update(
             {
@@ -2960,23 +3184,16 @@ class JobService:
                 "nlp_gate_status": base_readiness.official_nlp_gate_status,
                 "nlp_gate_reasons": list(base_readiness.official_nlp_gate_reasons),
                 "primary_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
-                "dataset_ids": (
-                    [OFFICIAL_MARKET_BENCHMARK_DATASET_ID]
-                    if base_dataset_id == OFFICIAL_MARKET_BENCHMARK_DATASET_ID
-                    else [
-                        OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
-                        OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
-                    ]
-                ),
+                "dataset_ids": official_dataset_ids,
                 "dataset_roles": {
                     OFFICIAL_MARKET_BENCHMARK_DATASET_ID: "market_anchor",
-                    OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID: "official_multimodal"
+                    OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID: "official_multimodal_bundle"
                     if base_dataset_id == OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
                     else "unused",
                 },
                 "dataset_modalities": {
                     OFFICIAL_MARKET_BENCHMARK_DATASET_ID: "market",
-                    OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID: "sentiment_events",
+                    OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID: bundle_modality,
                 },
                 "alignment_status": "official_rolling_window",
                 "alignment_notes": [
@@ -3022,6 +3239,8 @@ class JobService:
                     prediction_frame_uri=prediction_artifact.uri,
                     benchmark_symbol=benchmark_symbol,
                     mode=request.mode,
+                    research_backend=request.research_backend,
+                    portfolio_method=request.portfolio_method,
                 ),
                 dataset_ref=official_dataset_ref,
                 benchmark_name="workbench_backtest",
@@ -3043,6 +3262,8 @@ class JobService:
             template_name=template.name,
             official=template.official,
             protocol_version=template.protocol_version,
+            research_backend=request.research_backend,
+            portfolio_method=request.portfolio_method,
         )
 
     def _run_official_composed_backtest_job(
@@ -3066,15 +3287,15 @@ class JobService:
             raise JobExecutionError(f"Run '{request.run_id}' does not declare valid source runs.")
         window_days = self._resolve_official_window_days(request)
         self._ensure_official_benchmark_sync(
-            requires_text_features=preflight.requires_text_features,
+            requires_multimodal_benchmark=bool(preflight.requires_multimodal_benchmark),
             window_days=window_days,
         )
         official_context = self._resolve_official_benchmark_context(
             window_days=window_days,
-            requires_text_features=preflight.requires_text_features,
+            requires_multimodal_benchmark=bool(preflight.requires_multimodal_benchmark),
         )
         multimodal_readiness = official_context["multimodal_readiness"]
-        if getattr(multimodal_readiness, "official_nlp_gate_status", None) == "failed":
+        if preflight.requires_text_features and getattr(multimodal_readiness, "official_nlp_gate_status", None) == "failed":
             raise JobExecutionError(
                 "Official backtest template is blocked by the NLP quality gate: "
                 + "; ".join(multimodal_readiness.official_nlp_gate_reasons or ["official_nlp_gate_failed"])
@@ -3111,11 +3332,9 @@ class JobService:
             )
             projected_dataset_ids.append(projected_ref.dataset_id)
             projected_dataset_roles[projected_ref.dataset_id] = (
-                "market_anchor" if modality == "market" else "official_multimodal"
+                "market_anchor" if modality == "market" else f"official_{modality}"
             )
-            projected_dataset_modalities[projected_ref.dataset_id] = (
-                "market" if modality == "market" else "sentiment_events"
-            )
+            projected_dataset_modalities[projected_ref.dataset_id] = modality
             source_model_artifact_uri = self.workbench.resolve_run_model_artifact_uri(source_run_id)
             if source_model_artifact_uri is None:
                 raise JobExecutionError(
@@ -3175,6 +3394,11 @@ class JobService:
         if not market_bars:
             raise JobExecutionError("Official market benchmark has no bars inside the selected rolling window.")
         context.finish_stage("prepare", f"Resolved official multimodal benchmark for {len(source_prediction_frames)} sources")
+        required_modalities = [
+            self._normalize_modality(modality)
+            for modality in preflight.required_modalities
+            if self._normalize_modality(modality) != "unknown"
+        ]
         metadata_summary = self._build_backtest_metadata_summary(
             run_manifest=run_manifest,
             run_metadata=run_metadata,
@@ -3191,12 +3415,17 @@ class JobService:
             label_horizon=self._dataset_label_horizon(OFFICIAL_MARKET_BENCHMARK_DATASET_ID),
             lookback_bucket=self._dataset_lookback_bucket(OFFICIAL_MARKET_BENCHMARK_DATASET_ID),
             metadata_summary=metadata_summary,
+            required_modalities=required_modalities,
             official_benchmark_version=str(official_context["benchmark_version"]),
             official_window_days=window_days,
             official_window_start_time=official_context["window_start"].isoformat(),
             official_window_end_time=official_context["window_end"].isoformat(),
             official_market_dataset_id=OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
             official_multimodal_dataset_id=OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+            official_dataset_ids=[
+                OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
+                OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+            ],
         )
         protocol_metadata.update(
             {
@@ -3255,6 +3484,8 @@ class JobService:
                         dataset_id=OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
                     ),
                     mode=request.mode,
+                    research_backend=request.research_backend,
+                    portfolio_method=request.portfolio_method,
                 ),
                 dataset_ref=market_projection_ref,
                 benchmark_name="workbench_backtest",
@@ -3275,6 +3506,8 @@ class JobService:
             template_name=template.name,
             official=template.official,
             protocol_version=template.protocol_version,
+            research_backend=request.research_backend,
+            portfolio_method=request.portfolio_method,
         )
 
     def _build_backtest_metadata_summary(

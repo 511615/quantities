@@ -30,6 +30,15 @@ dev = [
   "ruff>=0.12.0",
   "mypy>=1.11.0",
 ]
+exchange = [
+  "ccxt>=4.5.48",
+]
+research_backends = [
+  "vectorbt>=0.28.5",
+]
+portfolio_opt = [
+  "skfolio>=0.18.0",
+]
 tracking = [
   "mlflow>=2.22.0",
 ]

@@ -54,6 +54,8 @@ export type RelatedBacktestView = {
   annual_return: number | null;
   max_drawdown: number | null;
   passed_consistency_checks: boolean | null;
+  research_backend?: string | null;
+  portfolio_method?: string | null;
 };
 
 export type ExperimentListItem = {
@@ -188,6 +190,8 @@ export type BacktestProtocolResultView = {
   slice_coverage: string[];
   lookback_bucket: string | null;
   metadata_summary: Record<string, string | null>;
+  required_modalities?: string[];
+  official_dataset_ids?: string[];
   actual_market_start_time?: string | null;
   actual_market_end_time?: string | null;
   actual_backtest_start_time?: string | null;
@@ -240,6 +244,8 @@ export type BacktestListItemView = {
   official?: boolean;
   protocol_version?: string | null;
   gate_status?: string | null;
+  research_backend?: string | null;
+  portfolio_method?: string | null;
   passed_consistency_checks: boolean | null;
   annual_return: number | null;
   max_drawdown: number | null;
@@ -284,9 +290,18 @@ export type BacktestReportView = {
   run_id: string | null;
   dataset_id?: string | null;
   dataset_ids?: string[];
+  alignment?: {
+    fusion_strategy?: string | null;
+    dataset_ids?: string[];
+    datasets?: DatasetReferenceView[];
+    alignment_status?: string | null;
+    notes?: string[];
+  } | null;
   template_id?: string | null;
   official?: boolean;
   protocol_version?: string | null;
+  research_backend?: string | null;
+  portfolio_method?: string | null;
   protocol?: BacktestProtocolResultView | null;
   passed_consistency_checks: boolean | null;
   comparison_warnings: string[];
@@ -440,6 +455,8 @@ export type LaunchBacktestRequest = {
   strategy_preset: "sign";
   portfolio_preset: "research_default";
   cost_preset: "standard";
+  research_backend?: "native" | "vectorbt";
+  portfolio_method?: "proportional" | "skfolio_mean_risk";
   benchmark_symbol: string;
 };
 
@@ -486,6 +503,8 @@ export type BacktestLaunchOptionsView = {
   strategy_presets: PresetOptionView[];
   portfolio_presets: PresetOptionView[];
   cost_presets: PresetOptionView[];
+  research_backends?: PresetOptionView[];
+  portfolio_methods?: PresetOptionView[];
   default_benchmark_symbol: string;
   default_official_window_days?: number;
   constraints: Record<string, unknown>;
@@ -499,9 +518,14 @@ export type BacktestLaunchPreflightView = {
   official_benchmark_version?: string | null;
   official_market_dataset_id?: string | null;
   official_multimodal_dataset_id?: string | null;
+  official_dataset_ids?: string[];
+  required_modalities?: string[];
   official_window_start_time?: string | null;
   official_window_end_time?: string | null;
   requires_text_features: boolean;
+  requires_nlp_features?: boolean;
+  requires_auxiliary_features?: boolean;
+  requires_multimodal_benchmark?: boolean;
   required_feature_names: string[];
   available_official_feature_names: string[];
   missing_official_feature_names: string[];
