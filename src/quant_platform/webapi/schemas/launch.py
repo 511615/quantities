@@ -36,6 +36,8 @@ class LaunchBacktestRequest(LaunchApiModel):
     strategy_preset: Literal["sign"] = "sign"
     portfolio_preset: Literal["research_default"] = "research_default"
     cost_preset: Literal["standard"] = "standard"
+    research_backend: Literal["native", "vectorbt"] = "native"
+    portfolio_method: Literal["proportional", "skfolio_mean_risk"] = "proportional"
     benchmark_symbol: str = "BTCUSDT"
 
 
@@ -90,6 +92,8 @@ class BacktestLaunchOptionsView(LaunchApiModel):
     strategy_presets: list[PresetOptionView] = Field(default_factory=list)
     portfolio_presets: list[PresetOptionView] = Field(default_factory=list)
     cost_presets: list[PresetOptionView] = Field(default_factory=list)
+    research_backends: list[PresetOptionView] = Field(default_factory=list)
+    portfolio_methods: list[PresetOptionView] = Field(default_factory=list)
     default_benchmark_symbol: str = "BTCUSDT"
     default_official_window_days: int = 180
     constraints: dict[str, Any] = Field(default_factory=dict)
@@ -103,9 +107,14 @@ class BacktestLaunchPreflightView(LaunchApiModel):
     official_benchmark_version: str | None = None
     official_market_dataset_id: str | None = None
     official_multimodal_dataset_id: str | None = None
+    official_dataset_ids: list[str] = Field(default_factory=list)
+    required_modalities: list[str] = Field(default_factory=list)
     official_window_start_time: datetime | None = None
     official_window_end_time: datetime | None = None
     requires_text_features: bool = False
+    requires_nlp_features: bool = False
+    requires_auxiliary_features: bool = False
+    requires_multimodal_benchmark: bool = False
     required_feature_names: list[str] = Field(default_factory=list)
     available_official_feature_names: list[str] = Field(default_factory=list)
     missing_official_feature_names: list[str] = Field(default_factory=list)

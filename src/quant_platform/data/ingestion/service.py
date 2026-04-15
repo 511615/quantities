@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from quant_platform.common.hashing.digest import file_digest
 from quant_platform.data.connectors import (
     BinanceSpotKlinesConnector,
+    BinanceFuturesMetricsConnector,
     BitstampArchiveConnector,
+    CcxtMarketConnector,
     ContractOnlyConnector,
     DefiLlamaConnector,
     FredSeriesConnector,
@@ -83,15 +86,23 @@ class DomainIngestionCoordinator(DomainIngestionService):
         frequency: str,
         start_time: datetime,
         end_time: datetime,
+        market_type: str = "spot",
     ) -> tuple[list[NormalizedMarketBar], str]:
+        normalized_vendor = self._normalize_vendor("market", vendor)
+        normalized_exchange = exchange.strip().lower()
+        normalized_market_type = (market_type or "spot").strip().lower()
+        cache_identifier = symbol.upper()
+        if normalized_vendor == "ccxt":
+            cache_identifier = f"{normalized_exchange}:{normalized_market_type}:{symbol.upper()}"
         rows, status = self._load_or_ingest(
             data_domain="market",
-            vendor=vendor,
-            identifier=symbol.upper(),
+            vendor=normalized_vendor,
+            identifier=cache_identifier,
+            connector_identifier=symbol,
             frequency=frequency,
             start_time=start_time,
             end_time=end_time,
-            options={"exchange": exchange},
+            options={"exchange": normalized_exchange, "market_type": normalized_market_type},
             model_key="rows",
         )
         return [NormalizedMarketBar.model_validate(item) for item in rows], status
@@ -130,6 +141,7 @@ class DomainIngestionCoordinator(DomainIngestionService):
         end_time: datetime,
         options: dict[str, Any],
         model_key: str,
+        connector_identifier: str | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         vendor = self._normalize_vendor(data_domain, vendor)
         self._enforce_vendor_window_policy(
@@ -155,7 +167,12 @@ class DomainIngestionCoordinator(DomainIngestionService):
             identifier=identifier,
             frequency=frequency,
         )
-        missing_ranges = self._missing_ranges(start_time, end_time, existing)
+        missing_ranges = self._missing_ranges(
+            start_time,
+            end_time,
+            existing,
+            frequency=frequency,
+        )
         fetch_status = "cache_hit"
         if missing_ranges:
             fetch_status = "live_fetch" if not existing else "incremental_refresh"
@@ -165,7 +182,7 @@ class DomainIngestionCoordinator(DomainIngestionService):
                     vendor=vendor,
                     request_id=f"{data_domain}-{vendor}-{identifier}-{gap_start.isoformat()}",
                     time_range={"start": gap_start, "end": gap_end},
-                    identifiers=[identifier],
+                    identifiers=[connector_identifier or identifier],
                     frequency=frequency,
                     options=options,
                 )
@@ -407,7 +424,9 @@ class DomainIngestionCoordinator(DomainIngestionService):
         start_time: datetime,
         end_time: datetime,
         snapshots: list[CacheSnapshot],
+        frequency: str | None = None,
     ) -> list[tuple[datetime, datetime]]:
+        step = self._frequency_step(frequency)
         intervals: list[tuple[datetime, datetime]] = []
         for snapshot in snapshots:
             snap_start, snap_end = self._snapshot_bounds(snapshot)
@@ -422,7 +441,9 @@ class DomainIngestionCoordinator(DomainIngestionService):
         missing: list[tuple[datetime, datetime]] = []
         cursor = start_time
         for interval_start, interval_end in intervals:
-            if interval_start > cursor:
+            if interval_start > cursor and (
+                step is None or (interval_start - cursor) > step
+            ):
                 missing.append((cursor, interval_start))
             if interval_end > cursor:
                 cursor = interval_end
@@ -458,16 +479,17 @@ class DomainIngestionCoordinator(DomainIngestionService):
         return conn
 
     def _register_defaults(self) -> None:
+        self.register(CcxtMarketConnector())
         self.register(BinanceSpotKlinesConnector())
         self.register(BitstampArchiveConnector())
         self.register(InternalSmokeMarketConnector())
         self.register(FredSeriesConnector())
         self.register(DefiLlamaConnector())
+        self.register(BinanceFuturesMetricsConnector())
         self.register(GdeltSentimentConnector())
         self.register(GNewsSentimentConnector())
         self.register(NewsArchiveSentimentConnector())
         self.register(RedditArchiveSentimentConnector(self.artifact_root))
-        self.register(ContractOnlyConnector(data_domain="derivatives"))
         self.register(
             ContractOnlyConnector(data_domain="sentiment_events", vendor="contract_only")
         )
@@ -517,3 +539,24 @@ class DomainIngestionCoordinator(DomainIngestionService):
     @staticmethod
     def _slugify(value: str) -> str:
         return "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")
+
+    @staticmethod
+    def _frequency_step(frequency: str | None) -> timedelta | None:
+        if not frequency:
+            return None
+        match = re.fullmatch(r"(?i)(\d+)([mhdw])", frequency.strip())
+        if match is None:
+            return None
+        value = int(match.group(1))
+        unit = match.group(2).lower()
+        if value <= 0:
+            return None
+        if unit == "m":
+            return timedelta(minutes=value)
+        if unit == "h":
+            return timedelta(hours=value)
+        if unit == "d":
+            return timedelta(days=value)
+        if unit == "w":
+            return timedelta(weeks=value)
+        return None

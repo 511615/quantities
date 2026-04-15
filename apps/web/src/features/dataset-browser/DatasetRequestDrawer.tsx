@@ -41,11 +41,12 @@ type SourceDraft = {
   identifier: string;
 };
 
-const DEFAULT_DOMAIN_ORDER = ["market", "macro", "on_chain", "sentiment_events"];
+const DEFAULT_DOMAIN_ORDER = ["market", "macro", "on_chain", "derivatives", "sentiment_events"];
 const DEFAULT_VENDOR_BY_DOMAIN: Record<string, string> = {
   market: "binance",
   macro: "fred",
   on_chain: "defillama",
+  derivatives: "binance_futures",
   sentiment_events: "reddit_archive",
 };
 const DEFAULT_EXCHANGE_BY_DOMAIN: Record<string, string> = {
@@ -54,14 +55,16 @@ const DEFAULT_EXCHANGE_BY_DOMAIN: Record<string, string> = {
 const DEFAULT_IDENTIFIER_BY_DOMAIN: Record<string, string> = {
   macro: "DFF",
   on_chain: "ethereum",
+  derivatives: "BTCUSDT",
   sentiment_events: "btc_news",
 };
 const DEFAULT_SYMBOL = "BTCUSDT";
 const DOMAIN_LABELS: Record<string, string> = {
-  market: "甯傚満鏁版嵁",
-  macro: "瀹忚鏁版嵁",
-  on_chain: "閾句笂鏁版嵁",
-  sentiment_events: "鎯呯华 / 浜嬩欢鏁版嵁",
+  market: "市场数据",
+  macro: "宏观数据",
+  on_chain: "链上数据",
+  derivatives: "衍生品数据",
+  sentiment_events: "情绪 / 事件数据",
 };
 
 function dateInputValue(date: Date) {
@@ -99,36 +102,58 @@ function domainLabel(domain: string) {
 function localizeRequestOptionLabel(value: string, label?: string | null) {
   const normalized = (label ?? value).trim().toLowerCase();
   if (normalized === "news_archive") {
-    return "鏂伴椈褰掓。";
+    return "新闻归档";
   }
   if (normalized === "gnews") {
-    return "Google 鏂伴椈";
+    return "Google 新闻";
   }
   if (normalized === "reddit_archive") {
-    return "Reddit 鍘嗗彶褰掓。";
+    return "Reddit 历史归档";
   }
   if (normalized === "manual_list") {
-    return "鎵嬪姩鍒楄〃";
+    return "手动列表";
   }
   if (normalized === "top_n") {
     return "前 N 个标的";
   }
   if (normalized === "binance") {
-    return "甯佸畨";
+    return "币安";
+  }
+  if (normalized === "ccxt") {
+    return "CCXT 聚合接入";
+  }
+  if (normalized === "okx") {
+    return "OKX";
   }
   if (normalized === "baseline_market_features") {
-    return "鍩虹甯傚満鐗瑰緛";
+    return "基础市场特征";
   }
   if (normalized === "time_series") {
-    return "鏃堕棿搴忓垪鍒囧垎";
+    return "时间序列切分";
   }
   if (normalized === "available_time_safe_asof") {
     return "按可用时间安全对齐";
   }
   if (normalized === "single_domain") {
-    return "鍗曞煙浜у嚭";
+    return "单域产出";
   }
   return label ?? value;
+}
+
+function isCcxtMarketDraft(draft: SourceDraft) {
+  return draft.dataDomain === "market" && draft.sourceVendor === "ccxt";
+}
+
+function marketSymbolPlaceholder(draft: SourceDraft) {
+  return isCcxtMarketDraft(draft) ? "BTC/USDT, ETH/USDT" : "BTCUSDT";
+}
+
+function marketDraftHint(draft: SourceDraft) {
+  if (!isCcxtMarketDraft(draft)) {
+    return null;
+  }
+  const exchange = draft.exchange ? localizeRequestOptionLabel(draft.exchange) : "交易所";
+  return `CCXT 会按 ${exchange} 的现货/合约市场去拉取 K 线；标的建议写成 BTC/USDT 这类交易所原生格式，切到 OKX 也可以直接复用。`;
 }
 
 function normalizeOptionValue(
@@ -722,10 +747,16 @@ export function DatasetRequestDrawer({
                                   symbols: event.target.value,
                                 }))
                               }
-                              placeholder="BTCUSDT"
+                              placeholder={marketSymbolPlaceholder(draft)}
                               value={draft.symbols}
                             />
                           </label>
+                          {marketDraftHint(draft) ? (
+                            <div className="dataset-callout">
+                              <strong>CCXT 市场提示</strong>
+                              <span>{marketDraftHint(draft)}</span>
+                            </div>
+                          ) : null}
                         </>
                       ) : (
                         <label>

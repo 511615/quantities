@@ -16,6 +16,7 @@ class StrategyConfig(FrozenModel):
     signal_type: Literal["score", "expected_return", "probability", "target_weight"] = "score"
     direction_mode: Literal["long_only", "long_short"] = "long_short"
     target_type: Literal["weight", "notional", "quantity"] = "weight"
+    portfolio_method: Literal["proportional", "skfolio_mean_risk"] = "proportional"
     urgency: Literal["passive", "normal", "aggressive"] = "normal"
     normalize_gross: bool = True
 
@@ -74,6 +75,7 @@ class BacktestRequest(FrozenModel):
     input_type: Literal["prediction_frame", "signal_frame"] = "prediction_frame"
     prediction_frame_uri: str | None = None
     engine_type: Literal["research", "simulation"] = "research"
+    research_backend: Literal["native", "vectorbt"] = "native"
     strategy_config: StrategyConfig
     portfolio_config: PortfolioConfig
     cost_model: CostModel

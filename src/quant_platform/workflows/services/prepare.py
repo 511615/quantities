@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-from datetime import timedelta
 from datetime import UTC, datetime
 from math import cos, sin
 from pathlib import Path
@@ -31,11 +30,13 @@ from quant_platform.workflows.contracts.state import (
     WorkflowStageStatus,
 )
 from quant_platform.workflows.runtime import WorkflowRuntime
+from quant_platform.workflows.services.market_acquisition import MarketAcquisitionHandler
 
 
 class PrepareWorkflowService:
     def __init__(self, runtime: WorkflowRuntime) -> None:
         self.runtime = runtime
+        self.market_acquisition = MarketAcquisitionHandler(runtime)
 
     def prepare(self, request: PrepareWorkflowRequest) -> PrepareWorkflowResult:
         started_at = datetime.now(UTC)
@@ -347,11 +348,13 @@ class PrepareWorkflowService:
             symbols = ["BTCUSDT"]
         if symbol_selector.symbol_count:
             symbols = symbols[: symbol_selector.symbol_count]
-        bars, request_origin = self._build_request_market_bars(
+        acquisition = self.market_acquisition.build_market_panel(
             request=request,
             source=source,
             symbols=symbols,
         )
+        bars = acquisition.bars
+        request_origin = acquisition.request_origin
         label_kind = request.build_config.label_kind
         sample_policy_payload = dict(request.build_config.sample_policy)
         sample_policy = SamplePolicy(
@@ -535,33 +538,6 @@ class PrepareWorkflowService:
         )
         return data_refs, manifests, FeatureViewBuildResult(feature_view_ref=feature_view_ref, rows=feature_rows)
 
-    def _build_request_market_bars(
-        self,
-        request: DatasetAcquisitionRequest,
-        source,
-        symbols: list[str],
-    ) -> tuple[list[NormalizedMarketBar], str]:
-        bars: list[NormalizedMarketBar] = []
-        statuses: list[str] = []
-        fetch_end_time = request.time_window.end_time + (
-            self._frequency_delta(source.frequency) * (request.build_config.label_horizon + 1)
-        )
-        for symbol in symbols:
-            symbol_bars, status = self.runtime.ingestion_service.fetch_market_bars(
-                symbol=symbol,
-                vendor=source.vendor,
-                exchange=source.exchange or request.exchange or source.vendor,
-                frequency=source.frequency,
-                start_time=request.time_window.start_time,
-                end_time=fetch_end_time,
-            )
-            bars.extend(symbol_bars)
-            statuses.append(status)
-        bars.sort(key=lambda item: (item.event_time, item.symbol))
-        if not bars:
-            raise ValueError("market ingestion returned no bars for the requested symbols")
-        return bars, ",".join(sorted(set(statuses)))
-
     @staticmethod
     def _slugify(value: str) -> str:
         cleaned = [ch.lower() if ch.isalnum() else "_" for ch in value]
@@ -613,15 +589,3 @@ class PrepareWorkflowService:
         if unique_timestamps < 5:
             return max(train_end + 1, min(unique_timestamps - 3, train_end + 1))
         return max(train_end + 1, min(unique_timestamps - 3, int(unique_timestamps * 0.75)))
-
-    @staticmethod
-    def _frequency_delta(frequency: str) -> timedelta:
-        mapping = {
-            "1m": timedelta(minutes=1),
-            "5m": timedelta(minutes=5),
-            "15m": timedelta(minutes=15),
-            "1h": timedelta(hours=1),
-            "4h": timedelta(hours=4),
-            "1d": timedelta(days=1),
-        }
-        return mapping.get(frequency, timedelta(hours=1))

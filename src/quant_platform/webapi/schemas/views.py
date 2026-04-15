@@ -59,6 +59,8 @@ class RelatedBacktestView(ApiModel):
     annual_return: float | None = None
     max_drawdown: float | None = None
     passed_consistency_checks: bool | None = None
+    research_backend: str | None = None
+    portfolio_method: str | None = None
 
 
 class PipelineStageView(ApiModel):
@@ -311,6 +313,8 @@ class BacktestProtocolResultView(ApiModel):
     slice_coverage: list[str] = Field(default_factory=list)
     lookback_bucket: str | None = None
     metadata_summary: dict[str, str | None] = Field(default_factory=dict)
+    required_modalities: list[str] = Field(default_factory=list)
+    official_dataset_ids: list[str] = Field(default_factory=list)
     actual_market_start_time: datetime | None = None
     actual_market_end_time: datetime | None = None
     actual_backtest_start_time: datetime | None = None
@@ -368,6 +372,8 @@ class BacktestListItemView(ApiModel):
     official: bool = False
     protocol_version: str | None = None
     gate_status: str | None = None
+    research_backend: str | None = None
+    portfolio_method: str | None = None
     passed_consistency_checks: bool | None = None
     annual_return: float | None = None
     max_drawdown: float | None = None
@@ -418,6 +424,8 @@ class BacktestReportView(ApiModel):
     template_id: str | None = None
     official: bool = False
     protocol_version: str | None = None
+    research_backend: str | None = None
+    portfolio_method: str | None = None
     protocol: BacktestProtocolResultView | None = None
     passed_consistency_checks: bool | None = None
     comparison_warnings: list[str] = Field(default_factory=list)
@@ -500,6 +508,8 @@ class JobResultView(ApiModel):
     template_name: str | None = None
     official: bool = False
     protocol_version: str | None = None
+    research_backend: str | None = None
+    portfolio_method: str | None = None
     fit_result_uris: list[str] = Field(default_factory=list)
     summary_artifacts: list[str] = Field(default_factory=list)
     prediction_scope: str | None = None

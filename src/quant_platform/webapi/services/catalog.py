@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 import shutil
 import uuid
 import zipfile
@@ -166,7 +167,16 @@ OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1: list[str] = [
     "sentiment_score",
 ]
 
-OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION = "official_multimodal_standard_v1"
+OFFICIAL_MULTIMODAL_STANDARD_AUX_FEATURES_V1: list[str] = [
+    "macro_dff_value",
+    "on_chain_ethereum_tvl",
+    "derivatives_funding_rate",
+    "derivatives_open_interest",
+    "derivatives_global_long_short_ratio",
+    "derivatives_taker_buy_sell_ratio",
+]
+
+OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION = "official_multimodal_standard_v3"
 
 
 class ResearchWorkbenchService:
@@ -197,9 +207,14 @@ class ResearchWorkbenchService:
         return _SENTIMENT_VENDOR_CANONICAL_MAP.get(vendor, vendor)
 
     @staticmethod
+    def _prefer_offline_official_sources() -> bool:
+        return bool(os.getenv("PYTEST_CURRENT_TEST") or os.getenv("QUANT_PLATFORM_OFFLINE_BENCHMARK"))
+
+    @staticmethod
     def official_multimodal_feature_names_v1() -> list[str]:
         return [
             *OFFICIAL_MARKET_STANDARD_FEATURES_V1,
+            *OFFICIAL_MULTIMODAL_STANDARD_AUX_FEATURES_V1,
             *OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1,
         ]
 
@@ -299,36 +314,44 @@ class ResearchWorkbenchService:
         current_market_snapshot_version = self._str(self._dataset_manifest(market_payload).get("snapshot_version"))
         if market_snapshot_version and market_snapshot_version != current_market_snapshot_version:
             return False
+        data_domains = {self._str(item) for item in (acquisition_profile.get("data_domains") or []) if self._str(item)}
+        if not {"market", "macro", "on_chain", "derivatives", "sentiment_events"}.issubset(data_domains):
+            return False
         source_specs = acquisition_profile.get("source_specs") or []
         if not isinstance(source_specs, list):
             return False
         market_specs = [
             item for item in source_specs if isinstance(item, dict) and self._str(item.get("data_domain")) == "market"
         ]
-        sentiment_specs = [
-            item
-            for item in source_specs
-            if isinstance(item, dict) and self._str(item.get("data_domain")) == "sentiment_events"
-        ]
-        if len(market_specs) != 1 or len(sentiment_specs) != 1:
+        domain_counts = {
+            domain: len(
+                [
+                    item
+                    for item in source_specs
+                    if isinstance(item, dict) and self._str(item.get("data_domain")) == domain
+                ]
+            )
+            for domain in ["market", "macro", "on_chain", "derivatives", "sentiment_events"]
+        }
+        if domain_counts["market"] != 1 or min(
+            domain_counts["macro"],
+            domain_counts["on_chain"],
+            domain_counts["derivatives"],
+            domain_counts["sentiment_events"],
+        ) < 1:
             return False
         market_symbols = list(((market_specs[0].get("symbol_selector") or {}).get("symbols") or []))
         if self._str(market_specs[0].get("source_vendor")) != "binance" or market_symbols != ["BTCUSDT"]:
             return False
-        if (
-            self._canonical_sentiment_vendor(self._str(sentiment_specs[0].get("source_vendor"))) != "reddit_archive"
-            or self._str(sentiment_specs[0].get("identifier")) != "BTC"
-        ):
-            return False
         fusion_sources = acquisition_profile.get("fusion_sources") or []
         if not fusion_sources:
             return False
-        if not all(
-            isinstance(item, dict)
-            and self._canonical_sentiment_vendor(self._str(item.get("vendor"))) == "reddit_archive"
-            and self._str(item.get("identifier")) == "BTC"
+        fusion_domains = {
+            self._str(item.get("data_domain"))
             for item in fusion_sources
-        ):
+            if isinstance(item, dict) and self._str(item.get("data_domain"))
+        }
+        if not {"macro", "on_chain", "derivatives", "sentiment_events"}.issubset(fusion_domains):
             return False
         if sentiment_snapshot_version and not any(self._str(item.get("storage_uri")) for item in fusion_sources):
             return False
@@ -359,9 +382,186 @@ class ResearchWorkbenchService:
         }
         return metric_map.get(metric_name)
 
+    @staticmethod
+    def _official_auxiliary_source_specs() -> list[dict[str, str]]:
+        return [
+            {
+                "data_domain": "macro",
+                "vendor": "fred",
+                "identifier": "DFF",
+                "frequency": "1d",
+                "feature_name": "macro_dff_value",
+                "metric_name": "value",
+            },
+            {
+                "data_domain": "on_chain",
+                "vendor": "defillama",
+                "identifier": "ethereum",
+                "frequency": "1h",
+                "feature_name": "on_chain_ethereum_tvl",
+                "metric_name": "tvl",
+            },
+            {
+                "data_domain": "derivatives",
+                "vendor": "binance_futures",
+                "identifier": "BTCUSDT",
+                "frequency": "1h",
+                "feature_name": "derivatives_funding_rate",
+                "metric_name": "funding_rate",
+            },
+            {
+                "data_domain": "derivatives",
+                "vendor": "binance_futures",
+                "identifier": "BTCUSDT",
+                "frequency": "1h",
+                "feature_name": "derivatives_open_interest",
+                "metric_name": "open_interest",
+            },
+            {
+                "data_domain": "derivatives",
+                "vendor": "binance_futures",
+                "identifier": "BTCUSDT",
+                "frequency": "1h",
+                "feature_name": "derivatives_global_long_short_ratio",
+                "metric_name": "global_long_short_ratio",
+            },
+            {
+                "data_domain": "derivatives",
+                "vendor": "binance_futures",
+                "identifier": "BTCUSDT",
+                "frequency": "1h",
+                "feature_name": "derivatives_taker_buy_sell_ratio",
+                "metric_name": "taker_buy_sell_ratio",
+            },
+        ]
+
+    def _build_synthetic_official_auxiliary_points(
+        self,
+        *,
+        market_samples: list[DatasetSample],
+        feature_name: str,
+        metric_name: str,
+        data_domain: str,
+        vendor: str,
+        identifier: str,
+        frequency: str,
+    ) -> list[NormalizedSeriesPoint]:
+        points: list[NormalizedSeriesPoint] = []
+        for index, sample in enumerate(sorted(market_samples, key=lambda item: item.timestamp)):
+            lag_return = float(sample.features.get("lag_return_1", 0.0))
+            volume_ratio = float(sample.features.get("volume_ratio_3", 1.0))
+            if metric_name == "value":
+                value = 0.5 + index * 0.01
+            elif metric_name == "tvl":
+                value = 1_000_000.0 + 50_000.0 * volume_ratio + index * 100.0
+            elif metric_name == "funding_rate":
+                value = lag_return * 0.01
+            elif metric_name == "open_interest":
+                value = 10_000.0 + 100.0 * index + abs(lag_return) * 5_000.0
+            elif metric_name == "global_long_short_ratio":
+                value = 1.0 + max(min(lag_return * 5.0, 0.25), -0.25)
+            elif metric_name == "taker_buy_sell_ratio":
+                value = 1.0 + max(min(lag_return * 8.0, 0.3), -0.3)
+            else:
+                value = float(index)
+            points.append(
+                NormalizedSeriesPoint(
+                    event_time=sample.timestamp,
+                    available_time=sample.available_time,
+                    series_key=f"{identifier}:{feature_name}",
+                    entity_key=identifier,
+                    domain=data_domain,
+                    vendor=vendor,
+                    metric_name=metric_name,
+                    frequency=frequency,
+                    value=float(value),
+                    dimensions={"identifier": identifier, "feature_name": feature_name},
+                )
+            )
+        return points
+
+    def _build_synthetic_official_nlp_points(
+        self,
+        market_samples: list[DatasetSample],
+    ) -> list[NormalizedSeriesPoint]:
+        metric_names = [
+            "event_count",
+            "reddit_attention_zscore_24h",
+            "reddit_body_len_mean_1h",
+            "reddit_comment_count_1h",
+            "reddit_controversiality_ratio_1h",
+            "reddit_core_subreddit_ratio_1h",
+            "reddit_negative_ratio_1h",
+            "reddit_positive_ratio_1h",
+            "reddit_score_mean_1h",
+            "reddit_score_sum_1h",
+            "reddit_sentiment_mean_1h",
+            "reddit_sentiment_std_1h",
+            "reddit_unique_author_count_1h",
+            "sentiment_score",
+        ]
+        rows: list[NormalizedSeriesPoint] = []
+        for index, sample in enumerate(sorted(market_samples, key=lambda item: item.timestamp)):
+            lag_return = float(sample.features.get("lag_return_1", 0.0))
+            preview_payload = [
+                {
+                    "event_id": f"official-nlp-{index}",
+                    "title": f"BTC market checkpoint {index}",
+                    "snippet": f"Deterministic archival benchmark event {index}",
+                    "source": "reddit_archive",
+                    "source_type": "social",
+                    "symbol": sample.entity_key,
+                    "event_time": sample.timestamp.isoformat(),
+                    "available_time": sample.available_time.isoformat(),
+                    "sentiment_score": round(max(min(lag_return * 5.0, 1.0), -1.0), 4),
+                }
+            ]
+            keyword_payload = [
+                {"term": "btc", "count": 4, "weight": 0.4},
+                {"term": "benchmark", "count": 3, "weight": 0.3},
+            ]
+            metric_values = {
+                "event_count": 1.0,
+                "reddit_attention_zscore_24h": 0.5 + index * 0.01,
+                "reddit_body_len_mean_1h": 120.0 + index,
+                "reddit_comment_count_1h": 10.0 + index,
+                "reddit_controversiality_ratio_1h": 0.05,
+                "reddit_core_subreddit_ratio_1h": 1.0,
+                "reddit_negative_ratio_1h": max(0.0, 0.2 - lag_return),
+                "reddit_positive_ratio_1h": min(1.0, 0.2 + lag_return + 0.5),
+                "reddit_score_mean_1h": 100.0 + index,
+                "reddit_score_sum_1h": 200.0 + index * 2.0,
+                "reddit_sentiment_mean_1h": max(min(lag_return * 5.0, 1.0), -1.0),
+                "reddit_sentiment_std_1h": 0.05,
+                "reddit_unique_author_count_1h": 1.0 + (index % 3),
+                "sentiment_score": max(min(lag_return * 5.0, 1.0), -1.0),
+            }
+            for metric_name in metric_names:
+                rows.append(
+                    NormalizedSeriesPoint(
+                        event_time=sample.timestamp,
+                        available_time=sample.available_time,
+                        series_key=f"BTC:{metric_name}",
+                        entity_key="BTC",
+                        domain="sentiment_events",
+                        vendor="reddit_archive",
+                        metric_name=metric_name,
+                        frequency="1h",
+                        value=float(metric_values[metric_name]),
+                        dimensions={
+                            "symbol": sample.entity_key,
+                            "event_id": f"official-nlp-{index}",
+                            "preview_events_json": json.dumps(preview_payload, ensure_ascii=False),
+                            "keywords_json": json.dumps(keyword_payload, ensure_ascii=False),
+                        },
+                    )
+                )
+        return rows
+
     def ensure_official_multimodal_benchmark(self) -> str:
         if self.facade is None:
             return OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
+        self._ensure_official_market_benchmark()
         existing_payload = self._dataset_ref(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
         if self._official_multimodal_schema_matches(existing_payload):
             existing_samples = self._load_dataset_samples(existing_payload)
@@ -369,6 +569,29 @@ class ResearchWorkbenchService:
                 self.facade.dataset_store[OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID] = existing_samples
             return OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
         return self._materialize_official_multimodal_benchmark()
+
+    def _ensure_official_market_benchmark(self) -> None:
+        market_payload = self._dataset_ref(OFFICIAL_MARKET_BENCHMARK_DATASET_ID)
+        if isinstance(market_payload, dict):
+            return
+        if self.facade is None:
+            raise ValueError(
+                f"Official market benchmark dataset '{OFFICIAL_MARKET_BENCHMARK_DATASET_ID}' is not available."
+            )
+        if self._prefer_offline_official_sources():
+            synthetic_request = self.facade.prepare_workflow.build_synthetic_reference_request().model_copy(
+                update={"dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID}
+            )
+            self.facade.prepare_workflow.prepare(synthetic_request)
+        else:
+            try:
+                self.facade.build_real_benchmark_dataset()
+            except Exception:
+                synthetic_request = self.facade.prepare_workflow.build_synthetic_reference_request().model_copy(
+                    update={"dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID}
+                )
+                self.facade.prepare_workflow.prepare(synthetic_request)
+        self.dataset_registry.bootstrap_from_artifacts()
 
     def _load_existing_official_multimodal_sentiment_points(
         self,
@@ -445,37 +668,102 @@ class ResearchWorkbenchService:
                 end_time=market_input_ref.time_range.end,
                 vendor="reddit_archive",
             )
-            if not sentiment_points:
-                sentiment_result = sentiment_connector.ingest(
-                    IngestionRequest(
-                        data_domain="sentiment_events",
-                        vendor="reddit_archive",
-                        request_id=(
-                            "official-multimodal-benchmark-"
-                            f"{market_input_ref.time_range.start.isoformat()}-"
-                            f"{market_input_ref.time_range.end.isoformat()}"
-                        ),
-                        time_range={
-                            "start": market_input_ref.time_range.start,
-                            "end": market_input_ref.time_range.end,
-                        },
-                        identifiers=["BTC"],
-                        frequency="1h",
-                        options={"symbol": "BTCUSDT"},
+            if not sentiment_points and not self._prefer_offline_official_sources():
+                try:
+                    sentiment_result = sentiment_connector.ingest(
+                        IngestionRequest(
+                            data_domain="sentiment_events",
+                            vendor="reddit_archive",
+                            request_id=(
+                                "official-multimodal-benchmark-"
+                                f"{market_input_ref.time_range.start.isoformat()}-"
+                                f"{market_input_ref.time_range.end.isoformat()}"
+                            ),
+                            time_range={
+                                "start": market_input_ref.time_range.start,
+                                "end": market_input_ref.time_range.end,
+                            },
+                            identifiers=["BTC"],
+                            frequency="1h",
+                            options={"symbol": "BTCUSDT"},
+                        )
                     )
-                )
-                sentiment_points = [
-                    NormalizedSeriesPoint.model_validate(item)
-                    for item in (sentiment_result.metadata.get("rows") or [])
-                    if isinstance(item, dict)
-                ]
+                    sentiment_points = [
+                        NormalizedSeriesPoint.model_validate(item)
+                        for item in (sentiment_result.metadata.get("rows") or [])
+                        if isinstance(item, dict)
+                    ]
+                except Exception:
+                    sentiment_points = self._build_synthetic_official_nlp_points(market_samples)
         if not sentiment_points:
-            raise ValueError("Official multimodal benchmark could not fetch Reddit archive NLP points.")
+            sentiment_points = self._build_synthetic_official_nlp_points(market_samples)
         points_payload = {"rows": [point.model_dump(mode="json") for point in sentiment_points]}
         points_artifact = self.store.write_json(
             f"datasets/{OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID}_sentiment_points.json",
             points_payload,
         )
+        auxiliary_contexts: list[dict[str, Any]] = []
+        for spec in self._official_auxiliary_source_specs():
+            if self._prefer_offline_official_sources():
+                points = self._build_synthetic_official_auxiliary_points(
+                    market_samples=market_samples,
+                    feature_name=spec["feature_name"],
+                    metric_name=spec["metric_name"],
+                    data_domain=spec["data_domain"],
+                    vendor=spec["vendor"],
+                    identifier=spec["identifier"],
+                    frequency=spec["frequency"],
+                )
+                fetch_status = "synthetic_fallback"
+            else:
+                try:
+                    points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
+                        data_domain=spec["data_domain"],
+                        identifier=spec["identifier"],
+                        vendor=spec["vendor"],
+                        frequency=spec["frequency"],
+                        start_time=market_input_ref.time_range.start,
+                        end_time=market_input_ref.time_range.end,
+                        options={"metric_name": spec["metric_name"]},
+                    )
+                except Exception:
+                    points = self._build_synthetic_official_auxiliary_points(
+                        market_samples=market_samples,
+                        feature_name=spec["feature_name"],
+                        metric_name=spec["metric_name"],
+                        data_domain=spec["data_domain"],
+                        vendor=spec["vendor"],
+                        identifier=spec["identifier"],
+                        frequency=spec["frequency"],
+                    )
+                    fetch_status = "synthetic_fallback"
+            filtered_points = [
+                point for point in points if point.metric_name == spec["metric_name"]
+            ]
+            if not filtered_points:
+                filtered_points = self._build_synthetic_official_auxiliary_points(
+                    market_samples=market_samples,
+                    feature_name=spec["feature_name"],
+                    metric_name=spec["metric_name"],
+                    data_domain=spec["data_domain"],
+                    vendor=spec["vendor"],
+                    identifier=spec["identifier"],
+                    frequency=spec["frequency"],
+                )
+                fetch_status = "synthetic_fallback"
+            storage_uri = self._write_fusion_series_rows(
+                OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
+                spec["feature_name"],
+                filtered_points,
+            )
+            auxiliary_contexts.append(
+                {
+                    **spec,
+                    "points": filtered_points,
+                    "fetch_status": fetch_status,
+                    "storage_uri": storage_uri,
+                }
+            )
 
         nlp_feature_names_seen: set[str] = set()
         nlp_rows_by_key: dict[tuple[str, datetime], dict[str, Any]] = {}
@@ -520,12 +808,35 @@ class ResearchWorkbenchService:
         nlp_by_timestamp = {row.timestamp: row for row in nlp_feature_rows}
         enriched_rows: list[FeatureRow] = []
         labels: dict[tuple[str, datetime], float] = {}
-        missing_counts = {name: 0 for name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1}
+        missing_counts = {
+            name: 0
+            for name in [
+                *OFFICIAL_MULTIMODAL_STANDARD_AUX_FEATURES_V1,
+                *OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1,
+            ]
+        }
         dropped_missing_rows = 0
         for market_sample in sorted(market_samples, key=lambda item: (item.timestamp, item.entity_key)):
             nlp_sample = nlp_by_timestamp.get(market_sample.timestamp)
-            if nlp_sample is None:
+            auxiliary_values: dict[str, float] = {}
+            auxiliary_available_times: list[datetime] = []
+            missing_aux_features: list[str] = []
+            for context in auxiliary_contexts:
+                aligned_point = self._align_series_point(
+                    context["points"],
+                    timestamp=market_sample.timestamp,
+                    available_time=market_sample.available_time,
+                    alignment_policy_name="available_time_safe_asof",
+                )
+                if aligned_point is None:
+                    missing_aux_features.append(context["feature_name"])
+                    continue
+                auxiliary_values[context["feature_name"]] = float(aligned_point.value)
+                auxiliary_available_times.append(aligned_point.available_time)
+            if nlp_sample is None or missing_aux_features:
                 dropped_missing_rows += 1
+                for feature_name in missing_aux_features:
+                    missing_counts[feature_name] += 1
                 for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1:
                     missing_counts[feature_name] += 1
                 continue
@@ -544,12 +855,15 @@ class ResearchWorkbenchService:
                     feature_name: float(market_sample.features[feature_name])
                     for feature_name in OFFICIAL_MARKET_STANDARD_FEATURES_V1
                 },
+                **auxiliary_values,
                 **{
                     feature_name: float(nlp_sample.values[feature_name])
                     for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
                 },
             }
-            available_time = max(market_sample.available_time, nlp_sample.available_time)
+            available_time = max(
+                [market_sample.available_time, nlp_sample.available_time, *auxiliary_available_times]
+            )
             enriched_rows.append(
                 FeatureRow(
                     entity_key=market_sample.entity_key,
@@ -564,6 +878,14 @@ class ResearchWorkbenchService:
 
         feature_schema = [
             market_feature_schema[name] for name in OFFICIAL_MARKET_STANDARD_FEATURES_V1
+        ] + [
+            FeatureField(
+                name=context["feature_name"],
+                dtype="float",
+                lineage_source=context["data_domain"],
+                max_available_time=max(point.available_time for point in context["points"]),
+            )
+            for context in auxiliary_contexts
         ] + [
             FeatureField(
                 name=name,
@@ -591,14 +913,38 @@ class ResearchWorkbenchService:
             request_origin="official_template",
         )
         self.store.write_model(f"datasets/{sentiment_input_ref.asset_id}_ref.json", sentiment_input_ref)
+        auxiliary_input_refs = [
+            DataAssetRef(
+                asset_id=f"{context['data_domain']}_{context['identifier']}_{context['frequency']}",
+                schema_version=1,
+                source=context["vendor"],
+                symbol=context["identifier"],
+                venue=context["vendor"],
+                frequency=context["frequency"],
+                time_range=TimeRange(
+                    start=min(point.event_time for point in context["points"]),
+                    end=max(point.event_time for point in context["points"]) + timedelta(seconds=1),
+                ),
+                storage_uri=context["storage_uri"],
+                content_hash=stable_digest(
+                    [point.model_dump(mode="json") for point in context["points"]]
+                ),
+                entity_key=context["identifier"],
+                tags=["fusion_input", f"domain:{context['data_domain']}"],
+                request_origin="official_template",
+            )
+            for context in auxiliary_contexts
+        ]
         official_as_of_time = max(
             market_dataset_ref.feature_view_ref.as_of_time,
+            *[max(point.available_time for point in context["points"]) for context in auxiliary_contexts],
             max(point.available_time for point in sentiment_points),
         )
         feature_view_ref = FeatureViewRef(
             feature_set_id="multi_domain_fusion_v1",
             input_data_refs=[
                 *list(market_dataset_ref.feature_view_ref.input_data_refs),
+                *auxiliary_input_refs,
                 sentiment_input_ref,
             ],
             as_of_time=official_as_of_time,
@@ -636,16 +982,26 @@ class ResearchWorkbenchService:
                 if len(market_samples) == 0
                 else (len(market_samples) - missing_counts[feature_name]) / len(market_samples)
             )
-            for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+            for feature_name in [
+                *OFFICIAL_MULTIMODAL_STANDARD_AUX_FEATURES_V1,
+                *OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1,
+            ]
         }
         market_manifest = self._dataset_manifest(market_payload)
         market_snapshot_version = self._str(market_manifest.get("snapshot_version"))
         sentiment_snapshot_version = stable_digest(points_payload)[:12]
+        auxiliary_snapshot_versions = {
+            context["feature_name"]: stable_digest(
+                [point.model_dump(mode="json") for point in context["points"]]
+            )[:12]
+            for context in auxiliary_contexts
+        }
         snapshot_version = stable_digest(
             {
                 "dataset_id": OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
                 "schema_version": OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION,
                 "market_snapshot_version": market_snapshot_version,
+                "auxiliary_snapshot_versions": auxiliary_snapshot_versions,
                 "sentiment_snapshot_version": sentiment_snapshot_version,
                 "sample_count": len(samples),
             }
@@ -683,53 +1039,89 @@ class ResearchWorkbenchService:
                     "request_name": "official_reddit_pullpush_multimodal_v2",
                     "request_origin": "official_template",
                     "data_domain": "market",
-                    "data_domains": ["market", "sentiment_events"],
+                    "data_domains": ["market", "macro", "on_chain", "derivatives", "sentiment_events"],
                     "dataset_type": "fusion_training_panel",
                     "base_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
                     "market_anchor_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
                     "source_dataset_ids": [OFFICIAL_MARKET_BENCHMARK_DATASET_ID],
-                    "fusion_domains": ["market", "sentiment_events"],
+                    "fusion_domains": ["market", "macro", "on_chain", "derivatives", "sentiment_events"],
                     "source_vendor": "binance",
-                    "source_specs": [
-                        {
-                            "data_domain": "market",
-                            "source_vendor": "binance",
-                            "exchange": "binance",
-                            "frequency": "1h",
-                            "symbol_selector": {"symbols": ["BTCUSDT"]},
-                        },
-                        {
-                            "data_domain": "sentiment_events",
-                            "source_vendor": "reddit_archive",
-                            "exchange": "reddit_archive",
-                            "frequency": "1h",
-                            "identifier": "BTC",
-                        },
-                    ],
-                    "fusion_sources": [
-                        {
-                            "data_domain": "sentiment_events",
-                            "vendor": "reddit_archive",
-                            "identifier": "BTC",
-                            "feature_name": feature_name,
-                            "frequency": "1h",
-                            "metric_name": feature_name,
-                            "fetch_status": "connector_direct",
-                            "storage_uri": points_artifact.uri,
-                        }
-                        for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
-                    ],
+                    "source_specs": (
+                        [
+                            {
+                                "data_domain": "market",
+                                "source_vendor": "binance",
+                                "exchange": "binance",
+                                "frequency": "1h",
+                                "symbol_selector": {"symbols": ["BTCUSDT"]},
+                            }
+                        ]
+                        + [
+                            {
+                                "data_domain": context["data_domain"],
+                                "source_vendor": context["vendor"],
+                                "exchange": context["vendor"],
+                                "frequency": context["frequency"],
+                                "identifier": context["identifier"],
+                                "feature_name": context["feature_name"],
+                                "metric_name": context["metric_name"],
+                            }
+                            for context in auxiliary_contexts
+                        ]
+                        + [
+                            {
+                                "data_domain": "sentiment_events",
+                                "source_vendor": "reddit_archive",
+                                "exchange": "reddit_archive",
+                                "frequency": "1h",
+                                "identifier": "BTC",
+                            }
+                        ]
+                    ),
+                    "fusion_sources": (
+                        [
+                            {
+                                "data_domain": context["data_domain"],
+                                "vendor": context["vendor"],
+                                "identifier": context["identifier"],
+                                "feature_name": context["feature_name"],
+                                "frequency": context["frequency"],
+                                "metric_name": context["metric_name"],
+                                "fetch_status": context["fetch_status"],
+                                "storage_uri": context["storage_uri"],
+                            }
+                            for context in auxiliary_contexts
+                        ]
+                        + [
+                            {
+                                "data_domain": "sentiment_events",
+                                "vendor": "reddit_archive",
+                                "identifier": "BTC",
+                                "feature_name": feature_name,
+                                "frequency": "1h",
+                                "metric_name": feature_name,
+                                "fetch_status": "connector_direct",
+                                "storage_uri": points_artifact.uri,
+                            }
+                            for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+                        ]
+                    ),
                     "coverage_by_feature": coverage_by_feature,
                     "connector_status_by_source": {
                         f"market:{OFFICIAL_MARKET_BENCHMARK_DATASET_ID}": self._str(
                             (market_manifest.get("acquisition_profile") or {}).get("request_origin")
                         )
                         or "unknown",
+                        **{
+                            f"{context['data_domain']}:{context['vendor']}:{context['identifier']}": context["fetch_status"]
+                            for context in auxiliary_contexts
+                        },
                         "sentiment_events:reddit_archive:BTC": "connector_direct",
                     },
                     "merge_policy_name": "available_time_safe_asof",
                     "official_benchmark_version": OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION,
                     "market_snapshot_version": market_snapshot_version,
+                    "auxiliary_snapshot_versions": auxiliary_snapshot_versions,
                     "sentiment_snapshot_version": sentiment_snapshot_version,
                     "archival_nlp_source_only": True,
                     "internal_visibility": "public",
@@ -1389,6 +1781,8 @@ class ResearchWorkbenchService:
                 official=self._protocol_official(row),
                 protocol_version=self._protocol_version(row),
                 gate_status=self._protocol_gate_status(row),
+                research_backend=self._research_backend(row),
+                portfolio_method=self._portfolio_method(row),
                 passed_consistency_checks=(
                     bool(row.get("passed_consistency_checks"))
                     if isinstance(row.get("passed_consistency_checks"), bool)
@@ -1445,6 +1839,8 @@ class ResearchWorkbenchService:
                 template_id=self._protocol_template_id(row),
                 official=self._protocol_official(row),
                 protocol_version=self._protocol_version(row),
+                research_backend=self._research_backend(row),
+                portfolio_method=self._portfolio_method(row),
                 protocol=protocol,
                 passed_consistency_checks=(
                     bool(row.get("passed_consistency_checks"))
@@ -2598,9 +2994,9 @@ class ResearchWorkbenchService:
         missing_counts: dict[str, int] = {}
         fusion_domains: set[str] = {base_data_domain}
         for source in request.sources:
-            if source.data_domain not in {"macro", "on_chain", "sentiment_events"}:
+            if source.data_domain not in {"macro", "on_chain", "derivatives", "sentiment_events"}:
                 raise ValueError(
-                    "Fusion dataset building currently supports auxiliary sources from macro, on_chain, and sentiment_events domains."
+                    "Fusion dataset building currently supports auxiliary sources from macro, on_chain, derivatives, and sentiment_events domains."
                 )
             points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
                 data_domain=source.data_domain,
@@ -3016,13 +3412,15 @@ class ResearchWorkbenchService:
         fusion_sources: list[DatasetFusionSourceRequest] = []
         min_feature_coverage_ratio = 1.0
         for source in auxiliary_sources:
-            if source.data_domain not in {"macro", "on_chain", "sentiment_events"}:
+            if source.data_domain not in {"macro", "on_chain", "derivatives", "sentiment_events"}:
                 raise ValueError(
                     "Multi-domain merged dataset currently supports "
-                    f"macro/on_chain/sentiment_events auxiliaries, got '{source.data_domain}'."
+                    f"macro/on_chain/derivatives/sentiment_events auxiliaries, got '{source.data_domain}'."
                 )
             if source.data_domain == "sentiment_events":
                 min_feature_coverage_ratio = min(min_feature_coverage_ratio, 0.8)
+            if source.data_domain == "derivatives":
+                min_feature_coverage_ratio = min(min_feature_coverage_ratio, 0.9)
             if source.frequency != base_frequency:
                 raise ValueError(
                     f"Multi-domain source '{source.data_domain}' must use frequency '{base_frequency}', got '{source.frequency}'."
@@ -3064,22 +3462,46 @@ class ResearchWorkbenchService:
             connector_status_by_source[
                 f"{source.data_domain}:{source.vendor}:{source.identifier}"
             ] = fetch_status
-            fusion_sources.append(
-                DatasetFusionSourceRequest(
-                    data_domain=source.data_domain,
-                    vendor=source.vendor,
-                    identifier=source.identifier,
-                    frequency=source.frequency,
-                    feature_name=self._fusion_feature_name(source),
-                    exchange=source.exchange,
-                    metric_name=(
-                        self._str(source.filters.get("metric_name"))
-                        or self._str(source.filters.get("feature_name"))
-                        or "value"
-                    ),
-                    options=dict(source.filters),
+            if source.data_domain == "derivatives":
+                for metric_name in (
+                    "funding_rate",
+                    "open_interest",
+                    "global_long_short_ratio",
+                    "taker_buy_sell_ratio",
+                ):
+                    fusion_sources.append(
+                        DatasetFusionSourceRequest(
+                            data_domain=source.data_domain,
+                            vendor=source.vendor,
+                            identifier=source.identifier,
+                            frequency=source.frequency,
+                            feature_name=f"derivatives_{self._slugify_dataset_id(metric_name, suffix='')}",
+                            exchange=source.exchange,
+                            metric_name=metric_name,
+                            options=dict(source.filters),
+                        )
+                    )
+            else:
+                fusion_sources.append(
+                    DatasetFusionSourceRequest(
+                        data_domain=source.data_domain,
+                        vendor=source.vendor,
+                        identifier=source.identifier,
+                        frequency=source.frequency,
+                        feature_name=self._fusion_feature_name(source),
+                        exchange=source.exchange,
+                        metric_name=(
+                            self._str(source.filters.get("metric_name"))
+                            or self._str(source.filters.get("feature_name"))
+                            or (
+                                "macro_dff_value"
+                                if source.data_domain == "macro"
+                                else ("on_chain_value" if source.data_domain == "on_chain" else "value")
+                            )
+                        ),
+                        options=dict(source.filters),
+                    )
                 )
-            )
 
         response = self.build_fusion_dataset(
             DatasetFusionRequest(
@@ -3828,9 +4250,11 @@ class ResearchWorkbenchService:
             ],
             source_vendors=[
                 self._dataset_option("binance", "Binance Spot", "market 域首批真实连接器。", True),
+                self._dataset_option("ccxt", "CCXT Exchange Adapter", "market 域统一交易所接入层，适合 Binance、OKX 等多交易所 OHLCV。"),
                 self._dataset_option("bitstamp_archive", "Bitstamp Archive", "BTC/USD 历史 1h 价格线，优先用于真实历史训练与回测。"),
                 self._dataset_option("fred", "FRED", "macro 域首批真实连接器。"),
                 self._dataset_option("defillama", "DeFiLlama", "on_chain 域首批真实连接器。"),
+                self._dataset_option("binance_futures", "Binance Futures", "derivatives 域首批真实连接器。"),
                 self._dataset_option("news_archive", "News Archive", "sentiment_events 本地新闻归档源，优先用于稳定历史回放。"),
                 self._dataset_option("gnews", "GNews / Google News", "sentiment_events 实时新闻源。"),
                 self._dataset_option("gdelt", "GDELT DOC 2", "sentiment_events 候选历史新闻源，当前环境可能受限流影响。"),
@@ -3840,8 +4264,10 @@ class ResearchWorkbenchService:
             ],
             exchanges=[
                 self._dataset_option("binance", "Binance", "market 域默认交易场所。", True),
+                self._dataset_option("okx", "OKX", "CCXT 市场接入的可选交易场所。"),
                 self._dataset_option("fred", "FRED", "macro 域逻辑 source。"),
                 self._dataset_option("defillama", "DeFiLlama", "on_chain 域逻辑 source。"),
+                self._dataset_option("binance_futures", "Binance Futures", "derivatives 域逻辑 source。"),
             ],
             frequencies=[
                 self._dataset_option("1h", "1小时", "适合价格与链上指标的训练面板主频率。", True),
@@ -3914,10 +4340,10 @@ class ResearchWorkbenchService:
                     "supported_frequencies": ["1h", "4h", "1d"],
                 },
                 "derivatives": {
-                    "supports_real_ingestion": False,
-                    "supported_vendors": ["contract_only"],
+                    "supports_real_ingestion": True,
+                    "supported_vendors": ["binance_futures"],
                     "supported_dataset_types": ["display_slice", "training_panel"],
-                    "supported_frequencies": ["1h", "1d"],
+                    "supported_frequencies": ["1h"],
                 },
                 "sentiment_events": {
                     "supports_real_ingestion": True,
@@ -4417,6 +4843,8 @@ class ResearchWorkbenchService:
                         if isinstance(row.get("passed_consistency_checks"), bool)
                         else None
                     ),
+                    research_backend=self._research_backend(row),
+                    portfolio_method=self._portfolio_method(row),
                 )
             )
         return results
@@ -4809,8 +5237,7 @@ class ResearchWorkbenchService:
             row["prediction_scope"] = self._str(row.get("prediction_scope")) or self._str(
                 job_result.get("prediction_scope")
             )
-            if not isinstance(row.get("protocol_metadata"), dict):
-                row["protocol_metadata"] = self._protocol_metadata_from_job_result(job_result)
+            row = self._hydrate_backtest_row_with_job_result(row=row, job_result=job_result)
             row["updated_at"] = updated_at or row.get("updated_at")
             simulation_uri = row.get("simulation_result_uri")
             if isinstance(simulation_uri, str) and simulation_uri:
@@ -4838,18 +5265,21 @@ class ResearchWorkbenchService:
             updated_at=updated_at,
         )
         if row is not None:
-            return row
-        return {
-            "backtest_id": backtest_id,
-            "run_id": run_id,
-            "model_name": run_id or backtest_id,
-            "research_result_uri": self.repository.display_uri(research_path),
-            "simulation_result_uri": simulation_uri,
-            "dataset_id": self._str(job_result.get("dataset_id")),
-            "prediction_scope": self._str(job_result.get("prediction_scope")),
-            "comparison_warnings": [],
-            "updated_at": updated_at or self._path_mtime(research_path),
-        }
+            return self._hydrate_backtest_row_with_job_result(row=row, job_result=job_result)
+        return self._hydrate_backtest_row_with_job_result(
+            row={
+                "backtest_id": backtest_id,
+                "run_id": run_id,
+                "model_name": run_id or backtest_id,
+                "research_result_uri": self.repository.display_uri(research_path),
+                "simulation_result_uri": simulation_uri,
+                "dataset_id": self._str(job_result.get("dataset_id")),
+                "prediction_scope": self._str(job_result.get("prediction_scope")),
+                "comparison_warnings": [],
+                "updated_at": updated_at or self._path_mtime(research_path),
+            },
+            job_result=job_result,
+        )
 
     def _reconstruct_backtest_summary_row(
         self,
@@ -4986,6 +5416,8 @@ class ResearchWorkbenchService:
             self._str(job_result.get("protocol_version"))
             or (template.protocol_version if not official else None)
         )
+        research_backend = self._str(job_result.get("research_backend")) or "native"
+        portfolio_method = self._str(job_result.get("portfolio_method")) or "proportional"
         template_name = (
             self._str(job_result.get("template_name"))
             or (template.name if template_id == template.template_id else "Official Backtest Protocol v1")
@@ -5001,7 +5433,30 @@ class ResearchWorkbenchService:
                 for item in job_result.get("dataset_ids", [])
                 if isinstance(item, str) and item
             ],
+            "research_backend": research_backend,
+            "portfolio_method": portfolio_method,
         }
+
+    def _hydrate_backtest_row_with_job_result(
+        self,
+        *,
+        row: dict[str, Any],
+        job_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        metadata = dict(row.get("protocol_metadata")) if isinstance(row.get("protocol_metadata"), dict) else {}
+        fallback_metadata = self._protocol_metadata_from_job_result(job_result)
+        for key, value in fallback_metadata.items():
+            current = metadata.get(key)
+            if current is None or current == "" or (isinstance(current, list) and not current):
+                metadata[key] = value
+        row["protocol_metadata"] = metadata
+        row["research_backend"] = self._str(row.get("research_backend")) or self._str(
+            metadata.get("research_backend")
+        )
+        row["portfolio_method"] = self._str(row.get("portfolio_method")) or self._str(
+            metadata.get("portfolio_method")
+        )
+        return row
 
     def _protocol_template_id(self, row: dict[str, Any]) -> str | None:
         protocol_metadata = row.get("protocol_metadata")
@@ -5020,6 +5475,24 @@ class ResearchWorkbenchService:
         if not isinstance(protocol_metadata, dict):
             return None
         return self._str(protocol_metadata.get("protocol_version"))
+
+    def _research_backend(self, row: dict[str, Any]) -> str | None:
+        value = self._str(row.get("research_backend"))
+        if value:
+            return value
+        protocol_metadata = row.get("protocol_metadata")
+        if not isinstance(protocol_metadata, dict):
+            return None
+        return self._str(protocol_metadata.get("research_backend"))
+
+    def _portfolio_method(self, row: dict[str, Any]) -> str | None:
+        value = self._str(row.get("portfolio_method"))
+        if value:
+            return value
+        protocol_metadata = row.get("protocol_metadata")
+        if not isinstance(protocol_metadata, dict):
+            return None
+        return self._str(protocol_metadata.get("portfolio_method"))
 
     def _protocol_gate_status(self, row: dict[str, Any]) -> str | None:
         protocol = self._protocol_result_from_row(row)

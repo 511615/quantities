@@ -165,6 +165,7 @@ class EventDrivenSimulationEngine(ResearchBacktestEngine):
             ),
             strategy_config=strategy_config,
             risk_constraints=risk_constraints,
+            market_bars=market_bars,
         )
         targets.sort(key=lambda item: item[0].timestamp)
         parent_orders: list[ParentOrder] = []

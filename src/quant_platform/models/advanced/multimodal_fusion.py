@@ -34,6 +34,9 @@ class MultimodalFusionModel(BaseModelPlugin):
         super().__init__(spec)
         self._training_sample_count = 0
         self._feature_names = [field.name for field in spec.input_schema]
+        self._modality_order: list[str] = []
+        self._modality_feature_names: dict[str, list[str]] = {}
+        self._branch_states: dict[str, dict[str, Any] | None] = {}
         self._market_feature_names: list[str] = []
         self._text_feature_names: list[str] = []
         self._market_branch: dict[str, Any] | None = None
@@ -56,79 +59,84 @@ class MultimodalFusionModel(BaseModelPlugin):
         if not targets:
             raise ValueError("training samples cannot be empty")
         self._feature_names = train_input.feature_names
+        self._modality_order = [
+            str(item)
+            for item in train_input.blocks.get("modality_order", [])
+            if isinstance(item, str)
+        ]
+        self._modality_feature_names = {
+            str(key): [str(item) for item in value if isinstance(item, str)]
+            for key, value in dict(train_input.blocks.get("modality_feature_names", {})).items()
+            if isinstance(key, str) and isinstance(value, list)
+        }
         self._market_feature_names = list(train_input.blocks.get("market_feature_names", []))
         self._text_feature_names = list(train_input.blocks.get("text_feature_names", []))
         self._training_sample_count = len(targets)
-        train_market_features = self._build_market_feature_matrix(train_input.blocks)
-        train_text_features = self._build_text_feature_matrix(train_input.blocks)
-        valid_market_features = (
-            self._build_market_feature_matrix(valid_input.blocks) if valid_input is not None else None
+        train_modality_features = self._build_modality_feature_matrices(train_input.blocks)
+        valid_modality_features = (
+            self._build_modality_feature_matrices(valid_input.blocks) if valid_input is not None else {}
         )
-        valid_text_features = (
-            self._build_text_feature_matrix(valid_input.blocks) if valid_input is not None else None
-        )
-        valid_market_features = slice_valid_features(valid_input, valid_market_features)
-        valid_text_features = slice_valid_features(valid_input, valid_text_features)
+        valid_modality_features = {
+            modality: slice_valid_features(valid_input, features)
+            for modality, features in valid_modality_features.items()
+        }
         valid_targets = build_valid_targets(valid_input)
-
-        market_training = fit_linear_regressor(
-            train_market_features,
-            targets,
-            valid_features=valid_market_features,
-            valid_targets=valid_targets,
-            hyperparams=self.spec.hyperparams,
-        )
-        self._market_branch = self._serialize_training(market_training)
-        market_train_predictions = self._predict_with_state(
-            train_market_features,
-            self._market_branch,
-        )
-        market_valid_predictions = (
-            self._predict_with_state(valid_market_features, self._market_branch)
-            if valid_market_features is not None
-            else None
+        modality_presence_train = self._modality_presence(train_input.blocks)
+        modality_presence_valid = (
+            {
+                key: (self._slice_valid_list(valid_input, value) or [])
+                for key, value in self._modality_presence(valid_input.blocks).items()
+            }
+            if valid_input is not None
+            else {}
         )
 
-        text_training: AdvancedTrainingArtifacts | None = None
-        if train_text_features and train_text_features[0]:
-            text_training = fit_linear_regressor(
-                train_text_features,
+        self._branch_states = {}
+        branch_predictions_train: dict[str, list[float]] = {}
+        branch_predictions_valid: dict[str, list[float]] = {}
+        branch_metrics: dict[str, float] = {}
+        branch_steps = 0
+        for modality in self._modality_order:
+            train_features = train_modality_features.get(modality, [])
+            if not train_features or not train_features[0]:
+                self._branch_states[modality] = None
+                branch_predictions_train[modality] = [0.0 for _ in targets]
+                branch_predictions_valid[modality] = (
+                    [0.0 for _ in valid_targets] if valid_targets is not None else []
+                )
+                branch_metrics[f"{modality}_branch_train_loss"] = 0.0
+                branch_metrics[f"{modality}_branch_valid_loss"] = 0.0
+                continue
+            training = fit_linear_regressor(
+                train_features,
                 targets,
-                valid_features=valid_text_features,
+                valid_features=valid_modality_features.get(modality),
                 valid_targets=valid_targets,
                 hyperparams=self.spec.hyperparams,
             )
-            self._text_branch = self._serialize_training(text_training)
-            text_train_predictions = self._predict_with_state(
-                train_text_features,
-                self._text_branch,
+            state = self._serialize_training(training)
+            self._branch_states[modality] = state
+            branch_predictions_train[modality] = self._predict_with_state(train_features, state)
+            branch_predictions_valid[modality] = self._predict_with_state(
+                valid_modality_features.get(modality),
+                state,
             )
-            text_valid_predictions = (
-                self._predict_with_state(valid_text_features, self._text_branch)
-                if valid_text_features is not None
-                else None
-            )
-        else:
-            self._text_branch = None
-            text_train_predictions = [0.0 for _ in targets]
-            text_valid_predictions = (
-                [0.0 for _ in valid_targets] if valid_targets is not None else None
-            )
+            branch_metrics[f"{modality}_branch_train_loss"] = float(training.train_loss)
+            branch_metrics[f"{modality}_branch_valid_loss"] = float(training.valid_loss)
+            branch_steps += int(training.trained_steps)
 
-        train_text_mask = [bool(value) for value in train_input.blocks.get("text_mask", [])]
-        valid_text_mask = self._slice_valid_list(valid_input, valid_input.blocks.get("text_mask", [])) if valid_input is not None else None
+        self._market_branch = self._branch_states.get("market")
+        self._text_branch = self._branch_states.get("nlp")
         blender_train_features = self._build_blender_feature_matrix(
-            market_train_predictions,
-            text_train_predictions,
-            train_text_mask,
+            branch_predictions_train,
+            modality_presence_train,
         )
         blender_valid_features = (
             self._build_blender_feature_matrix(
-                market_valid_predictions or [],
-                text_valid_predictions or [],
-                [bool(value) for value in (valid_text_mask or [])],
+                branch_predictions_valid,
+                modality_presence_valid,
             )
-            if valid_targets is not None and market_valid_predictions is not None
+            if valid_targets is not None
             else None
         )
         blender_training = fit_linear_regressor(
@@ -144,14 +152,10 @@ class MultimodalFusionModel(BaseModelPlugin):
         self._train_loss = float(blender_training.train_loss)
         self._valid_loss = float(blender_training.valid_loss)
         self._best_epoch = int(blender_training.best_epoch)
-        self._trained_steps = int(
-            market_training.trained_steps
-            + (text_training.trained_steps if text_training is not None else 0)
-            + blender_training.trained_steps
-        )
+        self._trained_steps = int(branch_steps + blender_training.trained_steps)
         self._residual_scale = float(blender_training.residual_scale)
         self._confidence_source = blender_training.confidence_source
-        return {
+        metrics = {
             "mae": blender_training.train_loss,
             "train_loss": blender_training.train_loss,
             "valid_mae": blender_training.valid_loss,
@@ -159,11 +163,9 @@ class MultimodalFusionModel(BaseModelPlugin):
             "best_epoch": float(blender_training.best_epoch),
             "trained_steps": float(self._trained_steps),
             "sample_count": float(len(targets)),
-            "market_branch_train_loss": float(market_training.train_loss),
-            "market_branch_valid_loss": float(market_training.valid_loss),
-            "text_branch_train_loss": float(text_training.train_loss) if text_training else 0.0,
-            "text_branch_valid_loss": float(text_training.valid_loss) if text_training else 0.0,
         }
+        metrics.update(branch_metrics)
+        return metrics
 
     def predict(
         self,
@@ -172,22 +174,18 @@ class MultimodalFusionModel(BaseModelPlugin):
     ) -> ModelPredictionOutputs:
         _ = model_run_id
         if self._blender_branch is not None and self._market_branch is not None:
-            market_features = self._build_market_feature_matrix(predict_input.blocks)
-            text_features = self._build_text_feature_matrix(predict_input.blocks)
-            text_mask = [bool(value) for value in predict_input.blocks.get("text_mask", [])]
-            market_predictions = self._predict_with_state(
-                market_features,
-                self._market_branch,
-            )
-            text_predictions = (
-                self._predict_with_state(text_features, self._text_branch)
-                if self._text_branch is not None and text_features and text_features[0]
-                else [0.0 for _ in market_predictions]
-            )
+            modality_features = self._build_modality_feature_matrices(predict_input.blocks)
+            modality_presence = self._modality_presence(predict_input.blocks)
+            branch_predictions = {
+                modality: self._predict_with_state(
+                    modality_features.get(modality),
+                    self._branch_states.get(modality),
+                )
+                for modality in self._modality_order
+            }
             blender_features = self._build_blender_feature_matrix(
-                market_predictions,
-                text_predictions,
-                text_mask,
+                branch_predictions,
+                modality_presence,
             )
             outputs = predict_linear_regressor(
                 blender_features,
@@ -200,7 +198,8 @@ class MultimodalFusionModel(BaseModelPlugin):
             )
             metadata = dict(outputs.metadata or {})
             metadata["fusion_strategy"] = self._fusion_strategy
-            metadata["market_branch_present"] = True
+            metadata["branch_modalities"] = list(self._modality_order)
+            metadata["market_branch_present"] = self._market_branch is not None
             metadata["text_branch_present"] = self._text_branch is not None
             return ModelPredictionOutputs(
                 predictions=list(outputs.predictions),
@@ -231,6 +230,9 @@ class MultimodalFusionModel(BaseModelPlugin):
             state={
                 "estimator": {
                     "fusion_strategy": self._fusion_strategy,
+                    "modality_order": self._modality_order,
+                    "modality_feature_names": self._modality_feature_names,
+                    "branch_states": self._branch_states,
                     "market_feature_names": self._market_feature_names,
                     "text_feature_names": self._text_feature_names,
                     "market_branch": self._market_branch,
@@ -242,7 +244,7 @@ class MultimodalFusionModel(BaseModelPlugin):
             },
             training_sample_count=self._training_sample_count,
             feature_names=self._feature_names,
-            input_adapter_key="market_text_aligned",
+            input_adapter_key="multimodal_aligned_v2",
             training_config=dict(self.spec.hyperparams),
             training_metrics={
                 "train_loss": self._train_loss,
@@ -253,12 +255,15 @@ class MultimodalFusionModel(BaseModelPlugin):
             checkpoint_tag="best_validation",
             input_metadata={
                 "lookback": int(self.spec.hyperparams.get("lookback", 1)),
+                "modality_order": list(self._modality_order),
+                "modality_feature_names": dict(self._modality_feature_names),
                 "market_feature_names": list(self._market_feature_names),
                 "text_feature_names": list(self._text_feature_names),
             },
             prediction_metadata={
                 "confidence_source": self._confidence_source,
                 "fusion_strategy": self._fusion_strategy,
+                "branch_modalities": list(self._modality_order),
             },
         )
 
@@ -267,14 +272,34 @@ class MultimodalFusionModel(BaseModelPlugin):
         state = load_saved_state(artifact_dir)["estimator"]
         model = cls(spec)
         model._fusion_strategy = str(state.get("fusion_strategy", model._fusion_strategy))
+        model._modality_order = [
+            str(item) for item in state.get("modality_order", []) if isinstance(item, str)
+        ]
+        model._modality_feature_names = {
+            str(key): [str(item) for item in value if isinstance(item, str)]
+            for key, value in dict(state.get("modality_feature_names", {})).items()
+            if isinstance(key, str) and isinstance(value, list)
+        }
         model._market_feature_names = list(state.get("market_feature_names", []))
         model._text_feature_names = list(state.get("text_feature_names", []))
         model._feature_names = list(state.get("feature_names", model._feature_names))
         if "market_branch" in state or "blender_branch" in state:
+            branch_states = state.get("branch_states")
+            if isinstance(branch_states, dict):
+                model._branch_states = {
+                    str(key): cls._deserialize_branch(value)
+                    for key, value in branch_states.items()
+                    if isinstance(key, str)
+                }
             model._market_branch = cls._deserialize_branch(state.get("market_branch"))
             model._text_branch = cls._deserialize_branch(state.get("text_branch"))
             model._blender_branch = cls._deserialize_branch(state.get("blender_branch"))
             model._legacy_estimator = cls._deserialize_branch(state.get("legacy_estimator"))
+            if not model._branch_states:
+                model._branch_states = {
+                    "market": model._market_branch,
+                    "nlp": model._text_branch,
+                }
             if model._blender_branch is not None:
                 model._residual_scale = float(model._blender_branch.get("residual_scale", 1.0))
                 model._confidence_source = str(
@@ -292,6 +317,40 @@ class MultimodalFusionModel(BaseModelPlugin):
         model._residual_scale = float(model._legacy_estimator["residual_scale"])
         model._confidence_source = str(model._legacy_estimator["confidence_source"])
         return model
+
+    def _build_modality_feature_matrices(self, blocks: dict[str, object]) -> dict[str, list[list[float]]]:
+        modality_blocks = blocks.get("modality_blocks")
+        modality_presence = self._modality_presence(blocks)
+        if isinstance(modality_blocks, dict):
+            feature_rows: dict[str, list[list[float]]] = {}
+            for modality, values in modality_blocks.items():
+                if not isinstance(modality, str) or not isinstance(values, list):
+                    continue
+                mask = [bool(item) for item in modality_presence.get(modality, [])]
+                rows: list[list[float]] = []
+                for index, row in enumerate(values):
+                    raw_values = flatten_numeric(row)
+                    if index < len(mask) and mask[index]:
+                        rows.append(raw_values)
+                    else:
+                        rows.append([0.0 for _ in raw_values])
+                feature_rows[modality] = rows
+            if feature_rows:
+                return feature_rows
+        return {
+            "market": self._build_market_feature_matrix(blocks),
+            "nlp": self._build_text_feature_matrix(blocks),
+        }
+
+    def _modality_presence(self, blocks: dict[str, object]) -> dict[str, list[bool]]:
+        values = blocks.get("modality_presence_mask")
+        if isinstance(values, dict):
+            return {
+                str(key): [bool(item) for item in value]
+                for key, value in values.items()
+                if isinstance(key, str) and isinstance(value, list)
+            }
+        return {"nlp": [bool(value) for value in blocks.get("text_mask", [])]}
 
     def _build_market_feature_matrix(self, blocks: dict[str, object]) -> list[list[float]]:
         market_block = blocks.get("market_block", [])
@@ -335,27 +394,34 @@ class MultimodalFusionModel(BaseModelPlugin):
 
     def _build_blender_feature_matrix(
         self,
-        market_predictions: list[float],
-        text_predictions: list[float],
-        text_mask: list[bool],
+        branch_predictions: dict[str, list[float]],
+        modality_presence: dict[str, list[bool]],
     ) -> list[list[float]]:
+        branch_order = list(self._modality_order or branch_predictions.keys())
+        primary_predictions = branch_predictions.get("market")
+        if primary_predictions is None:
+            primary_predictions = next(iter(branch_predictions.values()), [])
         feature_rows: list[list[float]] = []
-        for index in range(len(market_predictions)):
-            market_prediction = float(market_predictions[index])
-            text_prediction = (
-                float(text_predictions[index]) if index < len(text_predictions) else 0.0
-            )
-            text_present = bool(text_mask[index]) if index < len(text_mask) else False
-            gap = text_prediction - market_prediction
-            feature_rows.append(
+        for index in range(len(primary_predictions)):
+            base_prediction = float(primary_predictions[index])
+            row: list[float] = []
+            observed_predictions: list[float] = []
+            for modality in branch_order:
+                predictions = branch_predictions.get(modality, [])
+                prediction = float(predictions[index]) if index < len(predictions) else 0.0
+                present_mask = modality_presence.get(modality, [])
+                present = bool(present_mask[index]) if index < len(present_mask) else False
+                row.extend([prediction, 1.0 if present else 0.0, prediction - base_prediction])
+                if present:
+                    observed_predictions.append(prediction)
+            row.extend(
                 [
-                    market_prediction,
-                    text_prediction,
-                    gap,
-                    abs(gap),
-                    1.0 if text_present else 0.0,
+                    float(len(observed_predictions)),
+                    average(observed_predictions),
+                    max(observed_predictions, default=base_prediction) - min(observed_predictions, default=base_prediction),
                 ]
             )
+            feature_rows.append(row)
         return feature_rows
 
     def _predict_with_state(

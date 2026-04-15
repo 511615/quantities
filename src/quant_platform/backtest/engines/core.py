@@ -159,12 +159,14 @@ def prepare_targets(
     request: BacktestRequest,
     strategy_config: StrategyConfig,
     risk_constraints: RiskConstraintSet,
+    market_bars: list[NormalizedMarketBar] | None = None,
 ) -> list[tuple[TargetInstruction, object]]:
     targets = build_target_instructions(
         signal_frame=signal_frame,
         strategy_config=strategy_config,
         portfolio_config=request.portfolio_config,
         risk_constraints=risk_constraints,
+        market_bars=market_bars,
     )
     return [
         (target, order_eligible_time(target.timestamp, request.execution_config))

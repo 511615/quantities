@@ -6,6 +6,7 @@ import { LaunchBacktestDrawer } from "../features/launch-backtest/LaunchBacktest
 import { useArtifactPreview, useRunDetail } from "../shared/api/hooks";
 import type { ArtifactView, RunDetailView } from "../shared/api/types";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
+import { formatModalityLabel } from "../shared/lib/labels";
 import { I18N } from "../shared/lib/i18n";
 import { formatArtifactLabel } from "../shared/lib/labels";
 import { mapRunDetail } from "../shared/view-model/mappers";
@@ -94,6 +95,22 @@ function stringValue(value: unknown): string {
     return JSON.stringify(value);
   }
   return String(value);
+}
+
+function researchBackendLabel(value: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    native: "Native",
+    vectorbt: "vectorbt",
+  };
+  return labels[value ?? ""] ?? (value ?? "--");
+}
+
+function portfolioMethodLabel(value: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    proportional: "Proportional",
+    skfolio_mean_risk: "skfolio Mean-Risk",
+  };
+  return labels[value ?? ""] ?? (value ?? "--");
 }
 
 function combineArtifacts(detail: RunDetailView): ArtifactView[] {
@@ -405,7 +422,7 @@ export function RunDetailPage() {
             {compositionSources.map((source) => (
               <div className="stack-item align-start" key={`${source.run_id}-${source.modality}`}>
                 <strong>{source.run_id}</strong>
-                <span>{`模态：${source.modality || "--"} / 权重：${source.weight ?? "--"} / 模型：${source.model_name || "--"}`}</span>
+                <span>{`模态：${formatModalityLabel(source.modality)} / 权重：${source.weight ?? "--"} / 模型：${source.model_name || "--"}`}</span>
                 <span className="table-title-cell">
                   {(source.dataset_ids ?? []).length > 0
                     ? (source.dataset_ids ?? []).map((datasetId) => (
@@ -537,6 +554,7 @@ export function RunDetailPage() {
                     <strong>
                       <Link to={`/backtests/${encodeURIComponent(backtest.backtest_id)}`}>{backtest.backtest_id}</Link>
                     </strong>
+                    <div>{`${researchBackendLabel(backtest.research_backend)} / ${portfolioMethodLabel(backtest.portfolio_method)}`}</div>
                     <div>{`年化收益 ${formatPercent(backtest.annual_return)}`}</div>
                     <div>
                       <GlossaryHint hintKey="max_drawdown" /> {formatPercent(backtest.max_drawdown)}

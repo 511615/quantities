@@ -17,7 +17,7 @@ import type {
 } from "../../shared/api/types";
 import { formatDate } from "../../shared/lib/format";
 import { I18N } from "../../shared/lib/i18n";
-import { formatStageNameLabel } from "../../shared/lib/labels";
+import { formatModalityLabel, formatStageNameLabel } from "../../shared/lib/labels";
 import {
   localizeBacktestGateReason,
   localizeBacktestMetadata,
@@ -39,6 +39,8 @@ type RunOfficialEligibility = {
 };
 
 type OfficialWindowDays = 30 | 90 | 180 | 365;
+type ResearchBackend = "native" | "vectorbt";
+type PortfolioMethod = "proportional" | "skfolio_mean_risk";
 
 const OFFICIAL_MARKET_DATASET_ID = "baseline_real_benchmark_dataset";
 const OFFICIAL_MULTIMODAL_DATASET_ID = "official_reddit_pullpush_multimodal_v2_fusion";
@@ -119,6 +121,18 @@ function localizeBacktestOptionLabel(value: string, label?: string | null) {
   if (normalized === "standard") {
     return "Standard";
   }
+  if (normalized === "native" || normalized === "native research") {
+    return "Native";
+  }
+  if (normalized === "vectorbt") {
+    return "vectorbt";
+  }
+  if (normalized === "proportional") {
+    return "Proportional";
+  }
+  if (normalized === "skfolio_mean_risk" || normalized === "skfolio mean-risk") {
+    return "skfolio Mean-Risk";
+  }
   return label ?? value;
 }
 
@@ -190,7 +204,7 @@ function localizeRequirementItemText(item: string) {
     "Official rolling benchmark version",
     "Official rolling window size and actual window start/end time",
     "Official market benchmark dataset id",
-    "Official multimodal benchmark dataset id when text signals are used",
+    "Official multimodal benchmark dataset id when non-market signals are used",
   ] as const;
 
   replacements.forEach((source) => {
@@ -241,6 +255,8 @@ export function LaunchBacktestDrawer({
   const [datasetPreset, setDatasetPreset] = useState<"smoke" | "real_benchmark">("smoke");
   const [benchmarkSymbol, setBenchmarkSymbol] = useState("BTCUSDT");
   const [officialWindowDays, setOfficialWindowDays] = useState<OfficialWindowDays>(180);
+  const [researchBackend, setResearchBackend] = useState<ResearchBackend>("native");
+  const [portfolioMethod, setPortfolioMethod] = useState<PortfolioMethod>("proportional");
   const [datasetId, setDatasetId] = useState(initialDatasetId ?? "");
   const [datasetIdsText, setDatasetIdsText] = useState(
     initialDatasetIds?.length
@@ -372,6 +388,40 @@ export function LaunchBacktestDrawer({
           description: null,
           recommended: days === 180,
         }));
+  const researchBackendOptions =
+    optionsQuery.data?.research_backends?.length
+      ? optionsQuery.data.research_backends
+      : [
+          {
+            value: "native",
+            label: "Native",
+            description: null,
+            recommended: true,
+          },
+          {
+            value: "vectorbt",
+            label: "vectorbt",
+            description: null,
+            recommended: false,
+          },
+        ];
+  const portfolioMethodOptions =
+    optionsQuery.data?.portfolio_methods?.length
+      ? optionsQuery.data.portfolio_methods
+      : [
+          {
+            value: "proportional",
+            label: "Proportional",
+            description: null,
+            recommended: true,
+          },
+          {
+            value: "skfolio_mean_risk",
+            label: "skfolio Mean-Risk",
+            description: null,
+            recommended: false,
+          },
+        ];
 
   useEffect(() => {
     if (initialRunId) {
@@ -416,6 +466,28 @@ export function LaunchBacktestDrawer({
   }, [optionsQuery.data?.default_mode]);
 
   useEffect(() => {
+    const value = optionsQuery.data?.constraints?.research_backend;
+    const defaultValue =
+      value && typeof value === "object" && "default" in value
+        ? value.default
+        : null;
+    if (defaultValue === "native" || defaultValue === "vectorbt") {
+      setResearchBackend(defaultValue);
+    }
+  }, [optionsQuery.data?.constraints]);
+
+  useEffect(() => {
+    const value = optionsQuery.data?.constraints?.portfolio_method;
+    const defaultValue =
+      value && typeof value === "object" && "default" in value
+        ? value.default
+        : null;
+    if (defaultValue === "proportional" || defaultValue === "skfolio_mean_risk") {
+      setPortfolioMethod(defaultValue);
+    }
+  }, [optionsQuery.data?.constraints]);
+
+  useEffect(() => {
     if (jobQuery.data?.status !== "success") {
       return;
     }
@@ -450,6 +522,8 @@ export function LaunchBacktestDrawer({
         strategy_preset: "sign",
         portfolio_preset: "research_default",
         cost_preset: "standard",
+        research_backend: researchBackend,
+        portfolio_method: portfolioMethod,
         benchmark_symbol:
           mode === "official" ? benchmarkSymbol.trim() || "BTCUSDT" : benchmarkSymbol,
       }),
@@ -667,13 +741,33 @@ export function LaunchBacktestDrawer({
                   <span>{officialSchemaVersion}</span>
                 </div>
                 <div className="stack-item align-start">
-                  <strong>需要 NLP 特征</strong>
+                  <strong>需要 NLP 模态</strong>
                   <span>
                     {officialPreflight?.requires_text_features === undefined
                       ? "--"
                       : officialPreflight.requires_text_features
                         ? "是"
                         : "否"}
+                  </span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>需要辅助模态</strong>
+                  <span>
+                    {officialPreflight?.requires_auxiliary_features === undefined
+                      ? "--"
+                      : officialPreflight.requires_auxiliary_features
+                        ? "是"
+                        : "否"}
+                  </span>
+                </div>
+                <div className="stack-item align-start">
+                  <strong>要求模态</strong>
+                  <span>
+                    {officialPreflight?.required_modalities?.length
+                      ? officialPreflight.required_modalities
+                          .map((modality) => formatModalityLabel(modality))
+                          .join(" / ")
+                      : "--"}
                   </span>
                 </div>
                 <div className="stack-item align-start">
@@ -796,6 +890,44 @@ export function LaunchBacktestDrawer({
               value={benchmarkSymbol}
             />
           </label>
+
+          <label>
+            <span>Research Backend</span>
+            <select
+              onChange={(event) => setResearchBackend(event.target.value as ResearchBackend)}
+              value={researchBackend}
+            >
+              {researchBackendOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {localizeBacktestOptionLabel(option.value, option.label)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>Portfolio Method</span>
+            <select
+              onChange={(event) => setPortfolioMethod(event.target.value as PortfolioMethod)}
+              value={portfolioMethod}
+            >
+              {portfolioMethodOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {localizeBacktestOptionLabel(option.value, option.label)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {(researchBackend !== "native" || portfolioMethod !== "proportional") ? (
+            <div className="dataset-callout">
+              <strong>Advanced research override</strong>
+              <span>
+                These optional overrides are explicit research choices. The default path remains
+                Native + Proportional.
+              </span>
+            </div>
+          ) : null}
 
           {formError ? <p className="form-error">{formError}</p> : null}
           {mutation.isError ? <p className="form-error">{(mutation.error as Error).message}</p> : null}

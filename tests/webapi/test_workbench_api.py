@@ -1082,6 +1082,8 @@ def test_dataset_request_uses_existing_job_system() -> None:
     assert options_payload["sample_policies"]
     assert options_payload["alignment_policies"]
     assert options_payload["missing_feature_policies"]
+    assert "ccxt" in {item["value"] for item in options_payload["source_vendors"]}
+    assert "okx" in {item["value"] for item in options_payload["exchanges"]}
     assert set(options_payload["constraints"]["current_supported_domains"]) >= {
         "market",
         "macro",
@@ -1844,6 +1846,16 @@ def test_launch_backtest_dataset_preset_is_only_used_as_fallback() -> None:
         180,
         365,
     ]
+    assert [item["value"] for item in options_payload["research_backends"]] == [
+        "native",
+        "vectorbt",
+    ]
+    assert [item["value"] for item in options_payload["portfolio_methods"]] == [
+        "proportional",
+        "skfolio_mean_risk",
+    ]
+    assert options_payload["constraints"]["research_backend"]["default"] == "native"
+    assert options_payload["constraints"]["portfolio_method"]["default"] == "proportional"
 
     suffix = str(int(time.time() * 1000))
     train_response = client.post(

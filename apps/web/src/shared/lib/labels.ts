@@ -84,6 +84,16 @@ const FRESHNESS_LABELS: Record<string, () => string> = {
   unknown: () => I18N.status.unknown,
 };
 
+const MODALITY_LABELS: Record<string, () => string> = {
+  market: () => translateText("市场"),
+  macro: () => translateText("宏观"),
+  on_chain: () => translateText("链上"),
+  derivatives: () => translateText("衍生品"),
+  multimodal_bundle: () => translateText("多模态特征集"),
+  sentiment_events: () => "NLP",
+  nlp: () => "NLP",
+};
+
 export function formatStatusLabel(status: string | null | undefined): string {
   const normalized = (status ?? "unknown").toLowerCase();
   return STATUS_LABELS[normalized]?.() ?? normalized;
@@ -112,4 +122,9 @@ export function formatArtifactLabel(kind: string | null | undefined, fallback?: 
 export function formatFreshnessLabel(freshness: string | null | undefined): string {
   const normalized = (freshness ?? "unknown").toLowerCase();
   return FRESHNESS_LABELS[normalized]?.() ?? (freshness || "--");
+}
+
+export function formatModalityLabel(modality: string | null | undefined): string {
+  const normalized = (modality ?? "").toLowerCase();
+  return MODALITY_LABELS[normalized]?.() ?? (modality || "--");
 }

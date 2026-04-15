@@ -107,6 +107,7 @@ def official_backtest_template(*, default_benchmark_symbol: str = "BTCUSDT") -> 
             "Official mode binds to the newest official rolling benchmark and ignores dataset overrides.",
             "Official mode allows only fixed window presets: 30, 90, 180, and 365 days.",
             "Official ranking compares runs only when the official benchmark version and window size match.",
+            "If non-market modalities are used, official mode binds them to the official multimodal benchmark bundle.",
             "If NLP is used, the requested NLP collection window must match the market template window.",
             "If NLP is used, only archival NLP sources are eligible for official same-template comparison.",
             (
@@ -129,10 +130,11 @@ def official_backtest_template(*, default_benchmark_symbol: str = "BTCUSDT") -> 
             "Actual market dataset window",
             "Actual official backtest test window",
             "Actual NLP coverage window and official NLP gate result when NLP is present",
+            "Required modalities resolved for the official run",
             "Official rolling benchmark version",
             "Official rolling window size and actual window start/end time",
             "Official market benchmark dataset id",
-            "Official multimodal benchmark dataset id when text signals are used",
+            "Official multimodal benchmark dataset id when non-market signals are used",
         ],
         notes=[
             "The official template is read-only and cannot be deleted.",
@@ -148,10 +150,16 @@ def build_official_backtest_request(
     *,
     prediction_frame_uri: str,
     benchmark_symbol: str,
+    research_backend: str = "native",
+    portfolio_method: str = "proportional",
 ) -> BacktestRequest:
     return BacktestRequest(
         prediction_frame_uri=prediction_frame_uri,
-        strategy_config=StrategyConfig(name="sign_strategy"),
+        research_backend=research_backend,
+        strategy_config=StrategyConfig(
+            name="sign_strategy",
+            portfolio_method=portfolio_method,
+        ),
         portfolio_config=PortfolioConfig(
             initial_cash=100000.0,
             max_gross_leverage=1.0,
@@ -171,10 +179,16 @@ def build_custom_backtest_request(
     *,
     prediction_frame_uri: str,
     benchmark_symbol: str,
+    research_backend: str = "native",
+    portfolio_method: str = "proportional",
 ) -> BacktestRequest:
     return BacktestRequest(
         prediction_frame_uri=prediction_frame_uri,
-        strategy_config=StrategyConfig(name="sign_strategy"),
+        research_backend=research_backend,
+        strategy_config=StrategyConfig(
+            name="sign_strategy",
+            portfolio_method=portfolio_method,
+        ),
         portfolio_config=PortfolioConfig(
             initial_cash=100000.0,
             max_gross_leverage=1.0,
@@ -203,12 +217,14 @@ def build_protocol_metadata(
     label_horizon: int | None,
     lookback_bucket: str | None,
     metadata_summary: dict[str, str | None],
+    required_modalities: list[str] | None = None,
     official_benchmark_version: str | None = None,
     official_window_days: int | None = None,
     official_window_start_time: str | None = None,
     official_window_end_time: str | None = None,
     official_market_dataset_id: str | None = None,
     official_multimodal_dataset_id: str | None = None,
+    official_dataset_ids: list[str] | None = None,
 ) -> dict[str, object]:
     slice_candidates = (
         [
@@ -244,6 +260,7 @@ def build_protocol_metadata(
         "required_metadata": list(template.required_metadata),
         "notes": list(template.notes),
         "metadata_summary": metadata_summary,
+        "required_modalities": list(required_modalities or []),
         "lookback_bucket": lookback_bucket,
         "slice_coverage": slice_coverage,
         "official_benchmark_version": official_benchmark_version,
@@ -252,6 +269,7 @@ def build_protocol_metadata(
         "official_window_end_time": official_window_end_time,
         "official_market_dataset_id": official_market_dataset_id,
         "official_multimodal_dataset_id": official_multimodal_dataset_id,
+        "official_dataset_ids": list(official_dataset_ids or []),
         "slice_id": stable_digest({"template_id": template.template_id, "slice": slice_coverage}),
     }
 
@@ -385,6 +403,8 @@ def compute_protocol_result(
         slice_coverage=_str_list(protocol_metadata.get("slice_coverage")),
         lookback_bucket=_str(protocol_metadata.get("lookback_bucket")),
         metadata_summary=metadata_summary,
+        required_modalities=_str_list(protocol_metadata.get("required_modalities")),
+        official_dataset_ids=_str_list(protocol_metadata.get("official_dataset_ids")),
         actual_market_start_time=_dt(protocol_metadata.get("actual_market_start_time")),
         actual_market_end_time=_dt(protocol_metadata.get("actual_market_end_time")),
         actual_backtest_start_time=_dt(protocol_metadata.get("actual_backtest_start_time")),

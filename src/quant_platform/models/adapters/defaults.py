@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from quant_platform.common.enums.core import CanonicalModality
 from quant_platform.common.io.files import LocalArtifactStore
 from quant_platform.datasets.contracts.dataset import DatasetRef, DatasetSample
 from quant_platform.models.adapters.base import (
@@ -105,6 +106,103 @@ def _split_modal_features(
         else:
             market_names.append(feature_name)
     return market_names, text_names
+
+
+def _canonical_modality_order(spec: ModelSpec) -> list[str]:
+    raw_order = spec.hyperparams.get(
+        "modality_order",
+        [
+            CanonicalModality.MARKET.value,
+            CanonicalModality.MACRO.value,
+            CanonicalModality.ON_CHAIN.value,
+            CanonicalModality.DERIVATIVES.value,
+            CanonicalModality.NLP.value,
+        ],
+    )
+    if not isinstance(raw_order, list):
+        return [item.value for item in CanonicalModality]
+    order: list[str] = []
+    seen: set[str] = set()
+    for item in raw_order:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip().lower()
+        if normalized in {"sentiment", "sentiment_events", "text", "news"}:
+            normalized = CanonicalModality.NLP.value
+        if normalized not in seen and normalized in {member.value for member in CanonicalModality}:
+            order.append(normalized)
+            seen.add(normalized)
+    for member in CanonicalModality:
+        if member.value not in seen:
+            order.append(member.value)
+    return order
+
+
+def _modality_prefix_map(spec: ModelSpec) -> dict[str, tuple[str, ...]]:
+    raw_map = spec.hyperparams.get("modality_feature_prefixes")
+    if not isinstance(raw_map, dict):
+        raw_map = {}
+    text_prefixes = tuple(
+        item
+        for item in spec.hyperparams.get("text_feature_prefixes", ["text_", "sentiment_", "news_"])
+        if isinstance(item, str)
+    )
+    prefix_map: dict[str, tuple[str, ...]] = {
+        CanonicalModality.MACRO.value: ("macro_",),
+        CanonicalModality.ON_CHAIN.value: ("onchain_", "on_chain_"),
+        CanonicalModality.DERIVATIVES.value: ("derivatives_", "derivative_", "futures_", "perp_"),
+        CanonicalModality.NLP.value: text_prefixes,
+    }
+    for key, value in raw_map.items():
+        if not isinstance(key, str) or not isinstance(value, list):
+            continue
+        prefix_map[key.strip().lower()] = tuple(item for item in value if isinstance(item, str))
+    return prefix_map
+
+
+def _split_features_by_modality(
+    feature_names: list[str],
+    spec: ModelSpec,
+) -> dict[str, list[str]]:
+    prefix_map = _modality_prefix_map(spec)
+    grouped: dict[str, list[str]] = {item: [] for item in _canonical_modality_order(spec)}
+    for feature_name in feature_names:
+        matched_modality = CanonicalModality.MARKET.value
+        for modality, prefixes in prefix_map.items():
+            if prefixes and feature_name.startswith(prefixes):
+                matched_modality = modality
+                break
+        grouped.setdefault(matched_modality, []).append(feature_name)
+    return {key: value for key, value in grouped.items() if value}
+
+
+def _feature_presence_by_modality(
+    sample: DatasetSample,
+    modality_feature_names: dict[str, list[str]],
+) -> dict[str, bool]:
+    present: dict[str, bool] = {}
+    sample_keys = set(sample.features.keys())
+    for modality, names in modality_feature_names.items():
+        present[modality] = any(name in sample_keys for name in names)
+    return present
+
+
+def _modality_history_masks(
+    samples: list[DatasetSample],
+    modality_feature_names: dict[str, list[str]],
+    lookback: int,
+) -> dict[str, list[bool]]:
+    masks: dict[str, list[bool]] = {modality: [] for modality in modality_feature_names}
+    history_by_entity: dict[str, dict[str, list[bool]]] = {}
+    for sample in samples:
+        entity_history = history_by_entity.setdefault(sample.entity_key, {})
+        sample_presence = _feature_presence_by_modality(sample, modality_feature_names)
+        for modality in modality_feature_names:
+            modality_history = entity_history.setdefault(modality, [])
+            observed = modality_history[-(lookback - 1) :] + [sample_presence.get(modality, False)]
+            masks[modality].append(any(observed))
+            modality_history.append(sample_presence.get(modality, False))
+    return masks
 
 
 class TabularInputAdapter(ModelInputAdapter):
@@ -333,32 +431,28 @@ class MarketTextAlignedInputAdapter(ModelInputAdapter):
         registration: ModelRegistration,
     ) -> PredictInputBundle:
         feature_names = _feature_names(samples, dataset_ref, spec)
-        market_names, text_names = _split_modal_features(feature_names, spec)
-        market_matrix = [
-            [float(sample.features.get(name, 0.0)) for name in market_names] for sample in samples
-        ]
-        text_matrix = [
-            [float(sample.features.get(name, 0.0)) for name in text_names] for sample in samples
-        ]
         lookback = _resolve_lookback(spec)
-        text_presence = (
-            [any(name in sample.features for name in text_names) for sample in samples]
-            if text_names
-            else [False for _ in samples]
-        )
-        market_block = _entity_aligned_windows(samples, market_matrix, lookback)
-        text_block = (
-            _entity_aligned_windows(samples, text_matrix, lookback)
-            if text_names
-            else [[] for _ in samples]
-        )
-        text_mask: list[bool] = []
-        text_history_by_entity: dict[str, list[bool]] = {}
-        for sample, has_text in zip(samples, text_presence, strict=True):
-            history = text_history_by_entity.setdefault(sample.entity_key, [])
-            observed = history[-(lookback - 1) :] + [has_text]
-            text_mask.append(any(observed))
-            history.append(has_text)
+        modality_feature_names = _split_features_by_modality(feature_names, spec)
+        modality_order = [
+            modality for modality in _canonical_modality_order(spec) if modality in modality_feature_names
+        ]
+        modality_matrices = {
+            modality: [
+                [float(sample.features.get(name, 0.0)) for name in names]
+                for sample in samples
+            ]
+            for modality, names in modality_feature_names.items()
+        }
+        modality_blocks = {
+            modality: _entity_aligned_windows(samples, matrix, lookback)
+            for modality, matrix in modality_matrices.items()
+        }
+        modality_masks = _modality_history_masks(samples, modality_feature_names, lookback)
+        market_names = modality_feature_names.get(CanonicalModality.MARKET.value, [])
+        text_names = modality_feature_names.get(CanonicalModality.NLP.value, [])
+        market_block = modality_blocks.get(CanonicalModality.MARKET.value, [[] for _ in samples])
+        text_block = modality_blocks.get(CanonicalModality.NLP.value, [[] for _ in samples])
+        text_mask = modality_masks.get(CanonicalModality.NLP.value, [False for _ in samples])
         return PredictInputBundle(
             dataset_ref=dataset_ref,
             model_spec=spec,
@@ -370,6 +464,10 @@ class MarketTextAlignedInputAdapter(ModelInputAdapter):
                 "text_mask": text_mask,
                 "market_feature_names": market_names,
                 "text_feature_names": text_names,
+                "modality_order": modality_order,
+                "modality_blocks": modality_blocks,
+                "modality_presence_mask": modality_masks,
+                "modality_feature_names": modality_feature_names,
                 "lookback": lookback,
             },
             metadata={"registration": registration.model_name},
@@ -458,6 +556,16 @@ class DefaultCapabilityValidator(CapabilityValidator):
                 raise ValueError(
                     f"model '{registration.model_name}' requires aligned text features"
                 )
+        if "aligned_multimodal" in registration.capabilities:
+            modality_feature_names = bundle.blocks.get("modality_feature_names", {})
+            if not isinstance(modality_feature_names, dict) or not modality_feature_names:
+                raise ValueError(
+                    f"model '{registration.model_name}' requires modality_feature_names"
+                )
+            if CanonicalModality.MARKET.value not in modality_feature_names:
+                raise ValueError(
+                    f"model '{registration.model_name}' requires market modality features"
+                )
         if any(
             sample.available_time > dataset_ref.feature_view_ref.as_of_time
             for sample in bundle.source_samples
@@ -475,6 +583,7 @@ def build_default_adapters() -> dict[str, Any]:
             "temporal_fusion": TemporalFusionInputAdapter(),
             "patch_sequence": PatchSequenceInputAdapter(),
             "market_text_aligned": MarketTextAlignedInputAdapter(),
+            "multimodal_aligned_v2": MarketTextAlignedInputAdapter(),
         },
         "prediction_adapters": {"standard_prediction": StandardPredictionAdapter()},
     }
