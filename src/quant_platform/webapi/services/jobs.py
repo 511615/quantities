@@ -2437,10 +2437,21 @@ class JobService:
             (sentiment_spec or {}).get("source_vendor") if isinstance(sentiment_spec, dict) else None
         )
         identifiers = self._dataset_nlp_symbol_set(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
-        if not identifiers and isinstance(sentiment_spec, dict):
-            fallback_identifier = sentiment_spec.get("identifier")
-            token = self._nlp_contract_symbol_token(fallback_identifier)
-            identifiers = {token} if token else set()
+        if not identifiers:
+            fusion_source_identifiers = [
+                item.get("identifier")
+                for item in (acquisition_profile.get("fusion_sources") or [])
+                if isinstance(item, dict)
+                and self._normalize_modality(self._str(item.get("data_domain"))) in {"nlp", "sentiment_events"}
+            ]
+            identifiers = {
+                token
+                for value in [
+                    (sentiment_spec or {}).get("identifier") if isinstance(sentiment_spec, dict) else None,
+                    *fusion_source_identifiers,
+                ]
+                if (token := self._nlp_contract_symbol_token(value))
+            }
         return vendor, identifiers
 
     def _official_expected_auxiliary_contracts(self) -> dict[str, tuple[str | None, set[str]]]:

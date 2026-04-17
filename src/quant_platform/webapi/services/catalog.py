@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from bisect import bisect_right
 import json
 import os
 import shutil
@@ -659,7 +660,11 @@ class ResearchWorkbenchService:
             )
         market_input_ref = market_dataset_ref.feature_view_ref.input_data_refs[0]
         existing_payload = self._dataset_ref(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
-        sentiment_points = self._load_existing_official_multimodal_sentiment_points(existing_payload)
+        sentiment_points: list[NormalizedSeriesPoint] = []
+        if not self._prefer_offline_official_sources():
+            sentiment_points = self._load_existing_official_multimodal_sentiment_points(existing_payload)
+        if not sentiment_points and self._prefer_offline_official_sources():
+            sentiment_points = self._build_synthetic_official_nlp_points(market_samples)
         if not sentiment_points:
             sentiment_connector = RedditArchiveSentimentConnector(self.repository.artifact_root)
             sentiment_points = sentiment_connector.store.query_points(
@@ -762,6 +767,10 @@ class ResearchWorkbenchService:
                     "points": filtered_points,
                     "fetch_status": fetch_status,
                     "storage_uri": storage_uri,
+                    "resolve_point": self._build_series_point_resolver(
+                        filtered_points,
+                        alignment_policy_name="available_time_safe_asof",
+                    ),
                 }
             )
 
@@ -822,11 +831,9 @@ class ResearchWorkbenchService:
             auxiliary_available_times: list[datetime] = []
             missing_aux_features: list[str] = []
             for context in auxiliary_contexts:
-                aligned_point = self._align_series_point(
-                    context["points"],
-                    timestamp=market_sample.timestamp,
-                    available_time=market_sample.available_time,
-                    alignment_policy_name="available_time_safe_asof",
+                aligned_point = context["resolve_point"](
+                    market_sample.timestamp,
+                    market_sample.available_time,
                 )
                 if aligned_point is None:
                     missing_aux_features.append(context["feature_name"])
@@ -3024,6 +3031,10 @@ class ResearchWorkbenchService:
                     "source": source,
                     "feature_name": feature_name,
                     "points": points,
+                    "resolve_point": self._build_series_point_resolver(
+                        points,
+                        alignment_policy_name=request.alignment_policy_name,
+                    ),
                     "fetch_status": fetch_status,
                     "storage_uri": snapshot_uri,
                     "data_ref": DataAssetRef(
@@ -3094,11 +3105,9 @@ class ResearchWorkbenchService:
             values = dict(sample.features)
             row_missing = False
             for context in source_contexts:
-                match = self._align_series_point(
-                    context["points"],
-                    timestamp=sample.timestamp,
-                    available_time=sample.available_time,
-                    alignment_policy_name=request.alignment_policy_name,
+                match = context["resolve_point"](
+                    sample.timestamp,
+                    sample.available_time,
                 )
                 if match is None:
                     missing_counts[context["feature_name"]] += 1
@@ -4701,6 +4710,46 @@ class ResearchWorkbenchService:
         if not isinstance(loaded, list):
             return []
         return [DatasetSample.model_validate(item) for item in loaded if isinstance(item, dict)]
+
+    def _build_series_point_resolver(
+        self,
+        points: list[NormalizedSeriesPoint],
+        *,
+        alignment_policy_name: str,
+    ):
+        points_by_event_time: dict[datetime, list[NormalizedSeriesPoint]] = {}
+        for point in sorted(points, key=lambda item: (item.event_time, item.available_time)):
+            points_by_event_time.setdefault(point.event_time, []).append(point)
+        ordered_event_times = sorted(points_by_event_time)
+        available_times_by_event_time = {
+            event_time: [point.available_time for point in event_points]
+            for event_time, event_points in points_by_event_time.items()
+        }
+        exact_alignment = alignment_policy_name in {
+            "event_time_inner",
+            "exact_inner",
+            "timestamp_inner",
+            "strict_timestamp_inner",
+        }
+
+        def resolve(timestamp: datetime, available_time: datetime) -> NormalizedSeriesPoint | None:
+            event_index = bisect_right(ordered_event_times, timestamp) - 1
+            if event_index < 0:
+                return None
+            if exact_alignment and ordered_event_times[event_index] != timestamp:
+                return None
+            while event_index >= 0:
+                event_time = ordered_event_times[event_index]
+                available_times = available_times_by_event_time[event_time]
+                point_index = bisect_right(available_times, available_time) - 1
+                if point_index >= 0:
+                    return points_by_event_time[event_time][point_index]
+                if exact_alignment:
+                    return None
+                event_index -= 1
+            return None
+
+        return resolve
 
     def _align_series_point(
         self,

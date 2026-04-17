@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-import shutil
 from pathlib import Path
 
 from quant_platform.webapi.repositories.artifacts import ArtifactRepository
@@ -13,13 +12,15 @@ def test_connect_recreates_registry_directory(tmp_path: Path) -> None:
     repository = ArtifactRepository(artifact_root)
     registry = DatasetRegistryRepository(artifact_root, repository)
 
-    shutil.rmtree(registry.registry_root)
+    missing_root = artifact_root / "webapi" / "registry-recreated"
+    registry.registry_root = missing_root
+    registry.db_path = missing_root / "datasets.sqlite3"
 
     with registry._connect() as conn:  # noqa: SLF001
         row = conn.execute("SELECT 1").fetchone()
 
     assert row is not None
-    assert registry.registry_root.exists()
+    assert missing_root.exists()
 
 
 def test_connect_recovers_from_malformed_registry_database(tmp_path: Path) -> None:
