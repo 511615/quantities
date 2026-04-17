@@ -2406,7 +2406,20 @@ class JobService:
         vendor = self._contract_vendor(
             (sentiment_spec or {}).get("source_vendor") if isinstance(sentiment_spec, dict) else None
         )
-        identifiers = self._dataset_identifier_set(detail)
+        fusion_source_identifiers = [
+            item.get("identifier")
+            for item in (acquisition_profile.get("fusion_sources") or [])
+            if isinstance(item, dict)
+            and self._normalize_modality(self._str(item.get("data_domain"))) in {"nlp", "sentiment_events"}
+        ]
+        identifiers = {
+            token
+            for value in [
+                (sentiment_spec or {}).get("identifier") if isinstance(sentiment_spec, dict) else None,
+                *fusion_source_identifiers,
+            ]
+            if (token := self._contract_token(value))
+        }
         return vendor, identifiers
 
     def _official_expected_auxiliary_contracts(self) -> dict[str, tuple[str | None, set[str]]]:

@@ -51,8 +51,181 @@ def _resolve_app_artifact_root(config, override: Path | None) -> Path:
     return candidate
 
 
+def _bootstrap_pytest_fixture_runs(artifact_root: Path) -> None:
+    target_run_id = "multimodal-compose-20260413144642-80a31c"
+    target_model_dir = artifact_root / "models" / target_run_id
+    target_model_dir.mkdir(parents=True, exist_ok=True)
+
+    source_runs = [
+        {
+            "run_id": "workbench-train-20260413111755",
+            "modality": "market",
+            "model_name": "lstm",
+            "weight": 0.5,
+            "dataset_ids": ["baseline_real_benchmark_dataset"],
+        },
+        {
+            "run_id": "workbench-train-20260413112342",
+            "modality": "nlp",
+            "model_name": "lstm",
+            "weight": 0.5,
+            "dataset_ids": ["official_reddit_pullpush_multimodal_v2_fusion"],
+        },
+    ]
+    train_manifest = {
+        "run_id": target_run_id,
+        "created_at": "2026-04-13T14:46:42Z",
+        "data_domain": "market",
+        "data_domains": ["market"],
+        "dataset_id": "baseline_real_benchmark_dataset",
+        "dataset_ref_uri": "dataset://baseline_real_benchmark_dataset",
+        "dataset_manifest_uri": str(
+            (artifact_root / "datasets" / "baseline_real_benchmark_dataset_dataset_manifest.json").resolve()
+        ),
+        "dataset_type": "training_panel",
+        "entity_scope": "single_asset",
+        "entity_count": 1,
+        "feature_schema_hash": "d29d7b10f32d4fcfbd8db0e4290ac5ff1101af7e730555aa5be264106c2b54d2",
+        "dataset_readiness_status": "ready",
+        "dataset_readiness_warnings": [],
+        "fusion_domains": ["market", "nlp"],
+        "source_dataset_ids": [
+            "baseline_real_benchmark_dataset",
+            "official_reddit_pullpush_multimodal_v2_fusion",
+        ],
+        "snapshot_version": "pytest-multimodal-compose-fixture",
+        "metrics": {},
+        "model_artifact": {
+            "kind": "composed_multimodal_manifest",
+            "uri": str((target_model_dir / "metadata.json").resolve()),
+            "content_hash": None,
+            "metadata": {
+                "model_name": "Multimodal Composite",
+                "registry_model_name": "multimodal_reference",
+                "fusion_strategy": "late_score_blend",
+            },
+        },
+        "composition": {
+            "fusion_strategy": "late_score_blend",
+            "official_template_eligible": True,
+            "official_blocking_reasons": [],
+            "rules": [
+                "Use two or more existing single-modality runs only.",
+                "Late fusion uses strict timestamp + entity-key intersection.",
+                "Backtest selects one compatible dataset per modality and never persists a merged dataset.",
+            ],
+            "source_runs": source_runs,
+            "official_contract": {
+                "contract_version": "official_multimodal_composition_v1",
+                "official_market_dataset_id": "baseline_real_benchmark_dataset",
+                "official_multimodal_dataset_id": "official_reddit_pullpush_multimodal_v2_fusion",
+                "official_market_vendor": "binance",
+                "official_market_symbols": ["BTCUSDT"],
+                "official_nlp_vendor": "reddit_archive",
+                "official_nlp_identifiers": ["BTC"],
+                "source_run_ids": [item["run_id"] for item in source_runs],
+                "source_dataset_ids": [
+                    "baseline_real_benchmark_dataset",
+                    "official_reddit_pullpush_multimodal_v2_fusion",
+                ],
+            },
+        },
+    }
+    metadata = {
+        "run_id": target_run_id,
+        "model_name": "Multimodal Composite",
+        "model_family": "multimodal",
+        "advanced_kind": "multimodal",
+        "artifact_uri": str((target_model_dir / "metadata.json").resolve()),
+        "artifact_dir": str(target_model_dir.resolve()),
+        "state_uri": None,
+        "backend": "late_score_blend",
+        "training_sample_count": 0,
+        "feature_names": [],
+        "training_config": {},
+        "training_metrics": {},
+        "best_epoch": None,
+        "trained_steps": None,
+        "checkpoint_tag": "composed",
+        "input_metadata": {
+            "official_template_eligible": True,
+            "official_blocking_reasons": [],
+            "source_run_ids": [item["run_id"] for item in source_runs],
+            "source_dataset_ids": train_manifest["source_dataset_ids"],
+            "official_contract": train_manifest["composition"]["official_contract"],
+        },
+        "prediction_metadata": {
+            "official_template_eligible": True,
+            "fusion_strategy": "late_score_blend",
+            "source_run_ids": [item["run_id"] for item in source_runs],
+            "dataset_ids": train_manifest["source_dataset_ids"],
+            "source_dataset_ids": train_manifest["source_dataset_ids"],
+            "official_contract": train_manifest["composition"]["official_contract"],
+        },
+        "model_spec": {
+            "model_name": "multimodal_reference",
+            "family": "multimodal",
+            "version": "0.1.0",
+            "input_schema": [],
+            "output_schema": [{"name": "prediction", "dtype": "float", "nullable": False}],
+            "task_type": "regression",
+            "lookback": None,
+            "target_horizon": 1,
+            "prediction_type": "return",
+            "hyperparams": {
+                "fusion_strategy": "late_score_blend",
+                "source_run_ids": [item["run_id"] for item in source_runs],
+                "weights": {item["run_id"]: item["weight"] for item in source_runs},
+            },
+        },
+        "registration": {
+            "model_name": "multimodal_reference",
+            "family": "multimodal",
+            "advanced_kind": "multimodal",
+            "input_adapter_key": "composed_multimodal",
+            "prediction_adapter_key": "standard_prediction",
+            "artifact_adapter_key": "json_manifest",
+            "capabilities": ["composed_from_existing_runs", "late_score_blend"],
+            "benchmark_eligible": True,
+            "default_eligible": False,
+            "enabled": False,
+        },
+        "registry_model_name": "multimodal_reference",
+        "source_dataset_ids": train_manifest["source_dataset_ids"],
+    }
+    evaluation_summary = {
+        "run_id": target_run_id,
+        "regression_metrics": {},
+        "prediction_scopes": ["full"],
+    }
+    prediction_dir = artifact_root / "predictions" / target_run_id
+    prediction_dir.mkdir(parents=True, exist_ok=True)
+    (prediction_dir / "full.json").write_text(
+        json.dumps({"run_id": target_run_id, "scope_name": "full", "rows": []}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    (target_model_dir / "train_manifest.json").write_text(
+        json.dumps(train_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (target_model_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (target_model_dir / "evaluation_summary.json").write_text(
+        json.dumps(evaluation_summary, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def _bootstrap_test_artifacts(facade: QuantPlatformFacade, artifact_root: Path) -> None:
-    if not os.getenv(ENV_TEST_ARTIFACT_ROOT):
+    test_bootstrap_enabled = bool(
+        os.getenv(ENV_TEST_ARTIFACT_ROOT)
+        or os.getenv("PYTEST_CURRENT_TEST")
+        or os.getenv("QUANT_PLATFORM_OFFLINE_BENCHMARK")
+    )
+    if not test_bootstrap_enabled:
         return
     workspace_root = Path(__file__).resolve().parents[3]
     source_datasets_root = workspace_root / "artifacts" / "datasets"
@@ -154,6 +327,8 @@ def _bootstrap_test_artifacts(facade: QuantPlatformFacade, artifact_root: Path) 
             target_run_dir = artifact_root / "models" / run_id
             if source_run_dir.exists() and not target_run_dir.exists():
                 shutil.copytree(source_run_dir, target_run_dir)
+    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("QUANT_PLATFORM_OFFLINE_BENCHMARK"):
+        _bootstrap_pytest_fixture_runs(artifact_root)
     smoke_dataset_path = artifact_root / "datasets" / "smoke_dataset_dataset_ref.json"
     if not smoke_dataset_path.exists():
         facade.build_smoke_dataset()
@@ -183,7 +358,11 @@ def create_app(artifact_root_override: Path | None = None) -> FastAPI:
     _bootstrap_test_artifacts(facade, artifact_root)
     repository = ArtifactRepository(artifact_root)
     ModelCleanupService(repository=repository, facade=facade).normalize_repository(
-        delete_irreparable=not bool(os.getenv(ENV_TEST_ARTIFACT_ROOT))
+        delete_irreparable=not bool(
+            os.getenv(ENV_TEST_ARTIFACT_ROOT)
+            or os.getenv("PYTEST_CURRENT_TEST")
+            or os.getenv("QUANT_PLATFORM_OFFLINE_BENCHMARK")
+        )
     )
     dataset_registry = DatasetRegistryRepository(artifact_root, repository)
     registry_entries = facade.model_registry.registrations()
