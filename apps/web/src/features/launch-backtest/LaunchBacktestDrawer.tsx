@@ -1,4 +1,4 @@
-﻿import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -19,8 +19,10 @@ import { formatDate } from "../../shared/lib/format";
 import { I18N } from "../../shared/lib/i18n";
 import { formatModalityLabel, formatStageNameLabel } from "../../shared/lib/labels";
 import {
+  localizeBlockingReason,
   localizeBacktestGateReason,
   localizeBacktestMetadata,
+  localizeBacktestNote,
   localizeBacktestRequirement,
   localizeBacktestTemplateName,
 } from "../../shared/lib/protocolI18n";
@@ -30,6 +32,7 @@ type LaunchBacktestDrawerProps = {
   initialRunId?: string | null;
   initialDatasetId?: string | null;
   initialDatasetIds?: string[] | null;
+  initialMode?: "official" | "custom" | null;
 };
 
 type RunOfficialEligibility = {
@@ -41,6 +44,12 @@ type RunOfficialEligibility = {
 type OfficialWindowDays = 30 | 90 | 180 | 365;
 type ResearchBackend = "native" | "vectorbt";
 type PortfolioMethod = "proportional" | "skfolio_mean_risk";
+
+type SummaryItem = {
+  label: string;
+  value: string;
+  tone?: "default" | "danger";
+};
 
 const OFFICIAL_MARKET_DATASET_ID = "baseline_real_benchmark_dataset";
 const OFFICIAL_MULTIMODAL_DATASET_ID = "official_reddit_pullpush_multimodal_v2_fusion";
@@ -95,16 +104,44 @@ function gateStatusLabel(status?: string | null) {
   if (status === "warning") {
     return "需复核";
   }
+  if (status === "not_required") {
+    return "不需要";
+  }
   return "--";
+}
+
+function boolLabel(value?: boolean | null) {
+  if (value === undefined || value === null) {
+    return "--";
+  }
+  return value ? "是" : "否";
+}
+
+function compatibilityTone(
+  label: string,
+): "ready" | "blocked" | "pending" | "error" | "default" {
+  if (label === "兼容") {
+    return "ready";
+  }
+  if (label === "不兼容") {
+    return "blocked";
+  }
+  if (label === "检查中") {
+    return "pending";
+  }
+  if (label === "错误") {
+    return "error";
+  }
+  return "default";
 }
 
 function localizeBacktestOptionLabel(value: string, label?: string | null) {
   const normalized = (label ?? value).trim().toLowerCase();
   if (normalized === "smoke") {
-    return "Smoke";
+    return "联调样本";
   }
   if (normalized === "real_benchmark") {
-    return "Real Benchmark";
+    return "真实基准";
   }
   if (normalized === "full") {
     return "全部";
@@ -113,25 +150,25 @@ function localizeBacktestOptionLabel(value: string, label?: string | null) {
     return "测试集";
   }
   if (normalized === "sign") {
-    return "Sign";
+    return "方向信号";
   }
   if (normalized === "research_default" || normalized === "default") {
-    return "Research Default";
+    return "默认组合";
   }
   if (normalized === "standard") {
-    return "Standard";
+    return "标准成本";
   }
   if (normalized === "native" || normalized === "native research") {
-    return "Native";
+    return "原生引擎";
   }
   if (normalized === "vectorbt") {
     return "vectorbt";
   }
   if (normalized === "proportional") {
-    return "Proportional";
+    return "比例分配";
   }
   if (normalized === "skfolio_mean_risk" || normalized === "skfolio mean-risk") {
-    return "skfolio Mean-Risk";
+    return "skfolio 均值-风险";
   }
   return label ?? value;
 }
@@ -231,17 +268,67 @@ function templateRequirementItems(template: BacktestTemplateView | undefined) {
     template.fixed_prediction_scope
       ? `官方模式会将预测范围固定为 ${localizeBacktestOptionLabel(template.fixed_prediction_scope)}。`
       : null,
-    ...template.eligibility_rules.map((item) => `准入要求：${item}`),
-    ...template.required_metadata.map((item) => `必填披露：${item}`),
-    ...template.notes.map((item) => `说明：${item}`),
+    ...template.eligibility_rules.map(
+      (item, index) =>
+        `准入要求：${localizeBacktestRequirement(item, template.eligibility_rule_keys?.[index])}`,
+    ),
+    ...template.required_metadata.map(
+      (item, index) =>
+        `必填披露：${localizeBacktestMetadata(item, template.required_metadata_keys?.[index])}`,
+    ),
+    ...template.notes.map(
+      (item, index) => `说明：${localizeBacktestNote(item, template.note_keys?.[index])}`,
+    ),
   ];
   return items.filter((item): item is string => Boolean(item)).map(localizeRequirementItemText);
+}
+
+function listSummary(value: string[]) {
+  return value.length > 0 ? value.join(" / ") : "--";
+}
+
+function SummaryGrid({ items }: { items: SummaryItem[] }) {
+  return (
+    <div className="backtest-launch-kv-grid">
+      {items.map((item) => (
+        <div
+          className={`backtest-launch-kv${item.tone === "danger" ? " is-danger" : ""}`}
+          key={`${item.label}-${item.value}`}
+        >
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DisclosureList({
+  items,
+  emptyText,
+}: {
+  items: string[];
+  emptyText: string;
+}) {
+  if (items.length === 0) {
+    return <p className="backtest-launch-disclosure-empty">{emptyText}</p>;
+  }
+  return (
+    <div className="backtest-launch-list">
+      {items.map((item) => (
+        <div className="backtest-launch-list-item" key={item}>
+          {item}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function LaunchBacktestDrawer({
   initialRunId = null,
   initialDatasetId = null,
   initialDatasetIds = null,
+  initialMode = null,
 }: LaunchBacktestDrawerProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -250,7 +337,7 @@ export function LaunchBacktestDrawer({
   const [runId, setRunId] = useState(initialRunId ?? "");
   const [jobId, setJobId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"official" | "custom">("official");
+  const [mode, setMode] = useState<"official" | "custom">(initialMode ?? "official");
   const [predictionScope, setPredictionScope] = useState<"full" | "test">("full");
   const [datasetPreset, setDatasetPreset] = useState<"smoke" | "real_benchmark">("smoke");
   const [benchmarkSymbol, setBenchmarkSymbol] = useState("BTCUSDT");
@@ -259,13 +346,8 @@ export function LaunchBacktestDrawer({
   const [portfolioMethod, setPortfolioMethod] = useState<PortfolioMethod>("proportional");
   const [datasetId, setDatasetId] = useState(initialDatasetId ?? "");
   const [datasetIdsText, setDatasetIdsText] = useState(
-    initialDatasetIds?.length
-      ? initialDatasetIds.join("\n")
-      : initialDatasetId
-        ? initialDatasetId
-        : "",
+    initialDatasetIds?.length ? initialDatasetIds.join("\n") : initialDatasetId ?? "",
   );
-
   const runQuery = useRunDetail(runId.trim());
   const runOfficialEligibility = resolveRunOfficialEligibility(runQuery.data);
   const officialRunBlockingReasons = runOfficialEligibility.blockingReasons;
@@ -310,7 +392,6 @@ export function LaunchBacktestDrawer({
   const jobQuery = useJobStatus(jobId);
   const officialReadiness = nlpReadinessQuery.data ?? marketReadinessQuery.data;
   const officialPreflight = officialPreflightQuery.data;
-
   const officialTemplate = optionsQuery.data?.template_options?.find(
     (item) => item.template_id === optionsQuery.data?.official_template_id,
   );
@@ -329,16 +410,16 @@ export function LaunchBacktestDrawer({
   const officialSchemaMissingFeatures = officialPreflight?.missing_official_feature_names ?? [];
   const officialPreflightPending =
     !officialPreflight && (officialPreflightQuery.isLoading || officialPreflightQuery.isFetching);
-  const officialPreflightError = !officialPreflight && officialPreflightQuery.isError
-    ? (officialPreflightQuery.error as Error).message
-    : null;
+  const officialPreflightError =
+    !officialPreflight && officialPreflightQuery.isError
+      ? (officialPreflightQuery.error as Error).message
+      : null;
   const officialCompatibilityBlocked =
     Boolean(officialPreflightError) ||
     Boolean(officialSchemaMissingFeatures.length) ||
     officialNlpGateFailed ||
     (officialPreflight ? officialPreflight.compatible === false : false);
-  const officialSubmitBlocked =
-    mode === "official" && officialCompatibilityBlocked;
+  const officialSubmitBlocked = mode === "official" && officialCompatibilityBlocked;
   const officialBlockingSummary = officialPreflightPending
     ? "正在检查官方兼容性，请稍候。"
     : officialPreflightError ??
@@ -349,6 +430,12 @@ export function LaunchBacktestDrawer({
       officialRunBlockingReasons[0] ??
       officialGateReasons[0] ??
       (officialNlpGateFailed ? "官方 NLP 门禁未通过。" : null);
+  const officialBlockingSummaryText = officialBlockingSummary
+    ? localizeBlockingReason(
+        officialBlockingSummary,
+        officialPreflight?.blocking_reason_codes?.[0] ?? null,
+      )
+    : "当前可发起官方回测。";
   const officialCompatibilityLabel = officialPreflightPending
     ? "检查中"
     : officialPreflightError
@@ -392,29 +479,14 @@ export function LaunchBacktestDrawer({
     optionsQuery.data?.research_backends?.length
       ? optionsQuery.data.research_backends
       : [
-          {
-            value: "native",
-            label: "Native",
-            description: null,
-            recommended: true,
-          },
-          {
-            value: "vectorbt",
-            label: "vectorbt",
-            description: null,
-            recommended: false,
-          },
+          { value: "native", label: "Native", description: null, recommended: true },
+          { value: "vectorbt", label: "vectorbt", description: null, recommended: false },
         ];
   const portfolioMethodOptions =
     optionsQuery.data?.portfolio_methods?.length
       ? optionsQuery.data.portfolio_methods
       : [
-          {
-            value: "proportional",
-            label: "Proportional",
-            description: null,
-            recommended: true,
-          },
+          { value: "proportional", label: "Proportional", description: null, recommended: true },
           {
             value: "skfolio_mean_risk",
             label: "skfolio Mean-Risk",
@@ -422,6 +494,94 @@ export function LaunchBacktestDrawer({
             recommended: false,
           },
         ];
+  const hasRunId = Boolean(runId.trim());
+  const hasOfficialNlpContext =
+    Boolean(nlpDatasetId) ||
+    Boolean(officialPreflight?.requires_text_features) ||
+    Boolean(officialReadiness?.nlp_actual_end_time) ||
+    Boolean(officialReadiness?.nlp_actual_start_time);
+  const officialSummaryItems: SummaryItem[] = hasRunId
+    ? [
+        {
+          label: "兼容性结论",
+          value: officialCompatibilityLabel,
+          tone: officialCompatibilityBlocked ? "danger" : "default",
+        },
+        {
+          label: "阻断摘要",
+          value: officialBlockingSummaryText,
+          tone: officialCompatibilityBlocked ? "danger" : "default",
+        },
+        ...(officialTemplate?.protocol_version
+          ? [{ label: "协议版本", value: officialTemplate.protocol_version }]
+          : []),
+        ...(officialPreflight?.official_benchmark_version
+          ? [{ label: "官方基准版本", value: officialPreflight.official_benchmark_version }]
+          : []),
+        ...(officialPreflight?.requires_text_features !== undefined
+          ? [{ label: "需要 NLP", value: boolLabel(officialPreflight.requires_text_features) }]
+          : []),
+        ...(officialPreflight?.required_modalities?.length
+          ? [
+              {
+                label: "要求模态",
+                value: listSummary(
+                  officialPreflight.required_modalities.map((modality) =>
+                    formatModalityLabel(modality),
+                  ),
+                ),
+              },
+            ]
+          : []),
+        ...(officialSchemaMissingFeatures.length > 0
+          ? [{ label: "缺失官方特征", value: `${officialSchemaMissingFeatures.length} 项`, tone: "danger" as const }]
+          : []),
+      ]
+    : [];
+  const officialWindowItems: SummaryItem[] = [
+    { label: "最新官方窗口", value: officialRollingWindow },
+    ...(officialReadiness?.market_window_end_time
+      ? [{ label: "实际市场窗口", value: actualMarketWindow }]
+      : []),
+    ...(officialReadiness?.official_backtest_end_time
+      ? [{ label: "官方测试窗口", value: officialTestWindow }]
+      : []),
+    ...(hasOfficialNlpContext && actualNlpWindow !== "--"
+      ? [{ label: "实际 NLP 窗口", value: actualNlpWindow }]
+      : []),
+  ];
+  const bindingItems = [
+    boundDatasetIds.length > 0 ? `训练参考数据集：${boundDatasetIds.join(", ")}` : null,
+    `官方市场数据集 ID：${officialPreflight?.official_market_dataset_id ?? OFFICIAL_MARKET_DATASET_ID}`,
+    officialPreflight?.official_multimodal_dataset_id || hasOfficialNlpContext
+      ? `官方多模态数据集 ID：${officialPreflight?.official_multimodal_dataset_id ?? OFFICIAL_MULTIMODAL_DATASET_ID}`
+      : null,
+    officialTemplate?.scenario_bundle?.length
+      ? `场景包：${officialTemplate.scenario_bundle.join(", ")}`
+      : null,
+  ].filter((item): item is string => Boolean(item));
+  const localizedGateReasons = officialGateReasons.map((reason, index) =>
+    localizeBacktestGateReason(
+      reason,
+      officialPreflight?.nlp_gate_reason_codes?.[index] ?? null,
+    ),
+  );
+  const featureItems = [
+    `官方 Schema 版本：${officialSchemaVersion}`,
+    ...(officialPreflight?.required_feature_names?.length
+      ? officialPreflight.required_feature_names.map((featureName) => `模型实际所需特征：${featureName}`)
+      : []),
+    ...officialSchemaMissingFeatures.map((featureName) => `缺失官方特征：${featureName}`),
+    ...officialSchemaFeatureNames.map((featureName) => `官方标准特征：${featureName}`),
+  ];
+  const customDatasetSummary =
+    customDatasetIds.length > 1
+      ? `将提交 ${customDatasetIds.length} 个数据集 ID。`
+      : customDatasetIds.length === 1
+        ? `将直接使用数据集 ${customDatasetIds[0]}。`
+        : datasetId.trim()
+          ? `将直接使用数据集 ${datasetId.trim()}。`
+          : `当前会使用数据集预置：${localizeBacktestOptionLabel(datasetPreset)}。`;
 
   useEffect(() => {
     if (initialRunId) {
@@ -460,17 +620,24 @@ export function LaunchBacktestDrawer({
   }, [optionsQuery.data?.default_official_window_days]);
 
   useEffect(() => {
+    if (initialMode) {
+      return;
+    }
     if (optionsQuery.data?.default_mode) {
       setMode(optionsQuery.data.default_mode);
     }
-  }, [optionsQuery.data?.default_mode]);
+  }, [initialMode, optionsQuery.data?.default_mode]);
+
+  useEffect(() => {
+    if (initialMode) {
+      setMode(initialMode);
+    }
+  }, [initialMode]);
 
   useEffect(() => {
     const value = optionsQuery.data?.constraints?.research_backend;
     const defaultValue =
-      value && typeof value === "object" && "default" in value
-        ? value.default
-        : null;
+      value && typeof value === "object" && "default" in value ? value.default : null;
     if (defaultValue === "native" || defaultValue === "vectorbt") {
       setResearchBackend(defaultValue);
     }
@@ -479,9 +646,7 @@ export function LaunchBacktestDrawer({
   useEffect(() => {
     const value = optionsQuery.data?.constraints?.portfolio_method;
     const defaultValue =
-      value && typeof value === "object" && "default" in value
-        ? value.default
-        : null;
+      value && typeof value === "object" && "default" in value ? value.default : null;
     if (defaultValue === "proportional" || defaultValue === "skfolio_mean_risk") {
       setPortfolioMethod(defaultValue);
     }
@@ -498,6 +663,19 @@ export function LaunchBacktestDrawer({
     void queryClient.invalidateQueries({ queryKey: ["workbench-overview"] });
   }, [jobQuery.data?.status, queryClient, runId]);
 
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [open]);
+
   const mutation = useMutation({
     mutationFn: () =>
       api.launchBacktest({
@@ -512,8 +690,7 @@ export function LaunchBacktestDrawer({
             : mode === "custom" && datasetId.trim() && customDatasetIds.length === 0
               ? datasetId.trim()
               : undefined,
-        dataset_ids:
-          mode === "custom" && customDatasetIds.length > 1 ? customDatasetIds : undefined,
+        dataset_ids: mode === "custom" && customDatasetIds.length > 1 ? customDatasetIds : undefined,
         dataset_preset:
           mode === "custom" && !datasetId.trim() && customDatasetIds.length === 0
             ? datasetPreset
@@ -535,24 +712,23 @@ export function LaunchBacktestDrawer({
       void queryClient.invalidateQueries({ queryKey: ["workbench-overview"] });
     },
   });
-
+  const submitButtonLabel = mutation.isPending
+    ? "提交中..."
+    : mode === "official" && officialPreflightPending
+      ? "兼容性检查中..."
+      : I18N.action.submit;
   const backtestLink = jobQuery.data?.result?.deeplinks?.backtest_detail ?? null;
 
   async function handleSubmit() {
     if (!runId.trim()) {
-          setFormError("请输入 run_id。");
+      setFormError("请输入 run_id。");
       return;
     }
     if (!benchmarkSymbol.trim()) {
       setFormError("请输入基准符号。");
       return;
     }
-    if (
-      mode === "custom" &&
-      !datasetId.trim() &&
-      customDatasetIds.length === 0 &&
-      !datasetPreset
-    ) {
+    if (mode === "custom" && !datasetId.trim() && customDatasetIds.length === 0 && !datasetPreset) {
       setFormError("请提供 dataset_id / dataset_ids，或选择一个数据集预设。");
       return;
     }
@@ -588,389 +764,363 @@ export function LaunchBacktestDrawer({
     <div className="drawer-wrap">
       <button
         className="action-button secondary"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(true)}
         type="button"
       >
         {I18N.action.launchBacktest}
       </button>
       {open ? (
-        <div className="drawer-panel">
-          <h3>{I18N.action.launchBacktest}</h3>
-          <div className="segmented-tabs" role="tablist" aria-label="回测模式">
-            <button
-              className={`tab-chip ${mode === "official" ? "active" : ""}`}
-              onClick={() => setMode("official")}
-              type="button"
-            >
-              官方模板
-            </button>
-            <button
-              className={`tab-chip ${mode === "custom" ? "active" : ""}`}
-              onClick={() => setMode("custom")}
-              type="button"
-            >
-              自定义回测
-            </button>
-          </div>
-
-          <label>
-            <span>训练实例 ID</span>
-            <input onChange={(event) => setRunId(event.target.value)} value={runId} />
-          </label>
-          {mode === "official" ? (
-            <div className="dataset-callout">
-              <strong>
-                {localizeBacktestTemplateName(officialTemplate?.name, officialTemplate?.template_id)}
-              </strong>
-              <span>
-                官方模式会绑定最新的官方基准数据集，并忽略自定义数据集覆盖。
-              </span>
-              <span>
-                官方排名只比较使用同一官方基准版本和同一窗口档位的结果。
-              </span>
-              {boundDatasetIds.length > 0 ? (
-                <span>{`训练参考数据集：${boundDatasetIds.join(", ")}`}</span>
-              ) : runQuery.isLoading ? (
-                <span>正在解析训练参考数据集...</span>
-              ) : null}
-              {officialTemplate?.protocol_version ? (
-                <span>{`协议版本：${officialTemplate.protocol_version}`}</span>
-              ) : null}
-              {officialTemplate?.scenario_bundle?.length ? (
-                <span>{`场景包：${officialTemplate.scenario_bundle.join(", ")}`}</span>
-              ) : null}
-
-              <label>
-                  <span>官方窗口</span>
-                <select
-                  onChange={(event) =>
-                    setOfficialWindowDays(parseOfficialWindowDays(event.target.value))
-                  }
-                  value={String(officialWindowDays)}
-                >
-                  {officialWindowOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {localizeOfficialWindowOptionLabel(option.value, option.label)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="stack-list">
-                <div className="stack-item align-start">
-                  <strong>官方市场数据集 ID</strong>
-                  <span>{OFFICIAL_MARKET_DATASET_ID}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>官方多模态数据集 ID</strong>
-                  <span>{OFFICIAL_MULTIMODAL_DATASET_ID}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>最新官方窗口</strong>
-                  <span>{officialRollingWindow}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>实际市场窗口</strong>
-                  <span>{actualMarketWindow}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>官方测试窗口</strong>
-                  <span>{officialTestWindow}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>实际 NLP 窗口</strong>
-                  <span>{actualNlpWindow}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>NLP Gate</strong>
-                  <span>{gateStatusLabel(officialReadiness?.official_nlp_gate_status)}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>仅归档型 NLP</strong>
-                  <span>
-                    {officialReadiness?.archival_nlp_source_only === null ||
-                    officialReadiness?.archival_nlp_source_only === undefined
-                      ? "--"
-                      : officialReadiness.archival_nlp_source_only
-                        ? "是"
-                        : "否"}
-                  </span>
-                </div>
-              </div>
-
-              <span>
-                官方滚动窗口会取官方市场与 NLP 数据共同支持到的最新时间戳作为结束点。
-              </span>
-              <span>
-                官方多模态比较要求模型实际特征集能够映射到官方 NLP schema。
-              </span>
-
-              {officialRequirements.length > 0 ? (
-                <div className="stack-list">
-                  {officialRequirements.map((item) => (
-                    <div className="stack-item align-start" key={item}>
-                      <strong>模板规则</strong>
-                      <span>{item}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {officialGateReasons.length > 0 ? (
-                <div className="stack-list">
-                  {officialGateReasons.map((reason) => (
-                    <div className="stack-item align-start" key={reason}>
-                      <strong>NLP 门禁说明</strong>
-                      <span>{localizeBacktestGateReason(reason)}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <div className="stack-list">
-                <div className="stack-item align-start">
-                  <strong>官方兼容性</strong>
-                  <span>{officialCompatibilityLabel}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>官方基准版本</strong>
-                  <span>{officialPreflight?.official_benchmark_version ?? "--"}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>官方 Schema 版本</strong>
-                  <span>{officialSchemaVersion}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>需要 NLP 模态</strong>
-                  <span>
-                    {officialPreflight?.requires_text_features === undefined
-                      ? "--"
-                      : officialPreflight.requires_text_features
-                        ? "是"
-                        : "否"}
-                  </span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>需要辅助模态</strong>
-                  <span>
-                    {officialPreflight?.requires_auxiliary_features === undefined
-                      ? "--"
-                      : officialPreflight.requires_auxiliary_features
-                        ? "是"
-                        : "否"}
-                  </span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>要求模态</strong>
-                  <span>
-                    {officialPreflight?.required_modalities?.length
-                      ? officialPreflight.required_modalities
-                          .map((modality) => formatModalityLabel(modality))
-                          .join(" / ")
-                      : "--"}
-                  </span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>解析后的官方窗口</strong>
-                  <span>{officialRollingWindow}</span>
-                </div>
-                <div className="stack-item align-start">
-                  <strong>阻断摘要</strong>
-                  <span>{officialBlockingSummary ?? "当前可发起官方回测。"}</span>
-                </div>
-              </div>
-
-              {officialSchemaMissingFeatures.length > 0 ? (
-                <div className="stack-list">
-                  {officialSchemaMissingFeatures.map((featureName) => (
-                    <div className="stack-item align-start" key={featureName}>
-                      <strong>缺失官方特征</strong>
-                      <span>{featureName}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {officialPreflight?.required_feature_names?.length ? (
-                <div className="stack-list">
-                  {officialPreflight.required_feature_names.map((featureName) => (
-                    <div className="stack-item align-start" key={featureName}>
-                      <strong>模型实际所需特征</strong>
-                      <span>{featureName}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {officialSchemaFeatureNames.length > 0 ? (
-                <div className="stack-list">
-                  {officialSchemaFeatureNames.map((featureName) => (
-                    <div className="stack-item align-start" key={featureName}>
-                      <strong>官方标准特征</strong>
-                      <span>{featureName}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <>
-              <label>
-                <span>Dataset ID</span>
-                <input onChange={(event) => setDatasetId(event.target.value)} value={datasetId} />
-              </label>
-              <label>
-                <span>Dataset IDs</span>
-                <textarea
-                  className="field area-field"
-                  onChange={(event) => setDatasetIdsText(event.target.value)}
-                  placeholder="One dataset_id per line, or separate with commas"
-                  value={datasetIdsText}
-                />
-              </label>
-              {customDatasetIds.length > 0 || datasetId.trim() ? (
-                <div className="dataset-callout">
-                  <strong>
-                    {customDatasetIds.length > 1
-                      ? "Backtest from multiple datasets"
-                      : "Backtest from a dataset"}
-                  </strong>
-                  <span>
-                    Custom mode uses the dataset IDs you provide directly instead of any preset benchmark dataset.
-                  </span>
-                  {customDatasetIds.length > 1 ? (
-                    <span>{`This launch will submit ${customDatasetIds.length} dataset IDs.`}</span>
-                  ) : null}
-                </div>
-              ) : (
-                <label>
-                  <span>Dataset Preset</span>
-                  <select
-                    onChange={(event) =>
-                      setDatasetPreset(event.target.value as "smoke" | "real_benchmark")
-                    }
-                    value={datasetPreset}
-                  >
-                    {(optionsQuery.data?.dataset_presets ?? []).map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {localizeBacktestOptionLabel(option.value, option.label)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </>
-          )}
-
-          {mode === "custom" ? (
-            <label>
-              <span>Prediction Scope</span>
-              <select
-                onChange={(event) => setPredictionScope(event.target.value as "full" | "test")}
-                value={predictionScope}
-              >
-                {(optionsQuery.data?.prediction_scopes ?? []).map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {localizeBacktestOptionLabel(option.value, option.label)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <div className="dataset-callout">
-              <strong>固定预测范围</strong>
-              <span>测试集</span>
-            </div>
-          )}
-
-          <label>
-            <span>基准符号</span>
-            <input
-              onChange={(event) => setBenchmarkSymbol(event.target.value)}
-              value={benchmarkSymbol}
-            />
-          </label>
-
-          <label>
-            <span>Research Backend</span>
-            <select
-              onChange={(event) => setResearchBackend(event.target.value as ResearchBackend)}
-              value={researchBackend}
-            >
-              {researchBackendOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {localizeBacktestOptionLabel(option.value, option.label)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            <span>Portfolio Method</span>
-            <select
-              onChange={(event) => setPortfolioMethod(event.target.value as PortfolioMethod)}
-              value={portfolioMethod}
-            >
-              {portfolioMethodOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {localizeBacktestOptionLabel(option.value, option.label)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {(researchBackend !== "native" || portfolioMethod !== "proportional") ? (
-            <div className="dataset-callout">
-              <strong>Advanced research override</strong>
-              <span>
-                These optional overrides are explicit research choices. The default path remains
-                Native + Proportional.
-              </span>
-            </div>
-          ) : null}
-
-          {formError ? <p className="form-error">{formError}</p> : null}
-          {mutation.isError ? <p className="form-error">{(mutation.error as Error).message}</p> : null}
-
-          <button
-            className="action-button secondary"
-            disabled={
-              mutation.isPending ||
-              optionsQuery.isLoading ||
-              officialSubmitBlocked
+        <div
+          className="dialog-backdrop backtest-launch-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setOpen(false);
             }
-            onClick={handleSubmit}
-            type="button"
+          }}
+          role="presentation"
+        >
+          <div
+            aria-label="发起回测"
+            aria-modal="true"
+            className="dialog-shell backtest-launch-modal"
+            role="dialog"
           >
-            {mutation.isPending ? "鎻愪氦涓?.." : I18N.action.submit}
-          </button>
-
-          {jobQuery.data ? (
-            <div className="job-box">
-              <div className="split-line">
-                <strong>{jobQuery.data.job_id}</strong>
-                <StatusPill status={jobQuery.data.status} />
+            <div className="backtest-launch-header">
+              <div className="backtest-launch-header-copy">
+                <strong>{I18N.action.launchBacktest}</strong>
+                <p>
+                  {mode === "official"
+                    ? "先确认兼容性摘要，再决定是否展开协议细节。"
+                    : "先填写必要参数，再按需要展开高级选项。"}
+                </p>
               </div>
-              {jobQuery.data.stages.map((stage) => (
-                <div className="job-stage" key={stage.name}>
-                  <span>{formatStageNameLabel(stage.name)}</span>
-                  <span>{stage.summary}</span>
-                </div>
-              ))}
-              {jobQuery.data.error_message ? (
-                <p className="form-error">{jobQuery.data.error_message}</p>
-              ) : null}
-              {jobQuery.data.status === "success" && backtestLink ? (
+              <button className="link-button" onClick={() => setOpen(false)} type="button">
+                {I18N.action.close}
+              </button>
+            </div>
+
+            <div className="backtest-launch-scroll">
+              <div className="segmented-tabs" role="tablist" aria-label="回测模式">
                 <button
-                  className="link-button"
-                  onClick={() => navigate(backtestLink)}
+                  className={`tab-chip ${mode === "official" ? "active" : ""}`}
+                  onClick={() => setMode("official")}
                   type="button"
                 >
-                  鎵撳紑鍥炴祴璇︽儏
+                  官方模板
                 </button>
+                <button
+                  className={`tab-chip ${mode === "custom" ? "active" : ""}`}
+                  onClick={() => setMode("custom")}
+                  type="button"
+                >
+                  自定义回测
+                </button>
+              </div>
+
+              <section className="backtest-launch-section">
+                <div className="backtest-launch-topbar">
+                  <div className="backtest-launch-primary-grid">
+                    <label className="backtest-launch-field-wide">
+                      <span>训练实例 ID</span>
+                      <input onChange={(event) => setRunId(event.target.value)} value={runId} />
+                    </label>
+
+                    {mode === "official" ? (
+                      <label>
+                        <span>官方窗口</span>
+                        <select
+                          onChange={(event) =>
+                            setOfficialWindowDays(parseOfficialWindowDays(event.target.value))
+                          }
+                          value={String(officialWindowDays)}
+                        >
+                          {officialWindowOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {localizeOfficialWindowOptionLabel(option.value, option.label)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <label>
+                        <span>预测范围</span>
+                        <select
+                          onChange={(event) =>
+                            setPredictionScope(event.target.value as "full" | "test")
+                          }
+                          value={predictionScope}
+                        >
+                          {(optionsQuery.data?.prediction_scopes ?? []).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {localizeBacktestOptionLabel(option.value, option.label)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+
+                    <label>
+                      <span>基准符号</span>
+                      <input
+                        onChange={(event) => setBenchmarkSymbol(event.target.value)}
+                        value={benchmarkSymbol}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="backtest-launch-submit">
+                    <button
+                      className="action-button secondary"
+                      disabled={
+                        mutation.isPending ||
+                        optionsQuery.isLoading ||
+                        officialPreflightPending ||
+                        officialSubmitBlocked
+                      }
+                      onClick={handleSubmit}
+                      type="button"
+                    >
+                      {submitButtonLabel}
+                    </button>
+                    <span>
+                      {mode === "official"
+                        ? "官方模板会固定使用测试集，并按官方窗口发起。"
+                        : "自定义模式会优先采用你填写的数据集 ID。"}
+                    </span>
+                  </div>
+                </div>
+              </section>
+
+              {mode === "official" ? (
+                <>
+                  {!hasRunId ? (
+                    <section className="backtest-launch-summary">
+                      <div className="backtest-launch-summary-head">
+                        <div>
+                          <strong>
+                            {localizeBacktestTemplateName(
+                              officialTemplate?.name,
+                              officialTemplate?.template_id,
+                            )}
+                          </strong>
+                          <p>请先输入训练实例 ID，再查看兼容性摘要和官方协议细节。</p>
+                        </div>
+                      </div>
+                    </section>
+                  ) : (
+                    <>
+                      <section className="backtest-launch-summary">
+                        <div className="backtest-launch-summary-head">
+                          <div>
+                            <strong>
+                              {localizeBacktestTemplateName(
+                                officialTemplate?.name,
+                                officialTemplate?.template_id,
+                              )}
+                            </strong>
+                            <p>
+                              {officialPreflightPending
+                                ? "正在校验官方窗口、市场锚点和 NLP 门禁。"
+                                : "首屏只保留发起所需摘要，详细协议默认收起。"}
+                            </p>
+                          </div>
+                          <span
+                            className={`backtest-launch-status is-${compatibilityTone(
+                              officialCompatibilityLabel,
+                            )}`}
+                          >
+                            {officialCompatibilityLabel}
+                          </span>
+                        </div>
+
+                        <SummaryGrid items={officialSummaryItems} />
+                      </section>
+
+                      <section className="backtest-launch-section">
+                        <div className="backtest-launch-section-head">
+                          <strong>关键窗口</strong>
+                          <span>只展示最影响发起判断的时间窗。</span>
+                        </div>
+                        <SummaryGrid items={officialWindowItems} />
+                      </section>
+
+                      <details className="backtest-launch-disclosure">
+                        <summary>基准与数据绑定</summary>
+                        <DisclosureList
+                          emptyText="当前没有可展示的数据绑定信息。"
+                          items={bindingItems}
+                        />
+                      </details>
+
+                      <details className="backtest-launch-disclosure">
+                        <summary>模板规则</summary>
+                        <DisclosureList
+                          emptyText="当前模板没有额外规则说明。"
+                          items={officialRequirements}
+                        />
+                      </details>
+
+                      {(localizedGateReasons.length > 0 || hasOfficialNlpContext) ? (
+                        <details className="backtest-launch-disclosure">
+                          <summary>NLP 门禁说明</summary>
+                          <div className="backtest-launch-disclosure-body">
+                            <SummaryGrid
+                              items={[
+                                {
+                                  label: "NLP Gate",
+                                  value: gateStatusLabel(
+                                    officialPreflight?.nlp_gate_status ??
+                                      officialReadiness?.official_nlp_gate_status,
+                                  ),
+                                  tone: officialNlpGateFailed ? "danger" : "default",
+                                },
+                                {
+                                  label: "仅归档型 NLP",
+                                  value: boolLabel(officialReadiness?.archival_nlp_source_only),
+                                },
+                              ]}
+                            />
+                            <DisclosureList
+                              emptyText="当前没有额外的门禁说明。"
+                              items={localizedGateReasons}
+                            />
+                          </div>
+                        </details>
+                      ) : null}
+
+                      {officialPreflight && !officialPreflightPending ? (
+                        <details className="backtest-launch-disclosure">
+                          <summary>特征契约</summary>
+                          <DisclosureList
+                            emptyText="当前没有需要展示的特征契约信息。"
+                            items={featureItems}
+                          />
+                        </details>
+                      ) : null}
+                    </>
+                  )}
+                </>
+              ) : (
+                <section className="backtest-launch-section">
+                  <div className="backtest-launch-section-head">
+                    <strong>数据来源</strong>
+                    <span>可填单个数据集、多个数据集，或回退到数据集预置。</span>
+                  </div>
+                  <div className="backtest-launch-primary-grid">
+                    <label>
+                      <span>数据集 ID</span>
+                      <input onChange={(event) => setDatasetId(event.target.value)} value={datasetId} />
+                    </label>
+                    <label>
+                      <span>数据集预置</span>
+                      <select
+                        onChange={(event) =>
+                          setDatasetPreset(event.target.value as "smoke" | "real_benchmark")
+                        }
+                        value={datasetPreset}
+                      >
+                        {(optionsQuery.data?.dataset_presets ?? []).map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {localizeBacktestOptionLabel(option.value, option.label)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="backtest-launch-field-wide">
+                      <span>数据集 ID 列表</span>
+                      <textarea
+                        className="field area-field"
+                        onChange={(event) => setDatasetIdsText(event.target.value)}
+                        placeholder="每行一个 dataset_id，或用逗号分隔"
+                        value={datasetIdsText}
+                      />
+                    </label>
+                  </div>
+                  <div className="backtest-launch-inline-note">{customDatasetSummary}</div>
+                </section>
+              )}
+
+              <details className="backtest-launch-disclosure backtest-launch-advanced">
+                <summary>高级选项</summary>
+                <div className="backtest-launch-disclosure-body">
+                  <div className="backtest-launch-primary-grid">
+                    <label>
+                      <span>研究引擎</span>
+                      <select
+                        onChange={(event) =>
+                          setResearchBackend(event.target.value as ResearchBackend)
+                        }
+                        value={researchBackend}
+                      >
+                        {researchBackendOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {localizeBacktestOptionLabel(option.value, option.label)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label>
+                      <span>组合方法</span>
+                      <select
+                        onChange={(event) =>
+                          setPortfolioMethod(event.target.value as PortfolioMethod)
+                        }
+                        value={portfolioMethod}
+                      >
+                        {portfolioMethodOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {localizeBacktestOptionLabel(option.value, option.label)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <p className="backtest-launch-disclosure-empty">
+                    默认路径保持为原生引擎 + 比例分配，只有研究对比时才建议改这里。
+                  </p>
+                </div>
+              </details>
+
+              {formError ? <p className="form-error">{formError}</p> : null}
+              {mutation.isError ? (
+                <p className="form-error">{(mutation.error as Error).message}</p>
+              ) : null}
+
+              {jobQuery.data ? (
+                <section className="backtest-launch-section">
+                  <div className="backtest-launch-section-head">
+                    <strong>提交结果</strong>
+                    <span>任务创建后会在这里更新状态和跳转入口。</span>
+                  </div>
+                  <div className="job-box">
+                    <div className="split-line">
+                      <strong>{jobQuery.data.job_id}</strong>
+                      <StatusPill status={jobQuery.data.status} />
+                    </div>
+                    {jobQuery.data.stages.map((stage) => (
+                      <div className="job-stage" key={stage.name}>
+                        <span>{formatStageNameLabel(stage.name)}</span>
+                        <span>{stage.summary}</span>
+                      </div>
+                    ))}
+                    {jobQuery.data.error_message ? (
+                      <p className="form-error">{jobQuery.data.error_message}</p>
+                    ) : null}
+                    {jobQuery.data.status === "success" && backtestLink ? (
+                      <button
+                        className="link-button"
+                        onClick={() => navigate(backtestLink)}
+                        type="button"
+                      >
+                        打开回测详情
+                      </button>
+                    ) : null}
+                  </div>
+                </section>
               ) : null}
             </div>
-          ) : null}
+          </div>
         </div>
       ) : null}
     </div>

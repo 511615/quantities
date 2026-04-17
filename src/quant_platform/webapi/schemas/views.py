@@ -285,16 +285,21 @@ class BacktestTemplateView(ApiModel):
     slice_policy: str | None = None
     scenario_bundle: list[str] = Field(default_factory=list)
     eligibility_rules: list[str] = Field(default_factory=list)
+    eligibility_rule_keys: list[str] = Field(default_factory=list)
     required_metadata: list[str] = Field(default_factory=list)
+    required_metadata_keys: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    note_keys: list[str] = Field(default_factory=list)
 
 
 class GateResultView(ApiModel):
     key: str
     label: str
+    label_key: str | None = None
     passed: bool | None = None
     severity: str = "info"
     detail: str | None = None
+    detail_key: str | None = None
 
 
 class RankComponentView(ApiModel):
@@ -323,6 +328,7 @@ class BacktestProtocolResultView(ApiModel):
     actual_nlp_end_time: datetime | None = None
     nlp_gate_status: str | None = None
     nlp_gate_reasons: list[str] = Field(default_factory=list)
+    nlp_gate_reason_keys: list[str] = Field(default_factory=list)
     official_benchmark_version: str | None = None
     official_window_days: int | None = None
     official_window_start_time: datetime | None = None

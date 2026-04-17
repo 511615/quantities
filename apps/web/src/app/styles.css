@@ -1501,6 +1501,230 @@ strong,
   box-shadow: var(--shadow);
 }
 
+.backtest-launch-backdrop {
+  align-items: center;
+}
+
+.backtest-launch-modal {
+  width: min(920px, 100%);
+  max-height: min(90vh, 960px);
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.backtest-launch-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.2rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(199, 255, 115, 0.06), transparent 78%),
+    var(--bg-elevated);
+}
+
+.backtest-launch-header-copy {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.backtest-launch-header-copy strong {
+  font-size: 1.22rem;
+}
+
+.backtest-launch-header-copy p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.backtest-launch-scroll {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 1.2rem 1.2rem;
+  overflow: auto;
+}
+
+.backtest-launch-section,
+.backtest-launch-summary,
+.backtest-launch-disclosure {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+}
+
+.backtest-launch-section,
+.backtest-launch-summary {
+  padding: 1rem;
+}
+
+.backtest-launch-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 1rem;
+  align-items: start;
+}
+
+.backtest-launch-primary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.backtest-launch-field-wide {
+  grid-column: 1 / -1;
+}
+
+.backtest-launch-submit {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.backtest-launch-submit > span,
+.backtest-launch-inline-note,
+.backtest-launch-section-head span,
+.backtest-launch-disclosure-empty {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.backtest-launch-summary {
+  display: grid;
+  gap: 0.9rem;
+  background:
+    linear-gradient(180deg, rgba(199, 255, 115, 0.05), transparent 82%),
+    var(--panel);
+}
+
+.backtest-launch-summary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.backtest-launch-summary-head > div {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.backtest-launch-summary-head p,
+.backtest-launch-disclosure-empty {
+  margin: 0;
+}
+
+.backtest-launch-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 0.48rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--chip-bg);
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.backtest-launch-status.is-ready {
+  border-color: rgba(142, 197, 92, 0.35);
+  background: rgba(142, 197, 92, 0.12);
+  color: #5e8d2f;
+}
+
+.backtest-launch-status.is-blocked,
+.backtest-launch-status.is-error {
+  border-color: rgba(255, 142, 142, 0.35);
+  background: rgba(255, 142, 142, 0.12);
+  color: var(--danger);
+}
+
+.backtest-launch-status.is-pending {
+  border-color: rgba(123, 169, 255, 0.35);
+  background: rgba(123, 169, 255, 0.12);
+  color: #4a6bb1;
+}
+
+.backtest-launch-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.backtest-launch-kv {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--chip-bg);
+}
+
+.backtest-launch-kv span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.backtest-launch-kv strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.backtest-launch-kv.is-danger strong {
+  color: var(--danger);
+}
+
+.backtest-launch-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.backtest-launch-section-head strong {
+  font-size: 1rem;
+}
+
+.backtest-launch-disclosure {
+  padding: 0.95rem 1rem;
+}
+
+.backtest-launch-disclosure summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+.backtest-launch-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.backtest-launch-disclosure-body {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 0.9rem;
+}
+
+.backtest-launch-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.backtest-launch-list-item {
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--chip-bg);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .dialog-copy {
   display: grid;
   gap: 0.45rem;
@@ -1622,7 +1846,8 @@ strong,
   .parameter-grid,
   .definition-grid,
   .dataset-domain-grid,
-  .nlp-stat-grid {
+  .nlp-stat-grid,
+  .backtest-launch-kv-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1633,6 +1858,10 @@ strong,
 
 @media (max-width: 900px) {
   .workbench-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .backtest-launch-topbar {
     grid-template-columns: 1fr;
   }
 
@@ -1684,8 +1913,26 @@ strong,
   .artifact-grid,
   .detail-grid,
   .detail-grid.wide-secondary,
-  .three-column-grid {
+  .three-column-grid,
+  .backtest-launch-primary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .backtest-launch-modal {
+    width: min(100%, 100vw);
+    max-height: calc(100vh - 1.2rem);
+  }
+
+  .backtest-launch-header,
+  .backtest-launch-scroll {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .backtest-launch-summary-head,
+  .backtest-launch-section-head {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .dataset-card-head {

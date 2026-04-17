@@ -738,7 +738,7 @@ export function DatasetRequestDrawer({
                           </label>
 
                           <label>
-                            <span>{"鏍囩殑"}</span>
+                            <span>{"标的"}</span>
                             <input
                               className="field"
                               onChange={(event) =>

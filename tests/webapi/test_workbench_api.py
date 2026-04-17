@@ -244,6 +244,22 @@ def _mark_official_multimodal_benchmark_stale(app) -> None:
     store.write_model("datasets/official_reddit_pullpush_multimodal_v2_fusion_dataset_manifest.json", dataset_manifest)
 
 
+def _clone_dataset_artifacts(
+    app,
+    *,
+    source_dataset_id: str,
+    target_dataset_id: str,
+) -> None:
+    artifact_root = app.state.services.jobs.artifact_root
+    datasets_dir = artifact_root / "datasets"
+    for source_path in datasets_dir.glob(f"{source_dataset_id}*"):
+        target_path = datasets_dir / source_path.name.replace(source_dataset_id, target_dataset_id, 1)
+        target_path.write_text(
+            source_path.read_text(encoding="utf-8").replace(source_dataset_id, target_dataset_id),
+            encoding="utf-8",
+        )
+
+
 def _market_dataset_request_payload(
     request_name: str,
     *,
@@ -354,6 +370,20 @@ def _launch_train_and_wait(
     job_payload = _wait_for_job(client, response.json()["job_id"], timeout_seconds=timeout_seconds)
     assert job_payload["status"] == "success"
     return job_payload["result"]["run_ids"][0]
+
+
+def _rewrite_backtest_result_uris_windows_style(app, result_uri: str) -> None:
+    artifact_root = app.state.services.jobs.artifact_root
+    store = LocalArtifactStore(artifact_root)
+    result_path = store.resolve_uri(result_uri)
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    for key in ("diagnostics_uri", "pnl_uri", "scenario_summary_uri"):
+        uri = payload.get(key)
+        if not isinstance(uri, str) or not uri:
+            continue
+        resolved = store.resolve_uri(uri)
+        payload[key] = resolved.relative_to(artifact_root.parent).as_posix().replace("/", "\\")
+    result_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _materialize_stub_run(
@@ -759,6 +789,50 @@ def test_runs_endpoint_does_not_depend_on_heavy_dataset_detail_loading() -> None
     payload = response.json()
     assert payload["total"] >= 1
     assert any(item["dataset_id"] for item in payload["items"])
+
+
+def test_workbench_overview_tolerates_windows_style_backtest_artifact_uris() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+    run_id = _launch_train_and_wait(
+        client,
+        dataset_id="smoke_dataset",
+        run_id_prefix=f"windows-uri-overview-{suffix}",
+    )
+
+    backtest_response = client.post(
+        "/api/launch/backtest",
+        json={
+            "run_id": run_id,
+            "dataset_id": "smoke_dataset",
+            "prediction_scope": "full",
+            "strategy_preset": "sign",
+            "portfolio_preset": "research_default",
+            "cost_preset": "standard",
+        },
+    )
+    assert backtest_response.status_code == 200
+    backtest_job = _wait_for_job(client, backtest_response.json()["job_id"])
+    assert backtest_job["status"] == "success"
+
+    backtest_id = backtest_job["result"]["backtest_ids"][0]
+    row = next(
+        item
+        for item in app.state.services.workbench._backtest_history_rows()  # type: ignore[attr-defined]
+        if item.get("backtest_id") == backtest_id
+    )
+
+    _rewrite_backtest_result_uris_windows_style(app, str(row["research_result_uri"]))
+    _rewrite_backtest_result_uris_windows_style(app, str(row["simulation_result_uri"]))
+
+    runs_response = client.get("/api/runs")
+    overview_response = client.get("/api/workbench/overview")
+
+    assert runs_response.status_code == 200
+    assert overview_response.status_code == 200
+    overview_payload = overview_response.json()
+    assert any(item["run_id"] == run_id for item in overview_payload["recent_runs"])
 
 
 def test_benchmark_detail_endpoint_contains_summary() -> None:
@@ -2038,6 +2112,193 @@ def test_official_preflight_rematerializes_stale_multimodal_benchmark() -> None:
         None,
         "stale-sentiment-snapshot",
     }
+
+
+def test_official_expected_nlp_contract_uses_only_materialized_sentiment_symbols() -> None:
+    app = create_app()
+
+    vendor, identifiers = app.state.services.jobs._official_expected_nlp_contract()
+
+    assert vendor == "reddit_archive"
+    assert identifiers == {"BTC"}
+
+
+def test_official_nlp_contract_allows_custom_freeform_identifier_when_symbol_contract_matches() -> None:
+    app = create_app()
+    target_dataset_id = f"official_multimodal_custom_identifier_{int(time.time() * 1000)}"
+    _clone_dataset_artifacts(
+        app,
+        source_dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
+        target_dataset_id=target_dataset_id,
+    )
+
+    manifest_path = app.state.services.jobs.artifact_root / "datasets" / f"{target_dataset_id}_dataset_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    acquisition_profile = dict(manifest_payload.get("acquisition_profile") or {})
+    acquisition_profile["source_specs"] = [
+        {
+            **spec,
+            **(
+                {"identifier": "btc_news"}
+                if spec.get("data_domain") == "sentiment_events"
+                else {}
+            ),
+        }
+        for spec in (acquisition_profile.get("source_specs") or [])
+    ]
+    acquisition_profile["fusion_sources"] = [
+        {
+            **source,
+            **(
+                {"identifier": "btc_news"}
+                if source.get("data_domain") == "sentiment_events"
+                else {}
+            ),
+        }
+        for source in (acquisition_profile.get("fusion_sources") or [])
+    ]
+    manifest_payload["acquisition_profile"] = acquisition_profile
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+
+    reasons = app.state.services.jobs._official_source_contract_reasons_for_specs(
+        request_run_id="custom-nlp-identifier-probe",
+        source_specs=[
+            {
+                "run_id": "custom-nlp-identifier-probe",
+                "modality": "nlp",
+                "dataset_id": target_dataset_id,
+            }
+        ],
+    )
+
+    assert reasons == []
+
+
+def test_official_market_contract_allows_vendor_drift_when_symbols_match() -> None:
+    app = create_app()
+    target_dataset_id = f"official_market_vendor_probe_{int(time.time() * 1000)}"
+    _clone_dataset_artifacts(
+        app,
+        source_dataset_id="baseline_real_benchmark_dataset",
+        target_dataset_id=target_dataset_id,
+    )
+
+    manifest_path = app.state.services.jobs.artifact_root / "datasets" / f"{target_dataset_id}_dataset_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    acquisition_profile = dict(manifest_payload.get("acquisition_profile") or {})
+    acquisition_profile["source_vendor"] = "bitstamp_archive"
+    acquisition_profile["exchange"] = "bitstamp_archive"
+    acquisition_profile["symbols"] = ["BTCUSD"]
+    acquisition_profile["source_specs"] = [
+        {
+            "data_domain": "market",
+            "source_vendor": "bitstamp_archive",
+            "exchange": "bitstamp_archive",
+            "frequency": "1h",
+            "symbol_selector": {"symbols": ["BTCUSD"]},
+        }
+    ]
+    manifest_payload["acquisition_profile"] = acquisition_profile
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+
+    reasons = app.state.services.jobs._official_source_contract_reasons_for_specs(
+        request_run_id="custom-market-vendor-probe",
+        source_specs=[
+            {
+                "run_id": "custom-market-vendor-probe",
+                "modality": "market",
+                "dataset_id": target_dataset_id,
+            }
+        ],
+    )
+
+    assert reasons == []
+
+
+def test_official_nlp_contract_allows_market_anchor_and_label_vendor_drift_when_symbols_match() -> None:
+    app = create_app()
+    anchor_dataset_id = f"official_market_anchor_vendor_probe_{int(time.time() * 1000)}"
+    _clone_dataset_artifacts(
+        app,
+        source_dataset_id="baseline_real_benchmark_dataset",
+        target_dataset_id=anchor_dataset_id,
+    )
+    anchor_manifest_path = app.state.services.jobs.artifact_root / "datasets" / f"{anchor_dataset_id}_dataset_manifest.json"
+    anchor_manifest_payload = json.loads(anchor_manifest_path.read_text(encoding="utf-8"))
+    anchor_acquisition_profile = dict(anchor_manifest_payload.get("acquisition_profile") or {})
+    anchor_acquisition_profile["source_vendor"] = "bitstamp_archive"
+    anchor_acquisition_profile["exchange"] = "bitstamp_archive"
+    anchor_acquisition_profile["symbols"] = ["BTCUSD"]
+    anchor_acquisition_profile["source_specs"] = [
+        {
+            "data_domain": "market",
+            "source_vendor": "bitstamp_archive",
+            "exchange": "bitstamp_archive",
+            "frequency": "1h",
+            "symbol_selector": {"symbols": ["BTCUSD"]},
+        }
+    ]
+    anchor_manifest_payload["acquisition_profile"] = anchor_acquisition_profile
+    anchor_manifest_path.write_text(json.dumps(anchor_manifest_payload, indent=2), encoding="utf-8")
+
+    target_dataset_id = f"official_multimodal_vendor_probe_{int(time.time() * 1000)}"
+    _clone_dataset_artifacts(
+        app,
+        source_dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
+        target_dataset_id=target_dataset_id,
+    )
+    manifest_path = app.state.services.jobs.artifact_root / "datasets" / f"{target_dataset_id}_dataset_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    acquisition_profile = dict(manifest_payload.get("acquisition_profile") or {})
+    acquisition_profile["market_anchor_dataset_id"] = anchor_dataset_id
+    acquisition_profile["source_dataset_ids"] = [anchor_dataset_id]
+    acquisition_profile["label_source_vendor"] = "bitstamp_archive"
+    acquisition_profile["source_specs"] = [
+        {
+            **spec,
+            **(
+                {"source_vendor": "custom_social_archive", "exchange": "custom_social_archive"}
+                if spec.get("data_domain") == "sentiment_events"
+                else {}
+            ),
+        }
+        for spec in (acquisition_profile.get("source_specs") or [])
+    ]
+    manifest_payload["acquisition_profile"] = acquisition_profile
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+
+    reasons = app.state.services.jobs._official_source_contract_reasons_for_specs(
+        request_run_id="custom-anchor-vendor-probe",
+        source_specs=[
+            {
+                "run_id": "custom-anchor-vendor-probe",
+                "modality": "nlp",
+                "dataset_id": target_dataset_id,
+            }
+        ],
+    )
+
+    assert reasons == []
+
+
+def test_backtest_preflight_allows_sentiment_run_with_bitstamp_anchor_when_base_asset_matches() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/launch/backtest/preflight",
+        json={
+            "run_id": "workbench-train-20260416171837",
+            "mode": "official",
+            "template_id": "system::official_backtest_protocol_v1",
+            "official_window_days": 30,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compatible"] is True
+    assert payload["blocking_reasons"] == []
 
 
 def test_backtest_preflight_allows_current_multimodal_run_with_platform_compatible_schema() -> None:

@@ -45,7 +45,10 @@ export function RunsPage() {
               }
             </p>
           </div>
-          <LaunchBacktestDrawer initialRunId={selectedRunIdForBacktest} />
+          <LaunchBacktestDrawer
+            initialRunId={selectedRunIdForBacktest}
+            initialMode={selectedRunIdForBacktest ? "custom" : undefined}
+          />
         </div>
       </section>
       <ExperimentBrowser

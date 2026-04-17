@@ -74,6 +74,7 @@ class DatasetRegistryRepository:
         self.registry_root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.registry_root / "datasets.sqlite3"
         self._lock = threading.RLock()
+        self._bootstrap_signature: tuple[int, int] | None = None
         self._init_db()
 
     def list_entries(self) -> list[DatasetRegistryEntry]:
@@ -136,6 +137,9 @@ class DatasetRegistryRepository:
     def bootstrap_from_artifacts(self) -> None:
         with self._lock:
             ref_paths = sorted(self.artifact_root.glob("datasets/*_dataset_ref.json"))
+            signature = self._bootstrap_signature_for(ref_paths)
+            if signature == self._bootstrap_signature:
+                return
             live_dataset_ids: set[str] = set()
             with self._connect() as conn:
                 for ref_path in ref_paths:
@@ -213,63 +217,111 @@ class DatasetRegistryRepository:
                     conn.execute("DELETE FROM dataset_dependencies WHERE dataset_id = ?", (stale_id,))
                     conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (stale_id,))
                 conn.commit()
+            self._bootstrap_signature = signature
 
     def _init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS datasets (
-                    dataset_id TEXT PRIMARY KEY,
-                    ref_uri TEXT NOT NULL,
-                    manifest_uri TEXT,
-                    samples_uri TEXT,
-                    feature_view_uri TEXT,
-                    data_domain TEXT NOT NULL,
-                    dataset_type TEXT NOT NULL,
-                    source_vendor TEXT,
-                    exchange TEXT,
-                    frequency TEXT,
-                    entity_scope TEXT,
-                    entity_count INTEGER,
-                    snapshot_version TEXT,
-                    build_status TEXT,
-                    readiness_status TEXT,
-                    quality_status TEXT,
-                    as_of_time TEXT,
-                    data_start_time TEXT,
-                    data_end_time TEXT,
-                    raw_row_count INTEGER,
-                    usable_row_count INTEGER,
-                    feature_count INTEGER,
-                    label_count INTEGER,
-                    request_origin TEXT,
-                    payload_json TEXT NOT NULL,
-                    manifest_json TEXT,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS dataset_dependencies (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    dataset_id TEXT NOT NULL,
-                    dependency_kind TEXT NOT NULL,
-                    dependency_id TEXT NOT NULL,
-                    dependency_label TEXT,
-                    target_dataset_id TEXT,
-                    payload_json TEXT NOT NULL
-                )
-                """
-            )
+            self._create_schema(conn)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
+        self.registry_root.mkdir(parents=True, exist_ok=True)
+        try:
+            return self._open_connection()
+        except sqlite3.DatabaseError as exc:
+            if not self._is_recoverable_db_error(exc):
+                raise
+            self._reset_db_files()
+            return self._open_connection()
+
+    def _open_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA busy_timeout = 30000")
+        self._create_schema(conn)
+        quick_check = conn.execute("PRAGMA quick_check").fetchone()
+        if quick_check and str(quick_check[0]).lower() != "ok":
+            raise sqlite3.DatabaseError(f"database integrity check failed: {quick_check[0]}")
         return conn
+
+    def _create_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS datasets (
+                dataset_id TEXT PRIMARY KEY,
+                ref_uri TEXT NOT NULL,
+                manifest_uri TEXT,
+                samples_uri TEXT,
+                feature_view_uri TEXT,
+                data_domain TEXT NOT NULL,
+                dataset_type TEXT NOT NULL,
+                source_vendor TEXT,
+                exchange TEXT,
+                frequency TEXT,
+                entity_scope TEXT,
+                entity_count INTEGER,
+                snapshot_version TEXT,
+                build_status TEXT,
+                readiness_status TEXT,
+                quality_status TEXT,
+                as_of_time TEXT,
+                data_start_time TEXT,
+                data_end_time TEXT,
+                raw_row_count INTEGER,
+                usable_row_count INTEGER,
+                feature_count INTEGER,
+                label_count INTEGER,
+                request_origin TEXT,
+                payload_json TEXT NOT NULL,
+                manifest_json TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dataset_dependencies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id TEXT NOT NULL,
+                dependency_kind TEXT NOT NULL,
+                dependency_id TEXT NOT NULL,
+                dependency_label TEXT,
+                target_dataset_id TEXT,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
+    def _is_recoverable_db_error(exc: sqlite3.DatabaseError) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "malformed",
+                "not a database",
+                "disk image is malformed",
+                "integrity check failed",
+            )
+        )
+
+    def _reset_db_files(self) -> None:
+        for path in (
+            self.db_path,
+            self.registry_root / f"{self.db_path.name}-wal",
+            self.registry_root / f"{self.db_path.name}-shm",
+        ):
+            path.unlink(missing_ok=True)
+        self._bootstrap_signature = None
+
+    @staticmethod
+    def _bootstrap_signature_for(ref_paths: list[Path]) -> tuple[int, int]:
+        latest_mtime_ns = max((path.stat().st_mtime_ns for path in ref_paths), default=0)
+        return (len(ref_paths), latest_mtime_ns)
 
     def _manifest_path_for_payload(self, dataset_id: str, payload: dict[str, Any]) -> Path | None:
         manifest_uri = payload.get("dataset_manifest_uri")

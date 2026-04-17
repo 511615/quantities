@@ -17,6 +17,7 @@ import {
   localizeBacktestGateReason,
   localizeBacktestGateLabel,
   localizeBacktestMetadata,
+  localizeBacktestNote,
   localizeBacktestRequirement,
   localizeBacktestTemplateName,
   localizeBacktestWarning,
@@ -164,13 +165,15 @@ function templateRequirements(protocol: NonNullable<BacktestReportView["protocol
       ? `预测范围固定为 ${localizeProtocolValue(protocol.template.fixed_prediction_scope)}。`
       : null,
     ...((protocol.template?.eligibility_rules ?? []).map(
-      (item) => `准入要求：${localizeBacktestRequirement(item)}`,
+      (item, index) =>
+        `准入要求：${localizeBacktestRequirement(item, protocol.template?.eligibility_rule_keys?.[index])}`,
     )),
     ...((protocol.template?.required_metadata ?? []).map(
-      (item) => `必填披露：${localizeBacktestMetadata(item)}`,
+      (item, index) =>
+        `必填披露：${localizeBacktestMetadata(item, protocol.template?.required_metadata_keys?.[index])}`,
     )),
     ...((protocol.template?.notes ?? []).map(
-      (item) => `说明：${localizeBacktestRequirement(item)}`,
+      (item, index) => `说明：${localizeBacktestNote(item, protocol.template?.note_keys?.[index])}`,
     )),
   ];
   return items.filter((item): item is string => Boolean(item));
@@ -217,7 +220,7 @@ function summarizeProtocolFailures(protocol: BacktestReportView["protocol"] | nu
     .filter((item) => !item.passed)
     .map(
       (item) =>
-        `${localizeBacktestGateLabel(item.label)}: ${localizeBacktestGateDetail(item.detail)}`,
+        `${localizeBacktestGateLabel(item.label, item.label_key)}: ${localizeBacktestGateDetail(item.detail, item.detail_key)}`,
     );
 }
 
@@ -728,7 +731,7 @@ export function BacktestReportPage() {
                 {protocol.nlp_gate_reasons?.map((reason) => (
                   <div className="stack-item align-start" key={reason}>
                     <strong>NLP 门禁说明</strong>
-                    <span>{localizeBacktestGateReason(reason)}</span>
+                    <span>{localizeBacktestGateReason(reason, detail.protocol?.nlp_gate_reason_keys?.[detail.protocol?.nlp_gate_reasons?.indexOf(reason) ?? -1] ?? null)}</span>
                   </div>
                 ))}
               </div>
@@ -742,11 +745,11 @@ export function BacktestReportPage() {
                 {protocol.gate_results.map((item) => (
                   <div className="stack-item align-start" key={item.key}>
                     <strong>
-                      {`${localizeBacktestGateLabel(item.label)} / ${gateStatusLabel(
+                      {`${localizeBacktestGateLabel(item.label, item.label_key)} / ${gateStatusLabel(
                         item.passed === null ? "warning" : item.passed ? "passed" : "failed",
                       )}`}
                     </strong>
-                    <span>{localizeBacktestGateDetail(item.detail)}</span>
+                    <span>{localizeBacktestGateDetail(item.detail, item.detail_key)}</span>
                   </div>
                 ))}
               </div>

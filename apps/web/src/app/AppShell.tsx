@@ -3,17 +3,16 @@ import { NavLink, Outlet } from "react-router-dom";
 import { I18N, translateText } from "../shared/lib/i18n";
 import { useUiPreferences } from "../shared/preferences/UiPreferencesContext";
 
-const PRIMARY_LINKS = [
-  { to: "/", label: I18N.nav.workbench, end: true },
-  { to: "/models", label: I18N.nav.models },
-  { to: "/datasets", label: I18N.nav.datasets },
-  { to: "/backtests", label: I18N.nav.backtests },
-  { to: "/benchmarks", label: I18N.nav.benchmarks },
-  { to: "/jobs", label: I18N.nav.jobs },
-];
-
 export function AppShell() {
   const { locale, setLocale, theme, setTheme } = useUiPreferences();
+  const primaryLinks = [
+    { to: "/", label: I18N.nav.workbench, end: true },
+    { to: "/models", label: I18N.nav.models },
+    { to: "/datasets", label: I18N.nav.datasets },
+    { to: "/backtests", label: I18N.nav.backtests },
+    { to: "/benchmarks", label: I18N.nav.benchmarks },
+    { to: "/jobs", label: I18N.nav.jobs },
+  ];
 
   return (
     <div className="workbench-shell">
@@ -29,7 +28,7 @@ export function AppShell() {
         <section className="nav-section">
           <div className="nav-caption">{I18N.app.navTitle}</div>
           <nav className="workspace-links">
-            {PRIMARY_LINKS.map((link) => (
+            {primaryLinks.map((link) => (
               <NavLink end={link.end} key={link.to} to={link.to}>
                 <span>{link.label}</span>
               </NavLink>
@@ -55,7 +54,7 @@ export function AppShell() {
                 onClick={() => setLocale("zh-CN")}
                 type="button"
               >
-                中
+                {translateText("中")}
               </button>
               <button
                 className={locale === "en-US" ? "active" : ""}

@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { LaunchBacktestDrawer } from "./LaunchBacktestDrawer";
@@ -172,23 +172,20 @@ afterEach(() => {
   fetchMock.mockClear();
 });
 
-test("keeps official submit enabled while a compatible preflight is refetching", async () => {
-  const { container } = renderWithProviders(
-    <LaunchBacktestDrawer initialRunId="smoke-train-run" />,
-  );
+test("shows checking progress and re-enables submit after an official preflight refetch", async () => {
+  renderWithProviders(<LaunchBacktestDrawer initialRunId="smoke-train-run" />);
 
-  const submitButton = await waitFor(() => {
-    const match = container.querySelector<HTMLButtonElement>(
-      '.drawer-panel .action-button.secondary[type="button"]',
+  await waitFor(() => {
+    const match = document.querySelector<HTMLButtonElement>(
+      '.backtest-launch-submit .action-button.secondary[type="button"]',
     );
     expect(match).toBeTruthy();
     expect(match?.disabled).toBe(false);
-    return match as HTMLButtonElement;
   });
 
-  const windowSelect = container.querySelector<HTMLSelectElement>(".drawer-panel select");
-  expect(windowSelect).toBeTruthy();
-  fireEvent.change(windowSelect as HTMLSelectElement, { target: { value: "365" } });
+  fireEvent.change(screen.getByLabelText("官方窗口"), {
+    target: { value: "365" },
+  });
 
   await waitFor(() => {
     expect(
@@ -203,8 +200,11 @@ test("keeps official submit enabled while a compatible preflight is refetching",
     ).toBe(true);
   });
 
-  expect(submitButton.disabled).toBe(false);
-  fireEvent.click(submitButton);
+  expect(screen.getByRole("button", { name: "兼容性检查中..." })).toBeDisabled();
+
+  const readySubmitButton = await screen.findByRole("button", { name: "提交" });
+  expect(readySubmitButton).toBeEnabled();
+  fireEvent.click(readySubmitButton);
 
   await waitFor(() => {
     expect(

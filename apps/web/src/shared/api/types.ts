@@ -162,16 +162,21 @@ export type BacktestTemplateView = {
   slice_policy: string | null;
   scenario_bundle: string[];
   eligibility_rules: string[];
+  eligibility_rule_keys?: string[];
   required_metadata: string[];
+  required_metadata_keys?: string[];
   notes: string[];
+  note_keys?: string[];
 };
 
 export type GateResultView = {
   key: string;
   label: string;
+  label_key?: string | null;
   passed: boolean | null;
   severity: string;
   detail: string | null;
+  detail_key?: string | null;
 };
 
 export type RankComponentView = {
@@ -200,6 +205,7 @@ export type BacktestProtocolResultView = {
   actual_nlp_end_time?: string | null;
   nlp_gate_status?: string | null;
   nlp_gate_reasons?: string[];
+  nlp_gate_reason_keys?: string[];
   official_benchmark_version?: string | null;
   official_window_days?: number | null;
   official_window_start_time?: string | null;
@@ -530,8 +536,10 @@ export type BacktestLaunchPreflightView = {
   available_official_feature_names: string[];
   missing_official_feature_names: string[];
   blocking_reasons: string[];
+  blocking_reason_codes?: string[];
   nlp_gate_status?: string | null;
   nlp_gate_reasons: string[];
+  nlp_gate_reason_codes?: string[];
 };
 
 export type JobStageView = {

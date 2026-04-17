@@ -4401,7 +4401,10 @@ class ResearchWorkbenchService:
         items: list[TrainingDatasetSummaryView] = []
         for payload in self._dataset_refs(visible_only=True):
             dataset_id = str(payload.get("dataset_id", "unknown"))
-            readiness = self.get_dataset_readiness(dataset_id)
+            # The training panel only needs the dataset's trainability status, not the
+            # full official-backtest NLP gate calculation. Skipping that expensive pass
+            # keeps the page responsive for large multimodal archives.
+            readiness = self.get_dataset_readiness(dataset_id, include_official_nlp_gate=False)
             if readiness is None or readiness.readiness_status == "not_ready":
                 continue
             summary = self._dataset_summary(payload)
@@ -4448,7 +4451,33 @@ class ResearchWorkbenchService:
         )
         return TrainingDatasetsResponse(items=items, total=len(items))
 
-    def get_dataset_readiness(self, dataset_id: str) -> DatasetReadinessSummaryView | None:
+    def _empty_official_nlp_gate_summary(self) -> dict[str, Any]:
+        return {
+            "official_template_eligible": None,
+            "official_template_gate_status": None,
+            "official_template_gate_reasons": [],
+            "archival_source_only": None,
+            "requested_start_time": None,
+            "requested_end_time": None,
+            "actual_start_time": None,
+            "actual_end_time": None,
+            "market_window_start_time": None,
+            "market_window_end_time": None,
+            "official_backtest_start_time": None,
+            "official_backtest_end_time": None,
+            "coverage_ratio": None,
+            "test_coverage_ratio": None,
+            "max_consecutive_empty_bars": None,
+            "duplicate_ratio": None,
+            "entity_link_coverage_ratio": None,
+        }
+
+    def get_dataset_readiness(
+        self,
+        dataset_id: str,
+        *,
+        include_official_nlp_gate: bool = True,
+    ) -> DatasetReadinessSummaryView | None:
         payload = self._dataset_ref(dataset_id)
         if payload is None:
             return None
@@ -4486,7 +4515,11 @@ class ResearchWorkbenchService:
         )
         temporal_safety_status = self._str(manifest.get("temporal_safety_status")) or "passed"
         freshness_status = self._str(manifest.get("freshness_status")) or summary.freshness.status
-        nlp_gate = self._dataset_official_nlp_gate(dataset_id, payload)
+        nlp_gate = (
+            self._dataset_official_nlp_gate(dataset_id, payload)
+            if include_official_nlp_gate
+            else self._empty_official_nlp_gate_summary()
+        )
 
         blocking_issues: list[str] = []
         warnings: list[str] = []
@@ -4851,11 +4884,18 @@ class ResearchWorkbenchService:
 
     def _related_backtest_count_map(self) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for row in self._backtest_history_rows():
-            run_id = self._str(row.get("run_id"))
-            if not run_id:
+        for payload in self._successful_backtest_jobs():
+            result = payload.get("result")
+            if not isinstance(result, dict):
                 continue
-            counts[run_id] = counts.get(run_id, 0) + 1
+            run_ids = result.get("run_ids")
+            if not isinstance(run_ids, list):
+                continue
+            for raw_run_id in run_ids:
+                run_id = self._str(raw_run_id)
+                if not run_id:
+                    continue
+                counts[run_id] = counts.get(run_id, 0) + 1
         return counts
 
     def _backtest_id(self, uri: Any) -> str:

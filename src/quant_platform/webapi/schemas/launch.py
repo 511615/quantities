@@ -119,5 +119,7 @@ class BacktestLaunchPreflightView(LaunchApiModel):
     available_official_feature_names: list[str] = Field(default_factory=list)
     missing_official_feature_names: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
+    blocking_reason_codes: list[str] = Field(default_factory=list)
     nlp_gate_status: str | None = None
     nlp_gate_reasons: list[str] = Field(default_factory=list)
+    nlp_gate_reason_codes: list[str] = Field(default_factory=list)

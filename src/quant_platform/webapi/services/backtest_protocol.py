@@ -54,6 +54,71 @@ OFFICIAL_NLP_ARCHIVAL_VENDORS = (
     "gdelt",
 )
 
+CUSTOM_TEMPLATE_REQUIREMENTS = (
+    ("custom_any_compatible_run", "Any compatible run can be launched in custom mode."),
+)
+
+CUSTOM_TEMPLATE_NOTES = (
+    ("custom_visible_but_unranked", "Custom mode stays visible for inspection but is excluded from official ranking."),
+)
+
+OFFICIAL_TEMPLATE_REQUIREMENTS = (
+    ("prediction_frame_contract", "Model output must follow the prediction_frame_v1 contract."),
+    ("training_disclosure_required", "Training-time disclosure fields must be populated before official comparison is trusted."),
+    ("official_latest_benchmark_binding", "Official mode binds to the newest official rolling benchmark and ignores dataset overrides."),
+    ("official_fixed_window_options", "Official mode allows only fixed window presets: 30, 90, 180, and 365 days."),
+    ("official_same_slice_ranking", "Official ranking compares runs only when the official benchmark version and window size match."),
+    ("official_multimodal_bundle_binding", "If non-market modalities are used, official mode binds evaluation to the official multimodal benchmark bundle."),
+    ("official_nlp_window_alignment", "If NLP is used, the requested NLP collection window must match the market template window."),
+    ("official_source_asset_alignment", "Official source checks focus on benchmark asset alignment and platform-compatible schema, not the training vendor label."),
+    (
+        "official_nlp_quality_thresholds",
+        (
+            "If NLP is used, the official gate requires test-window coverage >= "
+            f"{OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO:.0%}, max empty gap <= "
+            f"{OFFICIAL_NLP_MAX_TEST_EMPTY_BARS} bars, duplicate ratio <= "
+            f"{OFFICIAL_NLP_MAX_DUPLICATE_RATIO:.0%}, and entity link coverage >= "
+            f"{OFFICIAL_NLP_MIN_ENTITY_LINK_COVERAGE_RATIO:.0%}."
+        ),
+    ),
+)
+
+OFFICIAL_REQUIRED_METADATA = (
+    ("train_dataset_window", "Training dataset start/end time"),
+    ("lookback_window", "Lookback window / context length"),
+    ("label_horizon", "Label horizon"),
+    ("modalities_and_fusion_summary", "Modalities and fusion summary"),
+    ("random_seed", "Random seed"),
+    ("tuning_trial_count", "Tuning trial count"),
+    ("external_pretraining_flag", "External pretraining flag"),
+    ("synthetic_data_flag", "Synthetic data flag"),
+    ("actual_market_dataset_window", "Actual market dataset window"),
+    ("actual_official_backtest_window", "Actual official backtest test window"),
+    ("actual_nlp_coverage_window", "Actual NLP coverage window and official NLP gate result when NLP is present"),
+    ("required_modalities_resolved", "Required modalities resolved for the official run"),
+    ("official_rolling_benchmark_version", "Official rolling benchmark version"),
+    ("official_rolling_window_size", "Official rolling window size and actual window start/end time"),
+    ("official_market_benchmark_dataset_id", "Official market benchmark dataset id"),
+    ("official_multimodal_benchmark_dataset_id", "Official multimodal benchmark dataset id when non-market signals are used"),
+)
+
+OFFICIAL_TEMPLATE_NOTES = (
+    ("official_template_read_only", "The official template is read-only and cannot be deleted."),
+    ("official_template_latest_market_environment", "The official template always uses the newest available market environment instead of the training dataset window."),
+    ("official_window_comparison_scope", "Window size is user-selectable, but official rankings only compare results that use the same window preset."),
+    ("custom_mode_flexible_controls", "Custom mode keeps dataset preset, scope, strategy, portfolio, and cost controls flexible."),
+)
+
+
+def _nlp_gate_reason_key(value: str) -> str | None:
+    if value == "Official NLP gate passed: archival source, aligned time window, and quality thresholds satisfied.":
+        return "official_nlp_gate_passed"
+    if value.startswith("Official backtest template is blocked by the NLP quality gate:"):
+        return "official_nlp_quality_gate_failed"
+    if value == "NLP gate did not report details.":
+        return "official_nlp_gate_missing_detail"
+    return None
+
 
 def custom_backtest_template() -> BacktestTemplateView:
     return BacktestTemplateView(
@@ -71,9 +136,12 @@ def custom_backtest_template() -> BacktestTemplateView:
         ranking_policy="No same-template ranking contract is enforced in custom mode.",
         slice_policy="custom",
         scenario_bundle=["BASELINE"],
-        eligibility_rules=["Any compatible run can be launched in custom mode."],
+        eligibility_rules=[item[1] for item in CUSTOM_TEMPLATE_REQUIREMENTS],
+        eligibility_rule_keys=[item[0] for item in CUSTOM_TEMPLATE_REQUIREMENTS],
         required_metadata=[],
-        notes=["Custom mode stays visible for inspection but is excluded from official ranking."],
+        required_metadata_keys=[],
+        notes=[item[1] for item in CUSTOM_TEMPLATE_NOTES],
+        note_keys=[item[0] for item in CUSTOM_TEMPLATE_NOTES],
     )
 
 
@@ -101,47 +169,23 @@ def official_backtest_template(*, default_benchmark_symbol: str = "BTCUSDT") -> 
             "frequency, target, horizon, and prediction scope."
         ),
         scenario_bundle=list(OFFICIAL_SCENARIO_BUNDLE),
-        eligibility_rules=[
-            "Model output must follow the prediction_frame_v1 contract.",
-            "Training-time disclosure fields must be populated before official comparison is trusted.",
-            "Official mode binds to the newest official rolling benchmark and ignores dataset overrides.",
-            "Official mode allows only fixed window presets: 30, 90, 180, and 365 days.",
-            "Official ranking compares runs only when the official benchmark version and window size match.",
-            "If non-market modalities are used, official mode binds them to the official multimodal benchmark bundle.",
-            "If NLP is used, the requested NLP collection window must match the market template window.",
-            "If NLP is used, only archival NLP sources are eligible for official same-template comparison.",
-            (
-                "If NLP is used, the official gate requires test-window coverage >= "
-                f"{OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO:.0%}, max empty gap <= "
-                f"{OFFICIAL_NLP_MAX_TEST_EMPTY_BARS} bars, duplicate ratio <= "
-                f"{OFFICIAL_NLP_MAX_DUPLICATE_RATIO:.0%}, and entity link coverage >= "
-                f"{OFFICIAL_NLP_MIN_ENTITY_LINK_COVERAGE_RATIO:.0%}."
-            ),
-        ],
-        required_metadata=[
-            "Training dataset start/end time",
-            "Lookback window / context length",
-            "Label horizon",
-            "Modalities and fusion summary",
-            "Random seed",
-            "Tuning trial count",
-            "External pretraining flag",
-            "Synthetic data flag",
-            "Actual market dataset window",
-            "Actual official backtest test window",
-            "Actual NLP coverage window and official NLP gate result when NLP is present",
-            "Required modalities resolved for the official run",
-            "Official rolling benchmark version",
-            "Official rolling window size and actual window start/end time",
-            "Official market benchmark dataset id",
-            "Official multimodal benchmark dataset id when non-market signals are used",
-        ],
+        eligibility_rules=[item[1] for item in OFFICIAL_TEMPLATE_REQUIREMENTS],
+        eligibility_rule_keys=[item[0] for item in OFFICIAL_TEMPLATE_REQUIREMENTS],
+        required_metadata=[item[1] for item in OFFICIAL_REQUIRED_METADATA],
+        required_metadata_keys=[item[0] for item in OFFICIAL_REQUIRED_METADATA],
         notes=[
-            "The official template is read-only and cannot be deleted.",
+            OFFICIAL_TEMPLATE_NOTES[0][1],
             f"The official template locks prediction scope to test and defaults the benchmark to {default_benchmark_symbol}.",
-            "The official template always uses the newest available market environment instead of the training dataset window.",
-            "Window size is user-selectable, but official rankings only compare results that use the same window preset.",
-            "Custom mode keeps dataset preset, scope, strategy, portfolio, and cost controls flexible.",
+            OFFICIAL_TEMPLATE_NOTES[1][1],
+            OFFICIAL_TEMPLATE_NOTES[2][1],
+            OFFICIAL_TEMPLATE_NOTES[3][1],
+        ],
+        note_keys=[
+            OFFICIAL_TEMPLATE_NOTES[0][0],
+            "official_template_fixed_prediction_scope",
+            OFFICIAL_TEMPLATE_NOTES[1][0],
+            OFFICIAL_TEMPLATE_NOTES[2][0],
+            OFFICIAL_TEMPLATE_NOTES[3][0],
         ],
     )
 
@@ -257,8 +301,11 @@ def build_protocol_metadata(
         "slice_policy": template.slice_policy,
         "scenario_bundle": list(template.scenario_bundle),
         "eligibility_rules": list(template.eligibility_rules),
+        "eligibility_rule_keys": list(template.eligibility_rule_keys),
         "required_metadata": list(template.required_metadata),
+        "required_metadata_keys": list(template.required_metadata_keys),
         "notes": list(template.notes),
+        "note_keys": list(template.note_keys),
         "metadata_summary": metadata_summary,
         "required_modalities": list(required_modalities or []),
         "lookback_bucket": lookback_bucket,
@@ -299,8 +346,11 @@ def compute_protocol_result(
         slice_policy=_str(protocol_metadata.get("slice_policy")),
         scenario_bundle=_str_list(protocol_metadata.get("scenario_bundle")),
         eligibility_rules=_str_list(protocol_metadata.get("eligibility_rules")),
+        eligibility_rule_keys=_str_list(protocol_metadata.get("eligibility_rule_keys")),
         required_metadata=_str_list(protocol_metadata.get("required_metadata")),
+        required_metadata_keys=_str_list(protocol_metadata.get("required_metadata_keys")),
         notes=_str_list(protocol_metadata.get("notes")),
+        note_keys=_str_list(protocol_metadata.get("note_keys")),
     )
     metadata_summary = {
         str(key): (_str(value) if value is not None else None)
@@ -313,27 +363,34 @@ def compute_protocol_result(
         GateResultView(
             key="metadata_complete",
             label="Metadata Complete",
+            label_key="metadata_complete",
             passed=metadata_complete,
             severity="warning",
             detail="Official comparison requires the training and backtest disclosure fields to be populated.",
+            detail_key="training_and_backtest_disclosure_required",
         ),
         GateResultView(
             key="consistency_checks",
             label="Research / Simulation Consistency",
+            label_key="research_simulation_consistency",
             passed=bool(passed_consistency_checks),
             severity="error",
             detail="Research and simulation outputs must not show an abnormal inversion relationship.",
+            detail_key="research_and_simulation_no_abnormal_inversion",
         ),
         GateResultView(
             key="stress_bundle_complete",
             label="Stress Bundle Complete",
+            label_key="stress_bundle_complete",
             passed=_stress_bundle_complete(protocol_metadata, scenario_metrics),
             severity="error",
             detail="Official comparison requires the fixed stress bundle to be present.",
+            detail_key="fixed_stress_bundle_required",
         ),
         GateResultView(
             key="risk_limits",
             label="Risk Limits",
+            label_key="risk_limits",
             passed=_risk_limits_passed(simulation_metrics, divergence_metrics, scenario_metrics),
             severity="error",
             detail=(
@@ -341,6 +398,7 @@ def compute_protocol_result(
                 f"turnover_total <= {DEFAULT_MAX_TURNOVER:.2f}, "
                 f"stress_fail_count <= {DEFAULT_MAX_STRESS_FAILS:.0f}."
             ),
+            detail_key="official_risk_limit_thresholds",
         ),
     ]
     if nlp_gate_status:
@@ -348,9 +406,16 @@ def compute_protocol_result(
             GateResultView(
                 key="official_nlp_quality_gate",
                 label="Official NLP Quality Gate",
+                label_key="official_nlp_quality_gate",
                 passed=(nlp_gate_status == "passed"),
                 severity="error" if nlp_gate_status == "failed" else "warning",
                 detail="; ".join(nlp_gate_reasons) if nlp_gate_reasons else "NLP gate did not report details.",
+                detail_key=(
+                    _nlp_gate_reason_key(nlp_gate_reasons[0])
+                    if len(nlp_gate_reasons) == 1
+                    else None
+                )
+                or "official_nlp_gate_missing_detail",
             )
         )
     has_error_failure = any(item.passed is False and item.severity == "error" for item in gate_results)
@@ -413,6 +478,9 @@ def compute_protocol_result(
         actual_nlp_end_time=_dt(protocol_metadata.get("actual_nlp_end_time")),
         nlp_gate_status=nlp_gate_status,
         nlp_gate_reasons=nlp_gate_reasons,
+        nlp_gate_reason_keys=[
+            key for item in nlp_gate_reasons if (key := _nlp_gate_reason_key(item)) is not None
+        ],
         official_benchmark_version=_str(protocol_metadata.get("official_benchmark_version")),
         official_window_days=_int(protocol_metadata.get("official_window_days")),
         official_window_start_time=_dt(protocol_metadata.get("official_window_start_time")),

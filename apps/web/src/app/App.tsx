@@ -3,7 +3,6 @@ import { Suspense, lazy, useState, type ReactElement } from "react";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 
 import { AppShell } from "./AppShell";
-import { I18N } from "../shared/lib/i18n";
 import { UiPreferencesProvider } from "../shared/preferences/UiPreferencesContext";
 import { LoadingState } from "../shared/ui/StateViews";
 
@@ -41,7 +40,7 @@ const ComparisonPage = lazy(
 );
 
 function withSuspense(node: ReactElement) {
-  return <Suspense fallback={<LoadingState label={I18N.state.loading} />}>{node}</Suspense>;
+  return <Suspense fallback={<LoadingState />}>{node}</Suspense>;
 }
 
 function createWorkbenchRouter() {

@@ -2361,7 +2361,7 @@ class JobService:
                 continue
             selector = spec.get("symbol_selector") or {}
             candidates.extend(str(item) for item in (selector.get("symbols") or []) if item)
-        return {token for item in candidates if (token := self._contract_token(item))}
+        return {token for item in candidates if (token := self._market_contract_symbol_token(item))}
 
     def _dataset_identifier_set(self, detail) -> set[str]:
         acquisition_profile = getattr(detail, "acquisition_profile", {}) or {}
@@ -2377,6 +2377,36 @@ class JobService:
             if spec_identifier:
                 identifiers.append(str(spec_identifier))
         return {token for item in identifiers if (token := self._contract_token(item))}
+
+    def _nlp_contract_symbol_token(self, value: object | None) -> str | None:
+        token = self._contract_token(value)
+        if token is None:
+            return None
+        if token.endswith("USDT") and len(token) > 4:
+            return token[:-4]
+        return token
+
+    def _market_contract_symbol_token(self, value: object | None) -> str | None:
+        token = self._contract_token(value)
+        if token is None:
+            return None
+        normalized = token.replace("/", "").replace("-", "").replace("_", "")
+        for quote_suffix in ("USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USD"):
+            if normalized.endswith(quote_suffix) and len(normalized) > len(quote_suffix):
+                return normalized[: -len(quote_suffix)]
+        return normalized
+
+    def _dataset_nlp_symbol_set(self, dataset_id: str) -> set[str]:
+        dataset_ref = self._read_dataset_ref(dataset_id)
+        candidates: list[str] = []
+        for input_ref in dataset_ref.feature_view_ref.input_data_refs:
+            tags = {str(tag).strip().lower() for tag in (input_ref.tags or []) if tag}
+            if "sentiment_events" not in tags:
+                continue
+            # Official compatibility should follow the materialized linked subject, not a freeform UI label.
+            if input_ref.symbol:
+                candidates.append(str(input_ref.symbol))
+        return {token for item in candidates if (token := self._nlp_contract_symbol_token(item))}
 
     def _official_expected_market_contract(self) -> tuple[str | None, set[str]]:
         detail = self.workbench.get_dataset_detail(OFFICIAL_MARKET_BENCHMARK_DATASET_ID)
@@ -2406,7 +2436,11 @@ class JobService:
         vendor = self._contract_vendor(
             (sentiment_spec or {}).get("source_vendor") if isinstance(sentiment_spec, dict) else None
         )
-        identifiers = self._dataset_identifier_set(detail)
+        identifiers = self._dataset_nlp_symbol_set(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
+        if not identifiers and isinstance(sentiment_spec, dict):
+            fallback_identifier = sentiment_spec.get("identifier")
+            token = self._nlp_contract_symbol_token(fallback_identifier)
+            identifiers = {token} if token else set()
         return vendor, identifiers
 
     def _official_expected_auxiliary_contracts(self) -> dict[str, tuple[str | None, set[str]]]:
@@ -2533,8 +2567,8 @@ class JobService:
         request_run_id: str,
         source_specs: list[dict[str, object]],
     ) -> list[str]:
-        official_market_vendor, official_market_symbols = self._official_expected_market_contract()
-        official_nlp_vendor, official_nlp_identifiers = self._official_expected_nlp_contract()
+        _, official_market_symbols = self._official_expected_market_contract()
+        _, official_nlp_identifiers = self._official_expected_nlp_contract()
         official_aux_contracts = self._official_expected_auxiliary_contracts()
         reasons: list[str] = []
         for spec in source_specs:
@@ -2572,11 +2606,6 @@ class JobService:
                     None,
                 )
                 selector = market_spec.get("symbol_selector") if isinstance(market_spec, dict) else {}
-                source_vendor = self._contract_vendor(
-                    (market_spec or {}).get("source_vendor") if isinstance(market_spec, dict) else None
-                ) or self._contract_vendor(detail.dataset.source_vendor) or self._contract_vendor(
-                    acquisition_profile.get("source_vendor")
-                )
                 source_symbols = (
                     {
                         token
@@ -2585,13 +2614,9 @@ class JobService:
                     }
                     or self._market_symbol_set(detail)
                 )
-                if source_vendor != official_market_vendor:
-                    reasons.append(
-                        f"Source run '{source_run_id}' uses market vendor '{source_vendor or '--'}' instead of the official vendor '{official_market_vendor or '--'}'."
-                    )
                 if source_symbols != official_market_symbols:
                     reasons.append(
-                        f"Source run '{source_run_id}' uses market symbols {sorted(source_symbols) or ['--']} instead of the official symbols {sorted(official_market_symbols) or ['--']}."
+                        f"Source run '{source_run_id}' uses market assets {sorted(source_symbols) or ['--']} instead of the official assets {sorted(official_market_symbols) or ['--']}."
                     )
                 continue
 
@@ -2605,35 +2630,10 @@ class JobService:
                     ),
                     None,
                 )
-                source_vendor = self._contract_vendor(
-                    (sentiment_spec or {}).get("source_vendor") if isinstance(sentiment_spec, dict) else None
-                ) or self._contract_vendor(detail.dataset.source_vendor) or self._contract_vendor(
-                    acquisition_profile.get("source_vendor")
-                )
-                fusion_source_identifiers = [
-                    item.get("identifier")
-                    for item in (acquisition_profile.get("fusion_sources") or [])
-                    if isinstance(item, dict)
-                    and self._normalize_modality(self._str(item.get("data_domain"))) in {"nlp", "sentiment_events"}
-                ]
-                source_identifiers = (
-                    {
-                        token
-                        for value in [
-                            (sentiment_spec or {}).get("identifier") if isinstance(sentiment_spec, dict) else None,
-                            *fusion_source_identifiers,
-                        ]
-                        if (token := self._contract_token(value))
-                    }
-                    or self._dataset_identifier_set(detail)
-                )
-                if source_vendor != official_nlp_vendor:
+                source_identifiers = self._dataset_nlp_symbol_set(dataset_id)
+                if source_identifiers and source_identifiers != official_nlp_identifiers:
                     reasons.append(
-                        f"Source run '{source_run_id}' uses NLP vendor '{source_vendor or '--'}' instead of the official vendor '{official_nlp_vendor or '--'}'."
-                    )
-                if source_identifiers != official_nlp_identifiers:
-                    reasons.append(
-                        f"Source run '{source_run_id}' uses NLP identifiers {sorted(source_identifiers) or ['--']} instead of the official identifiers {sorted(official_nlp_identifiers) or ['--']}."
+                        f"Source run '{source_run_id}' uses NLP linked symbols {sorted(source_identifiers) or ['--']} instead of the official linked symbols {sorted(official_nlp_identifiers) or ['--']}."
                     )
                 market_anchor_dataset_id = self._str(acquisition_profile.get("market_anchor_dataset_id"))
                 if not market_anchor_dataset_id:
@@ -2649,23 +2649,11 @@ class JobService:
                             f"Source run '{source_run_id}' references market anchor dataset '{market_anchor_dataset_id}' but it is not available."
                         )
                     else:
-                        anchor_vendor = self._contract_vendor(
-                            market_anchor_detail.dataset.source_vendor
-                        ) or self._contract_vendor((market_anchor_detail.acquisition_profile or {}).get("source_vendor"))
                         anchor_symbols = self._market_symbol_set(market_anchor_detail)
-                        if anchor_vendor != official_market_vendor:
-                            reasons.append(
-                                f"Source run '{source_run_id}' uses market anchor vendor '{anchor_vendor or '--'}' instead of the official vendor '{official_market_vendor or '--'}'."
-                            )
                         if anchor_symbols != official_market_symbols:
                             reasons.append(
-                                f"Source run '{source_run_id}' uses market anchor symbols {sorted(anchor_symbols) or ['--']} instead of the official symbols {sorted(official_market_symbols) or ['--']}."
+                                f"Source run '{source_run_id}' uses market anchor assets {sorted(anchor_symbols) or ['--']} instead of the official assets {sorted(official_market_symbols) or ['--']}."
                             )
-                label_source_vendor = self._contract_vendor(acquisition_profile.get("label_source_vendor"))
-                if label_source_vendor and label_source_vendor != official_market_vendor:
-                    reasons.append(
-                        f"Source run '{source_run_id}' uses label source vendor '{label_source_vendor}' instead of the official market vendor '{official_market_vendor or '--'}'."
-                    )
                 continue
 
             if modality in {"macro", "on_chain", "derivatives"}:
@@ -2695,6 +2683,32 @@ class JobService:
                     )
                 continue
         return list(dict.fromkeys(reasons))
+
+    @staticmethod
+    def _preflight_reason_code(reason: str) -> str | None:
+        if reason.startswith("Official benchmark dataset is missing features:"):
+            return "official_missing_features"
+        if reason.startswith("Official backtest template is blocked by the NLP quality gate:"):
+            return "official_nlp_quality_gate_failed"
+        if "uses market anchor vendor" in reason:
+            return "source_market_anchor_vendor_mismatch"
+        if "uses market anchor assets" in reason or "uses market anchor symbols" in reason:
+            return "source_market_anchor_asset_mismatch"
+        if "uses market vendor" in reason:
+            return "source_market_vendor_mismatch"
+        if "uses market assets" in reason or "uses market symbols" in reason:
+            return "source_market_asset_mismatch"
+        if "uses label source vendor" in reason:
+            return "source_label_vendor_mismatch"
+        if "uses NLP vendor" in reason:
+            return "source_nlp_vendor_mismatch"
+        if "uses NLP linked symbols" in reason or "uses NLP identifiers" in reason:
+            return "source_nlp_symbol_mismatch"
+        if "Official market benchmark dataset" in reason:
+            return "official_market_benchmark_unavailable"
+        if "Official multimodal benchmark dataset" in reason:
+            return "official_multimodal_benchmark_unavailable"
+        return None
 
     def _official_composition_contract_summary(
         self,
@@ -2928,6 +2942,12 @@ class JobService:
                 + "; ".join(nlp_gate_reasons or ["official_nlp_gate_failed"])
             )
         blocking_reasons = list(dict.fromkeys(blocking_reasons))
+        blocking_reason_codes = [
+            code for item in blocking_reasons if (code := self._preflight_reason_code(item)) is not None
+        ]
+        nlp_gate_reason_codes = [
+            code for item in nlp_gate_reasons if (code := self._preflight_reason_code(item)) is not None
+        ]
 
         return BacktestLaunchPreflightView(
             compatible=len(blocking_reasons) == 0,
@@ -2949,8 +2969,10 @@ class JobService:
             available_official_feature_names=available_feature_names,
             missing_official_feature_names=missing_feature_names,
             blocking_reasons=blocking_reasons,
+            blocking_reason_codes=blocking_reason_codes,
             nlp_gate_status=nlp_gate_status,
             nlp_gate_reasons=nlp_gate_reasons,
+            nlp_gate_reason_codes=nlp_gate_reason_codes,
         )
 
     def _official_base_dataset_id_for_features(self, feature_names: list[str]) -> str:

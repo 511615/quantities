@@ -15,7 +15,7 @@ import {
   useUpdateModelTemplateMutation,
 } from "../shared/api/hooks";
 import { formatDate } from "../shared/lib/format";
-import { I18N } from "../shared/lib/i18n";
+import { I18N, translateText } from "../shared/lib/i18n";
 import {
   type TemplateDraft,
   buildTemplateDraft,
@@ -62,7 +62,7 @@ function duplicateDraft(template: TemplateDraft): TemplateDraft {
   return {
     ...template,
     template_id: undefined,
-    name: `${template.name} 鍓湰`,
+    name: `${template.name} ${translateText("副本")}`,
     read_only: false,
   };
 }
@@ -234,11 +234,11 @@ export function ModelsPage() {
       return;
     }
     if (!templateDraft.name.trim()) {
-      setTemplateError("Please enter a template name.");
+      setTemplateError(translateText("请输入模板名称。"));
       return;
     }
     if (!templateDraft.model_name.trim()) {
-      setTemplateError("Please choose a model type.");
+      setTemplateError(translateText("请选择模型类型。"));
       return;
     }
 
@@ -250,7 +250,7 @@ export function ModelsPage() {
       }
       parsedHyperparams = parsed as Record<string, unknown>;
     } catch {
-      setTemplateError("Hyperparameters must be valid JSON.");
+      setTemplateError(translateText("超参数必须是有效 JSON。"));
       return;
     }
 
@@ -353,19 +353,19 @@ export function ModelsPage() {
 
   async function handleLaunchComposition() {
     if (selectedRuns.length < 2) {
-      setCompositionError("Select at least two single-modality runs.");
+      setCompositionError(translateText("请至少选择两个单模态训练实例。"));
       return;
     }
     if (!selectedRunsHaveOnlySingleDataset) {
-      setCompositionError("Only single-dataset runs can be composed right now.");
+      setCompositionError(translateText("当前只支持组合单数据集训练实例。"));
       return;
     }
     if (uniqueSelectedDatasetIds.length < 2) {
-      setCompositionError("Select runs backed by at least two different datasets.");
+      setCompositionError(translateText("请选择至少来自两个不同数据集的训练实例。"));
       return;
     }
     if (!compositionName.trim()) {
-      setCompositionError("Please enter a composition name.");
+      setCompositionError(translateText("请输入组合名称。"));
       return;
     }
     try {
@@ -387,7 +387,7 @@ export function ModelsPage() {
         <PanelHeader
           eyebrow={I18N.nav.models}
           title={I18N.nav.models}
-          description={"Manage templates, trained models, and backtest launches in one place."}
+          description={translateText("在同一页面统一管理模型模板、已训练模型和回测发起。")}
           action={
             <div className="table-actions">
               <LaunchTrainDrawer
@@ -403,21 +403,24 @@ export function ModelsPage() {
                 }
                 description={
                   launchTrainRequested && requestedDatasetId
-                    ? "This launch was opened from a dataset page and will use that dataset directly."
+                    ? translateText("这个训练入口来自数据集页面，将直接使用当前数据集。")
                     : undefined
                 }
                 title={
                   launchTrainRequested && requestedDatasetId
-                    ? "Launch training from this dataset"
+                    ? translateText("基于该数据集发起训练")
                     : undefined
                 }
                 triggerLabel={
                   launchTrainRequested && requestedDatasetId
-                    ? "Continue training"
+                    ? translateText("继续训练")
                     : undefined
                 }
               />
-              <LaunchBacktestDrawer initialRunId={selectedRunIdForBacktest} />
+              <LaunchBacktestDrawer
+                initialRunId={selectedRunIdForBacktest}
+                initialMode={selectedRunIdForBacktest ? "custom" : undefined}
+              />
             </div>
           }
         />
@@ -445,7 +448,7 @@ export function ModelsPage() {
               <PanelHeader
                 eyebrow={I18N.nav.modelTemplates}
                 title={I18N.nav.modelTemplates}
-                description={"Templates come directly from backend registration and storage."}
+                description={translateText("模板直接来自后端注册信息与持久化存储。")}
               action={
                 <button
                   className="action-button"
@@ -466,12 +469,12 @@ export function ModelsPage() {
                 <table className="data-table trained-models-table">
                   <thead>
                     <tr>
-                      <th>{"Template"}</th>
-                      <th>{"Model"}</th>
-                      <th>{"Defaults"}</th>
-                      <th>{"Training Entry"}</th>
-                      <th>{"Enabled"}</th>
-                      <th>{"Actions"}</th>
+                      <th>{translateText("模板")}</th>
+                      <th>{translateText("模型")}</th>
+                      <th>{translateText("默认项")}</th>
+                      <th>{translateText("训练入口")}</th>
+                      <th>{translateText("启用状态")}</th>
+                      <th>{translateText("操作")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -488,8 +491,8 @@ export function ModelsPage() {
                           <div className="table-actions template-actions">
                             <LaunchTrainDrawer
                               triggerLabel={I18N.action.trainWithTemplate}
-                              title={`Launch training from ${localizeTemplateDisplayText(template.name)}`}
-                              description={"This entry submits the current template's model and hyperparameters to the training backend."}
+                              title={`${translateText("基于模板发起训练")} ${localizeTemplateDisplayText(template.name)}`}
+                              description={translateText("这个入口会把当前模板中的模型和超参数直接提交给训练后端。")}
                               initialTemplateId={template.template_id}
                             />
                             {!template.read_only ? (
@@ -526,7 +529,7 @@ export function ModelsPage() {
               ) : (
                 <EmptyState
                   title={I18N.state.empty}
-                  body={"No model templates are available yet."}
+                  body={translateText("当前还没有可用的模型模板。")}
                 />
               )
             ) : null}
@@ -537,7 +540,7 @@ export function ModelsPage() {
               <PanelHeader
                 eyebrow={templateMode === "edit" ? I18N.action.editTemplate : I18N.action.createTemplate}
                 title={templateMode === "edit" ? I18N.action.editTemplate : I18N.action.createTemplate}
-                description={"Templates keep model, hyperparameters, and defaults aligned with the backend contract."}
+                description={translateText("模板用于让模型、超参数和默认项始终与后端契约保持一致。")}
                 action={
                   <button className="link-button" onClick={() => setTemplateDraft(null)} type="button">
                     {I18N.action.close}
@@ -546,7 +549,7 @@ export function ModelsPage() {
               />
               <div className="form-section-grid">
                 <label>
-                  <span>{"鍚嶇О"}</span>
+                  <span>{translateText("名称")}</span>
                   <input
                     className="field"
                     onChange={(event) =>
@@ -558,7 +561,7 @@ export function ModelsPage() {
                   />
                 </label>
                 <label>
-                  <span>{"妯″瀷绫诲瀷"}</span>
+                  <span>{translateText("模型类型")}</span>
                   <select
                     className="field"
                     onChange={(event) => {
@@ -578,7 +581,7 @@ export function ModelsPage() {
                   </select>
                 </label>
                 <label>
-                  <span>{"Default Dataset Preset"}</span>
+                  <span>{translateText("默认训练预置")}</span>
                   <select
                     className="field"
                     onChange={(event) =>
@@ -596,7 +599,7 @@ export function ModelsPage() {
                   </select>
                 </label>
                 <label>
-                  <span>{"榛樿璁粌棰勭疆"}</span>
+                  <span>{translateText("默认训练预置")}</span>
                   <select
                     className="field"
                     onChange={(event) =>
@@ -616,7 +619,7 @@ export function ModelsPage() {
               </div>
 
               <label>
-                <span>{"璇存槑"}</span>
+                <span>{translateText("说明")}</span>
                 <textarea
                   className="field area-field"
                   onChange={(event) =>
@@ -629,7 +632,7 @@ export function ModelsPage() {
               </label>
 
               <section className="form-section">
-                <h3>{"Hyperparameters"}</h3>
+                <h3>{translateText("超参数")}</h3>
                 <p className="drawer-copy">{`${modelCategory(templateDraft.model_name)} | ${modelSuitableData(templateDraft.model_name)}`}</p>
                 <textarea
                   className="field area-field"
@@ -650,7 +653,7 @@ export function ModelsPage() {
                   type="button"
                   disabled={templateSavePending}
                 >
-                  {templateSavePending ? "淇濆瓨涓?.." : I18N.action.save}
+                  {templateSavePending ? translateText("保存中...") : I18N.action.save}
                 </button>
               </div>
             </section>
@@ -667,7 +670,7 @@ export function ModelsPage() {
                 <input
                   className="field search-field"
                   onChange={(event) => setRunSearch(event.target.value)}
-                  placeholder={"Search run ID / model / dataset"}
+                  placeholder={translateText("搜索训练实例 ID / 模型 / 数据集")}
                   value={runSearch}
                 />
               }
@@ -680,15 +683,15 @@ export function ModelsPage() {
                   <table className="data-table trained-models-table">
                     <thead>
                       <tr>
-                        <th>{"Select"}</th>
-                        <th>{"Run"}</th>
-                        <th>{"Model"}</th>
-                        <th>{"Datasets"}</th>
-                        <th>{"Created"}</th>
-                        <th>{"Metrics"}</th>
-                        <th>{"Backtests"}</th>
-                        <th>{"Status"}</th>
-                        <th>{"Actions"}</th>
+                        <th>{translateText("选择")}</th>
+                        <th>{translateText("训练实例")}</th>
+                        <th>{translateText("模型")}</th>
+                        <th>{translateText("数据集")}</th>
+                        <th>{translateText("创建时间")}</th>
+                        <th>{translateText("指标")}</th>
+                        <th>{translateText("回测数")}</th>
+                        <th>{translateText("状态")}</th>
+                        <th>{translateText("操作")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -697,7 +700,7 @@ export function ModelsPage() {
                           <tr key={run.run_id}>
                             <td>
                               <input
-                                aria-label={`Select ${run.run_id} for multimodal composition`}
+                                aria-label={`${translateText("选择")} ${run.run_id} ${translateText("用于多模态组合")}`}
                                 checked={selectedRunIdsForComposition.includes(run.run_id)}
                                 onChange={(event) =>
                                   toggleRunSelection(run.run_id, event.target.checked)
@@ -793,7 +796,7 @@ export function ModelsPage() {
               ) : (
                 <EmptyState
                   title={I18N.state.empty}
-                  body={"No trained model runs are available."}
+                  body={translateText("当前还没有可用的已训练模型。")}
                 />
               )
             ) : null}
@@ -801,13 +804,13 @@ export function ModelsPage() {
 
           <section className="panel form-shell">
             <PanelHeader
-              eyebrow="Composition"
-              title="Compose multimodal models"
-              description="Select at least two single-modality runs and launch a composed model."
+              eyebrow={translateText("模型组合")}
+              title={translateText("组合多模态模型")}
+              description={translateText("选择至少两个单模态训练实例，发起组合模型。")}
             />
             <div className="form-section-grid">
               <label>
-                <span>{"Composition Name"}</span>
+                <span>{translateText("组合名称")}</span>
                 <input
                   className="field"
                   onChange={(event) => setCompositionName(event.target.value)}
@@ -815,11 +818,11 @@ export function ModelsPage() {
                 />
               </label>
               <div className="metric-tile">
-                <span>Selected Runs</span>
+                <span>{translateText("已选训练实例")}</span>
                 <strong>{selectedRuns.length}</strong>
               </div>
               <div className="metric-tile">
-                <span>Datasets</span>
+                <span>{translateText("数据集数")}</span>
                 <strong>{uniqueSelectedDatasetIds.length}</strong>
               </div>
             </div>
@@ -836,20 +839,20 @@ export function ModelsPage() {
               </div>
             ) : (
               <EmptyState
-                title="No runs selected"
-                body="Select at least two single-modality runs above before composing a multimodal model."
+                title={translateText("尚未选择训练实例")}
+                body={translateText("请先在上方选择至少两个单模态训练实例，再发起多模态组合。")}
               />
             )}
             {!selectedRunsHaveOnlySingleDataset && selectedRuns.length > 0 ? (
               <p className="form-error">
-                Selected runs include multi-dataset entries. Only single-dataset runs can be composed.
+                {translateText("当前选择中包含多数据集训练实例，暂时只支持组合单数据集训练实例。")}
               </p>
             ) : null}
             {selectedRunsHaveOnlySingleDataset &&
             selectedRuns.length >= 2 &&
             uniqueSelectedDatasetIds.length < 2 ? (
               <p className="form-error">
-                Selected runs do not cover two different datasets, so a multimodal composition cannot be created.
+                {translateText("当前选择未覆盖两个不同数据集，因此无法创建多模态组合。")}
               </p>
             ) : null}
             {compositionError ? <p className="form-error">{compositionError}</p> : null}
@@ -863,7 +866,7 @@ export function ModelsPage() {
                 onClick={() => void handleLaunchComposition()}
                 type="button"
               >
-                {compositionMutation.isPending ? "Submitting..." : "Launch composition"}
+                {compositionMutation.isPending ? translateText("提交中...") : translateText("发起组合")}
               </button>
             </div>
             {compositionJobQuery.data ? (
@@ -887,7 +890,7 @@ export function ModelsPage() {
                     className="link-button"
                     to={compositionJobQuery.data.result.deeplinks.run_detail}
                   >
-                    Open composed model
+                    {translateText("打开组合模型")}
                   </Link>
                 ) : null}
               </div>
@@ -899,7 +902,7 @@ export function ModelsPage() {
               <PanelHeader
                 eyebrow={I18N.action.rename}
                 title={I18N.action.rename}
-                description={"Add a display name and research note for a trained model."}
+                description={translateText("为已训练模型补充显示名称和研究备注。")}
                 action={
                   <button className="link-button" onClick={() => setEditingRunId(null)} type="button">
                     {I18N.action.close}
@@ -908,7 +911,7 @@ export function ModelsPage() {
               />
               <div className="form-section-grid">
                 <label>
-                  <span>{"灞曠ず鍚嶇О"}</span>
+                  <span>{translateText("显示名称")}</span>
                   <input
                     className="field"
                     onChange={(event) =>
@@ -918,7 +921,7 @@ export function ModelsPage() {
                   />
                 </label>
                 <label>
-                  <span>{"鐮旂┒澶囨敞"}</span>
+                  <span>{translateText("研究备注")}</span>
                   <textarea
                     className="field area-field"
                     onChange={(event) =>

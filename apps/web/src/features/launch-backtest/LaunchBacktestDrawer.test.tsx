@@ -139,6 +139,37 @@ const fetchMock = vi.fn(
           })
         : undefined,
     (url) =>
+      url.endsWith("/api/runs/slow-official-run")
+        ? jsonResponse({
+            run_id: "slow-official-run",
+            model_name: "mean_baseline",
+            dataset_id: "smoke_dataset",
+            dataset_ids: ["smoke_dataset"],
+            datasets: [
+              {
+                dataset_id: "smoke_dataset",
+                modality: "market",
+              },
+            ],
+            family: "baseline",
+            backend: "native",
+            status: "success",
+            created_at: "2026-04-08T00:00:00Z",
+            metrics: {},
+            tracking_params: {},
+            manifest_metrics: {},
+            repro_context: {},
+            dataset_summary: {},
+            evaluation_summary: {},
+            feature_importance: {},
+            predictions: [],
+            related_backtests: [],
+            artifacts: [],
+            notes: [],
+            glossary_hints: [],
+          })
+        : undefined,
+    (url) =>
       url.endsWith("/api/runs/legacy-composed-run")
         ? jsonResponse({
             run_id: "legacy-composed-run",
@@ -229,6 +260,41 @@ const fetchMock = vi.fn(
         run_id?: string;
         official_window_days?: number;
       };
+      if (body.run_id === "slow-official-run") {
+        return delay(200).then(() =>
+          jsonResponse({
+            compatible: true,
+            mode: "official",
+            template_id: "system::official_backtest_protocol_v1",
+            official_window_days: body.official_window_days ?? 90,
+            official_benchmark_version:
+              "official_reddit_pullpush_multimodal_v2_fusion:benchmark-v2",
+            official_market_dataset_id: "baseline_real_benchmark_dataset",
+            official_multimodal_dataset_id: "official_reddit_pullpush_multimodal_v2_fusion",
+            official_window_start_time: "2026-01-11T02:00:00Z",
+            official_window_end_time: "2026-04-11T02:00:00Z",
+            requires_text_features: true,
+            required_feature_names: [
+              "lag_return_1",
+              "lag_return_2",
+              "sentiment_score",
+              "text_reddit_comment_count_1h",
+            ],
+            available_official_feature_names: [
+              "lag_return_1",
+              "lag_return_2",
+              "sentiment_score",
+              "text_reddit_comment_count_1h",
+            ],
+            missing_official_feature_names: [],
+            blocking_reasons: [],
+            nlp_gate_status: "passed",
+            nlp_gate_reasons: [],
+            required_modalities: ["market", "sentiment_events"],
+            requires_auxiliary_features: false,
+          }),
+        );
+      }
       if (body.official_window_days === 365) {
         return delay(150).then(() =>
           jsonResponse({
@@ -382,34 +448,30 @@ test("renders official protocol as default mode", async () => {
   renderWithProviders(<LaunchBacktestDrawer initialRunId="smoke-train-run" />);
 
   await waitFor(() => expect(screen.getByText("官方回测协议 v1")).toBeInTheDocument());
+  expect(screen.getByRole("dialog")).toHaveClass("backtest-launch-modal");
 
   const [officialTab, customTab] = within(screen.getByRole("tablist")).getAllByRole("button");
   expect(officialTab).toHaveClass("active");
   expect(customTab).not.toHaveClass("active");
   expect(officialTab).toBeEnabled();
-  expect(screen.getByText("模型输出必须遵守 prediction_frame_v1。")).toBeInTheDocument();
-  expect(screen.getByText("官方市场数据集 ID")).toBeInTheDocument();
-  expect(screen.getByText("baseline_real_benchmark_dataset")).toBeInTheDocument();
-  expect(screen.getByText("官方多模态数据集 ID")).toBeInTheDocument();
-  expect(screen.getByText("official_reddit_pullpush_multimodal_v2_fusion")).toBeInTheDocument();
   expect(screen.getByLabelText("官方窗口")).toHaveValue("90");
+  expect(screen.getByText("兼容性结论")).toBeInTheDocument();
+  expect(screen.getByText("阻断摘要")).toBeInTheDocument();
   expect(screen.getByText("最新官方窗口")).toBeInTheDocument();
   expect(screen.getByText("实际市场窗口")).toBeInTheDocument();
   expect(screen.getByText("官方测试窗口")).toBeInTheDocument();
-  expect(screen.getByText("实际 NLP 窗口")).toBeInTheDocument();
-  expect(screen.getByText("官方兼容性")).toBeInTheDocument();
-  expect(screen.getByText("官方 Schema 版本")).toBeInTheDocument();
-  expect(screen.getByText("official_multimodal_standard_v1")).toBeInTheDocument();
-  expect(screen.getAllByText("模板规则").length).toBeGreaterThan(0);
-  expect(screen.getByText("text_reddit_comment_count_1h")).toBeInTheDocument();
-  expect(screen.getByText("仅归档型 NLP")).toBeInTheDocument();
-  expect(
-    screen.getByText("如果 NLP 质量门禁失败，官方模板会被阻断。"),
-  ).toBeInTheDocument();
-  await waitFor(() => expect(screen.getByText("兼容")).toBeInTheDocument());
+  expect(screen.getByText("基准与数据绑定")).toBeInTheDocument();
+  expect(screen.getByText("模板规则")).toBeInTheDocument();
+  expect(screen.getByText("高级选项")).toBeInTheDocument();
+  const templateRulesDetails = screen.getByText("模板规则").closest("details");
+  expect(templateRulesDetails).not.toHaveAttribute("open");
+  await waitFor(() => expect(screen.getAllByText("兼容").length).toBeGreaterThan(0));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: I18N.action.submit })).toBeEnabled(),
   );
+  expect(screen.getByText("实际 NLP 窗口")).toBeInTheDocument();
+  expect(screen.getByText("特征契约")).toBeInTheDocument();
+  expect(screen.getByText("当前可发起官方回测。")).toBeInTheDocument();
 });
 
 test("submits official window days for official backtest", async () => {
@@ -457,10 +519,9 @@ test("blocks official submit in the drawer when preflight reports schema incompa
 
   const submitButton = screen.getByRole("button", { name: I18N.action.submit });
   expect(submitButton).toBeDisabled();
-  expect(screen.getByText("不兼容")).toBeInTheDocument();
-  expect(screen.getByText("官方兼容性")).toBeInTheDocument();
+  expect(screen.getAllByText("不兼容").length).toBeGreaterThan(0);
   expect(screen.getByText("阻断摘要")).toBeInTheDocument();
-  expect(screen.getAllByText("text_reddit_embedding_768").length).toBeGreaterThan(0);
+  expect(screen.getAllByText(/text_reddit_embedding_768/).length).toBeGreaterThan(0);
 
   fireEvent.click(submitButton);
 
@@ -476,6 +537,21 @@ test("blocks official submit in the drawer when preflight reports schema incompa
   ).toBe(false);
 });
 
+test("shows explicit progress while official compatibility preflight is still running", async () => {
+  renderWithProviders(<LaunchBacktestDrawer initialRunId="slow-official-run" />);
+
+  expect(await screen.findByText("正在校验官方窗口、市场锚点和 NLP 门禁。")).toBeInTheDocument();
+  expect(
+    screen.getByText("兼容性结论"),
+  ).toBeInTheDocument();
+  expect(screen.getAllByText("检查中").length).toBeGreaterThan(0);
+  expect(screen.getByRole("button", { name: "兼容性检查中..." })).toBeDisabled();
+
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: I18N.action.submit })).toBeEnabled(),
+  );
+});
+
 test("keeps official mode available for composed runs and relies on preflight", async () => {
   renderWithProviders(<LaunchBacktestDrawer initialRunId="legacy-composed-run" />);
 
@@ -486,6 +562,32 @@ test("keeps official mode available for composed runs and relies on preflight", 
   expect(customTab).not.toHaveClass("active");
   await waitFor(() =>
     expect(screen.getByRole("button", { name: I18N.action.submit })).toBeEnabled(),
+  );
+});
+
+test("respects an explicit custom initial mode for run-driven launches", async () => {
+  renderWithProviders(
+    <LaunchBacktestDrawer initialRunId="unsupported-run" initialMode="custom" />,
+  );
+
+  const [officialTab, customTab] = await waitFor(() =>
+    within(screen.getByRole("tablist")).getAllByRole("button"),
+  );
+  expect(customTab).toHaveClass("active");
+  expect(officialTab).not.toHaveClass("active");
+
+  const submitButton = screen.getByRole("button", { name: I18N.action.submit });
+  await waitFor(() => expect(submitButton).toBeEnabled());
+  fireEvent.click(submitButton);
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/launch/backtest"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"mode":"custom"'),
+      }),
+    ),
   );
 });
 
@@ -500,7 +602,8 @@ test("submits dataset_ids for multimodal custom backtest", async () => {
   await waitFor(() => expect(screen.getByText("官方回测协议 v1")).toBeInTheDocument());
   const [, customTab] = within(screen.getByRole("tablist")).getAllByRole("button");
   fireEvent.click(customTab);
-  fireEvent.change(screen.getByLabelText("Dataset IDs"), {
+  await waitFor(() => expect(customTab).toHaveClass("active"));
+  fireEvent.change(screen.getByLabelText("数据集 ID 列表"), {
     target: { value: "smoke_dataset\nmacro_liquidity_snapshot" },
   });
   fireEvent.click(screen.getByRole("button", { name: I18N.action.submit }));
@@ -510,18 +613,22 @@ test("submits dataset_ids for multimodal custom backtest", async () => {
       expect.stringContaining("/api/launch/backtest"),
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({
-          run_id: "smoke-train-run",
-          mode: "custom",
-          dataset_ids: ["smoke_dataset", "macro_liquidity_snapshot"],
-          prediction_scope: "full",
-          strategy_preset: "sign",
-          portfolio_preset: "research_default",
-          cost_preset: "standard",
-          benchmark_symbol: "BTCUSDT",
-        }),
+        body: expect.stringContaining('"mode":"custom"'),
       }),
     ),
   );
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) =>
+        String(url).includes("/api/launch/backtest") &&
+        !String(url).includes("/api/launch/backtest/preflight") &&
+        init &&
+        typeof init === "object" &&
+        "body" in init &&
+        String((init as { body?: string }).body).includes(
+          '"dataset_ids":["smoke_dataset","macro_liquidity_snapshot"]',
+        ),
+    ),
+  ).toBe(true);
 });
 

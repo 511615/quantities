@@ -359,6 +359,7 @@ export function RunDetailPage() {
                 initialRunId={detail.run_id}
                 initialDatasetId={detail.dataset_id}
                 initialDatasetIds={datasetIds}
+                initialMode="custom"
               />
             </div>
           }

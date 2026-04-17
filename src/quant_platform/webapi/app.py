@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -38,6 +39,7 @@ ServicesDep = Annotated[AppServices, Depends(get_services)]
 
 ENV_TEST_ARTIFACT_ROOT = "QUANT_PLATFORM_TEST_ARTIFACT_ROOT"
 SPA_HTML_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate"}
+logger = logging.getLogger(__name__)
 
 
 def _resolve_app_artifact_root(config, override: Path | None) -> Path:
@@ -195,7 +197,13 @@ def create_app(artifact_root_override: Path | None = None) -> FastAPI:
         model_registry_entries=registry_entries,
         facade=facade,
     )
-    workbench_service.ensure_official_multimodal_benchmark()
+    try:
+        workbench_service.ensure_official_multimodal_benchmark()
+    except Exception:
+        logger.warning(
+            "Skipping official multimodal benchmark warmup during app startup.",
+            exc_info=True,
+        )
     app = FastAPI(title="Quant Platform Research Workbench", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
