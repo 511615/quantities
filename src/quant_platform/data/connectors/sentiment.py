@@ -129,6 +129,10 @@ _IDENTIFIER_QUERY_MAP = {
 
 _GNEWS_RSS_MAX_LOOKBACK = timedelta(days=7)
 _REDDIT_PUBLIC_MAX_LOOKBACK = timedelta(days=31)
+_REDDIT_ARCHIVE_CHUNK_DAYS = 14
+_REDDIT_ARCHIVE_INTER_REQUEST_DELAY_SECONDS = 0.15
+_REDDIT_ARCHIVE_MAX_RETRIES = 5
+_REDDIT_ARCHIVE_RETRYABLE_STATUS_CODES = {408, 422, 429, 500, 502, 503, 504}
 _GDELT_CHUNK_DAYS = 30
 _GDELT_MAX_RECORDS = 250
 _GDELT_MIN_INTERVAL_SECONDS = 6.5
@@ -144,7 +148,7 @@ _CORE_SUBREDDITS = {
 }
 _REDDIT_ARCHIVE_ALIASES = {"reddit_archive", "reddit_history_csv", "reddit_pullpush", "reddit_public"}
 _REDDIT_DEFAULT_SUBREDDITS: dict[str, list[str]] = {
-    "BTC": ["bitcoin", "btc", "bitcoinmarkets", "cryptocurrency", "bitcoinbeginners", "bitcoinmining"],
+    "BTC": ["bitcoin", "cryptocurrency"],
     "ETH": ["ethereum", "ethtrader", "ethfinance", "cryptocurrency"],
     "SOL": ["solana", "solanatrader", "cryptocurrency"],
 }
@@ -2196,10 +2200,10 @@ class RedditArchiveSentimentConnector(DataConnector):
         events: list[SentimentEvent] = []
         cursor = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
         while cursor <= end_time:
-            day_end = min(cursor + timedelta(days=1), end_time + timedelta(seconds=1))
+            chunk_end = min(cursor + timedelta(days=_REDDIT_ARCHIVE_CHUNK_DAYS), end_time + timedelta(seconds=1))
             for subreddit in subreddits:
                 after_epoch = int(max(cursor, start_time).timestamp()) - 1
-                before_epoch = int(day_end.timestamp())
+                before_epoch = int(chunk_end.timestamp())
                 while after_epoch < before_epoch:
                     batch = self._fetch_submission_batch(
                         subreddit=subreddit,
@@ -2258,8 +2262,8 @@ class RedditArchiveSentimentConnector(DataConnector):
                     if len(batch) < self.PAGE_SIZE or last_created <= after_epoch:
                         break
                     after_epoch = last_created + 1
-                    time.sleep(0.05)
-            cursor += timedelta(days=1)
+                    time.sleep(_REDDIT_ARCHIVE_INTER_REQUEST_DELAY_SECONDS)
+            cursor = chunk_end
         return sorted(events, key=lambda item: (item.event_time, item.event_id))
 
     def _fetch_submission_batch(
@@ -2277,21 +2281,56 @@ class RedditArchiveSentimentConnector(DataConnector):
             f"&limit={self.PAGE_SIZE}"
             "&sort=asc&sort_type=created_utc"
         )
-        try:
-            with _request_url(url, headers={"User-Agent": "Mozilla/5.0"}) as response:
-                payload = json.loads(response.read().decode("utf-8", errors="replace"))
-        except Exception as exc:  # noqa: BLE001
-            raise DataConnectorError(
-                data_domain="sentiment_events",
-                vendor="reddit_archive",
-                message=f"Reddit archive API fetch failed: {exc}",
-                retryable=True,
-                code="connector_ingest_failed",
-            ) from exc
+        for attempt in range(_REDDIT_ARCHIVE_MAX_RETRIES):
+            try:
+                with _request_url(url, headers={"User-Agent": "Mozilla/5.0"}) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="replace"))
+                break
+            except HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                retryable = self._should_retry_http_error(exc.code, body)
+                if retryable and attempt + 1 < _REDDIT_ARCHIVE_MAX_RETRIES:
+                    time.sleep(self._retry_backoff_seconds(attempt))
+                    continue
+                detail = f"HTTP {exc.code}"
+                if body:
+                    detail = f"{detail}: {body[:240]}"
+                raise DataConnectorError(
+                    data_domain="sentiment_events",
+                    vendor="reddit_archive",
+                    message=f"Reddit archive API fetch failed: {detail}",
+                    retryable=retryable,
+                    code="connector_ingest_failed",
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                retryable = True
+                if attempt + 1 < _REDDIT_ARCHIVE_MAX_RETRIES:
+                    time.sleep(self._retry_backoff_seconds(attempt))
+                    continue
+                raise DataConnectorError(
+                    data_domain="sentiment_events",
+                    vendor="reddit_archive",
+                    message=f"Reddit archive API fetch failed: {exc}",
+                    retryable=retryable,
+                    code="connector_ingest_failed",
+                ) from exc
+        else:
+            payload = {"data": []}
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return []
         return [item for item in data if isinstance(item, dict)]
+
+    @staticmethod
+    def _retry_backoff_seconds(attempt: int) -> float:
+        return min(8.0, 0.5 * (2**attempt))
+
+    @staticmethod
+    def _should_retry_http_error(status_code: int, response_body: str) -> bool:
+        if status_code in _REDDIT_ARCHIVE_RETRYABLE_STATUS_CODES:
+            return True
+        lowered = response_body.lower()
+        return "timeout" in lowered or "slow down" in lowered
 
     def _resolve_subreddits(self, identifier: str, request: IngestionRequest) -> list[str]:
         raw_subreddits = request.options.get("subreddits")

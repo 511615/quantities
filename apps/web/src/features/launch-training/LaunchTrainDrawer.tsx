@@ -1,11 +1,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { api } from "../../shared/api/client";
 import { useDatasetReadiness, useJobStatus, useTrainOptions } from "../../shared/api/hooks";
-import { formatStageNameLabel } from "../../shared/lib/labels";
-import { I18N } from "../../shared/lib/i18n";
+import type { ModalityQualityView } from "../../shared/api/types";
+import { I18N, translateText } from "../../shared/lib/i18n";
+import { formatModalityLabel, formatStageNameLabel, formatStatusLabel } from "../../shared/lib/labels";
+import { ModalityQualitySummary } from "../../shared/ui/ModalityQualitySummary";
 import { StatusPill } from "../../shared/ui/StatusPill";
 
 type LaunchTrainDrawerProps = {
@@ -20,16 +22,20 @@ type LaunchTrainDrawerProps = {
   onJobCreated?: (jobId: string) => void;
 };
 
+type FeatureScopeModality = "market" | "macro" | "on_chain" | "derivatives" | "nlp";
+
+const MODALITIES: FeatureScopeModality[] = ["market", "macro", "on_chain", "derivatives", "nlp"];
+
 function localizeTrainOptionLabel(value: string, label?: string | null) {
   const normalized = (label ?? value).trim().toLowerCase();
   if (normalized === "smoke") {
-    return "联调样本";
+    return translateText("联调样本");
   }
   if (normalized === "real_benchmark") {
-    return "真实基准";
+    return translateText("真实基准");
   }
   if (normalized === "elastic net default") {
-    return "弹性网络默认模板";
+    return "Elastic Net Default";
   }
   return label ?? value;
 }
@@ -39,9 +45,28 @@ function localizeTrainOptionDescription(description?: string | null) {
     return null;
   }
   if (description.trim().toLowerCase() === "template sourced from model registry.") {
-    return "模板来自模型注册表。";
+    return translateText("模板直接来自后端注册信息与持久化存储。");
   }
   return description;
+}
+
+function modalityBlockingSummary(item: ModalityQualityView | null) {
+  if (!item) {
+    return null;
+  }
+  if (item.blocking_reasons.length > 0) {
+    return item.blocking_reasons[0];
+  }
+  if (item.status === "ready") {
+    return translateText("可训练");
+  }
+  if (item.status === "warning") {
+    return translateText("需留意");
+  }
+  if (item.status === "failed") {
+    return translateText("暂不可训练");
+  }
+  return formatStatusLabel(item.status);
 }
 
 export function LaunchTrainDrawer({
@@ -56,7 +81,6 @@ export function LaunchTrainDrawer({
   onJobCreated,
 }: LaunchTrainDrawerProps = {}) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const optionsQuery = useTrainOptions();
   const readinessQuery = useDatasetReadiness(datasetId ?? null, Boolean(datasetId));
   const [open, setOpen] = useState(defaultOpen || !showTrigger);
@@ -64,6 +88,7 @@ export function LaunchTrainDrawer({
   const [datasetPreset, setDatasetPreset] = useState<"" | "smoke" | "real_benchmark">("");
   const [experimentName, setExperimentName] = useState("workbench-train");
   const [templateId, setTemplateId] = useState(initialTemplateId ?? "");
+  const [featureScopeModality, setFeatureScopeModality] = useState<FeatureScopeModality | "">("");
   const [seed, setSeed] = useState("7");
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -72,14 +97,24 @@ export function LaunchTrainDrawer({
     () => optionsQuery.data?.template_options ?? [],
     [optionsQuery.data?.template_options],
   );
-  const runDetailLink = jobQuery.data?.result?.deeplinks?.run_detail ?? null;
-  const isDatasetAware = Boolean(datasetId);
-  const readinessStatus = readinessQuery.data?.readiness_status ?? null;
-  const datasetDetailPath = datasetId ? `/datasets/${encodeURIComponent(datasetId)}` : null;
+  const modalityOptions = useMemo(
+    () =>
+      (optionsQuery.data?.feature_scope_modalities ?? []).filter((option) =>
+        MODALITIES.includes(option.value as FeatureScopeModality),
+      ),
+    [optionsQuery.data?.feature_scope_modalities],
+  );
   const selectedTemplate = useMemo(
     () => templateOptions.find((option) => option.value === templateId) ?? null,
     [templateId, templateOptions],
   );
+  const readinessStatus = readinessQuery.data?.readiness_status ?? null;
+  const selectedModalityQuality =
+    featureScopeModality && datasetId
+      ? readinessQuery.data?.modality_quality_summary?.[featureScopeModality] ?? null
+      : null;
+  const datasetDetailPath = datasetId ? `/datasets/${encodeURIComponent(datasetId)}` : null;
+  const runDetailLink = jobQuery.data?.result?.deeplinks?.run_detail ?? null;
 
   useEffect(() => {
     if (defaultOpen || !showTrigger) {
@@ -119,8 +154,9 @@ export function LaunchTrainDrawer({
         ...(datasetPreset ? { dataset_preset: datasetPreset } : {}),
         ...(datasetId ? { dataset_id: datasetId } : {}),
         template_id: templateId,
+        feature_scope_modality: featureScopeModality || undefined,
         seed: Number(seed),
-        experiment_name: experimentName,
+        experiment_name: experimentName.trim(),
       }),
     onSuccess: (result) => {
       setJobId(result.job_id);
@@ -135,27 +171,38 @@ export function LaunchTrainDrawer({
 
   function handleSubmit() {
     if (!templateId) {
-      setFormError("请选择模型模板。");
+      setFormError(translateText("请选择模型类型。"));
+      return;
+    }
+    if (!featureScopeModality) {
+      setFormError("Please choose a modality for this training run.");
       return;
     }
     if (!experimentName.trim()) {
-      setFormError("请输入实验名称。");
+      setFormError("Please enter an experiment name.");
       return;
     }
     if (!seed.trim() || Number.isNaN(Number(seed))) {
-      setFormError("请输入有效的随机种子。");
+      setFormError("Please enter a valid numeric seed.");
       return;
     }
-    if (isDatasetAware && readinessQuery.isLoading) {
-      setFormError("正在读取这份数据集的训练就绪度，请稍后再试。");
+    if (datasetId && readinessQuery.isLoading) {
+      setFormError("Dataset readiness is still loading. Please try again in a moment.");
       return;
     }
-    if (isDatasetAware && readinessQuery.isError) {
-      setFormError("无法读取数据集的训练就绪度，请先到数据集详情页确认状态。");
+    if (datasetId && readinessQuery.isError) {
+      setFormError("Dataset readiness could not be loaded. Please verify the dataset detail first.");
       return;
     }
-    if (isDatasetAware && readinessStatus === "not_ready") {
-      setFormError("当前数据集还未通过训练就绪校验，请先处理阻塞问题。");
+    if (datasetId && readinessStatus === "not_ready") {
+      setFormError("This dataset is not trainable yet because readiness checks are still failing.");
+      return;
+    }
+    if (datasetId && selectedModalityQuality && selectedModalityQuality.status !== "ready") {
+      setFormError(
+        selectedModalityQuality.blocking_reasons[0] ??
+          `Selected modality ${formatModalityLabel(featureScopeModality)} is not quality-ready.`,
+      );
       return;
     }
 
@@ -166,7 +213,12 @@ export function LaunchTrainDrawer({
   return (
     <div className="drawer-wrap">
       {showTrigger ? (
-        <button className="action-button" onClick={() => setOpen((value) => !value)} type="button">
+        <button
+          className="action-button"
+          data-testid="launch-train-trigger"
+          onClick={() => setOpen((value) => !value)}
+          type="button"
+        >
           {triggerLabel ?? I18N.action.launchTrain}
         </button>
       ) : null}
@@ -175,59 +227,65 @@ export function LaunchTrainDrawer({
           <h3>{title ?? triggerLabel ?? I18N.action.launchTrain}</h3>
           {description ? <p className="drawer-copy">{description}</p> : null}
 
-          {isDatasetAware ? (
+          {datasetId ? (
             <div className="page-stack compact-gap">
               <div className="dataset-callout">
-                <strong>{"当前训练数据集"}</strong>
+                <strong>当前训练数据集</strong>
                 <span>{datasetLabel ?? datasetId}</span>
               </div>
               <div className="dataset-callout">
                 <strong>
                   {readinessQuery.isLoading
-                    ? "正在读取训练就绪度"
+                    ? "Loading readiness"
                     : readinessQuery.isError
-                      ? "就绪度读取失败"
-                      : readinessStatus === "not_ready"
-                        ? "这份数据集暂不可训练"
-                        : readinessStatus === "warning"
-                          ? "这份数据集可以训练，但需要先留意"
-                          : "这份数据集可以直接发起训练"}
+                      ? "Readiness unavailable"
+                      : `Dataset status: ${formatStatusLabel(readinessStatus)}`}
                 </strong>
                 <span>
                   {readinessQuery.isLoading
-                    ? "抽屉会先等待后端 readiness 结果，避免未校验的数据集直接进入训练。"
+                    ? "We wait for dataset readiness before launching a dataset-bound training run."
                     : readinessQuery.isError
-                      ? "请先到数据集详情页或训练数据集页确认 readiness 状态。"
+                      ? "Open the dataset detail page to inspect the readiness response."
                       : readinessStatus === "not_ready"
-                        ? "这个入口不会静默回退到 preset 模式，你需要先处理阻塞原因。"
-                        : readinessStatus === "warning"
-                          ? "后端允许继续训练，但这份数据集还带有告警，建议先检查详情页里的说明。"
-                          : "本次训练会直接以 dataset_id 作为唯一数据集来源，不会回退到 preset 选择。"}
+                        ? "Dataset creation stays allowed, but training is blocked until readiness becomes ready."
+                        : "This launch will use the current dataset directly instead of falling back to a preset."}
                 </span>
               </div>
+
+              {readinessQuery.data?.modality_quality_summary ? (
+                <section className="details-panel">
+                  <strong>Dataset modality quality</strong>
+                  <ModalityQualitySummary
+                    emptyText="No modality quality summary available for this dataset."
+                    summary={readinessQuery.data.modality_quality_summary}
+                    title="Dataset modality quality"
+                  />
+                </section>
+              ) : null}
+
               {!readinessQuery.isLoading && (readinessQuery.isError || readinessStatus === "not_ready") ? (
                 <div className="table-actions">
                   {datasetDetailPath ? (
                     <Link className="link-button" to={datasetDetailPath}>
-                      {"打开数据集详情"}
+                      Open dataset detail
                     </Link>
                   ) : null}
                   <Link className="link-button" to="/datasets/training">
-                    {"回到训练数据集页"}
+                    Back to training datasets
                   </Link>
                 </div>
               ) : null}
             </div>
           ) : (
             <label>
-              <span>{"数据集预置"}</span>
+              <span>{translateText("数据集预置")}</span>
               <select
                 onChange={(event) =>
                   setDatasetPreset(event.target.value as "" | "smoke" | "real_benchmark")
                 }
                 value={datasetPreset}
               >
-                <option value="">使用模板默认数据集</option>
+                <option value="">Use template default dataset preset</option>
                 {(optionsQuery.data?.dataset_presets ?? []).map((option) => (
                   <option key={option.value} value={option.value}>
                     {localizeTrainOptionLabel(option.value, option.label)}
@@ -238,7 +296,7 @@ export function LaunchTrainDrawer({
           )}
 
           <label>
-            <span>{"模型模板"}</span>
+            <span>{translateText("模板")}</span>
             <select onChange={(event) => setTemplateId(event.target.value)} value={templateId}>
               {templateOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -250,26 +308,70 @@ export function LaunchTrainDrawer({
           {localizeTrainOptionDescription(selectedTemplate?.description) ? (
             <p className="drawer-copy">{localizeTrainOptionDescription(selectedTemplate?.description)}</p>
           ) : null}
+
           <label>
-            <span>{"实验名称"}</span>
+            <span>Feature Modality</span>
+            <select
+              aria-label="Feature Modality"
+              data-testid="feature-modality-select"
+              onChange={(event) =>
+                setFeatureScopeModality(event.target.value as FeatureScopeModality | "")
+              }
+              value={featureScopeModality}
+            >
+              <option value="">Select a modality</option>
+              {modalityOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label ?? formatModalityLabel(option.value)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {featureScopeModality ? (
+            <div className="dataset-callout">
+              <strong>{`Selected modality: ${formatModalityLabel(featureScopeModality)}`}</strong>
+              <span>
+                {selectedModalityQuality
+                  ? modalityBlockingSummary(selectedModalityQuality)
+                  : "This run will train using only the selected modality feature scope."}
+              </span>
+            </div>
+          ) : null}
+
+          {selectedModalityQuality ? (
+            <section className="details-panel">
+              <strong>Selected modality quality</strong>
+              <ModalityQualitySummary
+                modalities={[featureScopeModality]}
+                summary={{ [featureScopeModality]: selectedModalityQuality }}
+                title="Selected modality quality"
+              />
+            </section>
+          ) : null}
+
+          <label>
+            <span>{translateText("名称")}</span>
             <input onChange={(event) => setExperimentName(event.target.value)} value={experimentName} />
           </label>
           <label>
-            <span>随机种子</span>
+            <span>Seed</span>
             <input inputMode="numeric" onChange={(event) => setSeed(event.target.value)} value={seed} />
           </label>
+
           {formError ? <p className="form-error">{formError}</p> : null}
-          {mutation.isError ? (
-            <p className="form-error">{(mutation.error as Error).message}</p>
-          ) : null}
+          {mutation.isError ? <p className="form-error">{(mutation.error as Error).message}</p> : null}
+
           <button
             className="action-button"
+            data-testid="submit-train-launch"
             disabled={mutation.isPending || optionsQuery.isLoading || templateOptions.length === 0}
             onClick={handleSubmit}
             type="button"
           >
-            {mutation.isPending ? "提交中..." : I18N.action.submit}
+            {mutation.isPending ? translateText("提交中...") : I18N.action.submit}
           </button>
+
           {jobQuery.data ? (
             <div className="job-box">
               <div className="split-line">
@@ -286,13 +388,9 @@ export function LaunchTrainDrawer({
                 <p className="form-error">{jobQuery.data.error_message}</p>
               ) : null}
               {jobQuery.data.status === "success" && runDetailLink ? (
-                <button
-                  className="link-button"
-                  onClick={() => navigate(runDetailLink)}
-                  type="button"
-                >
-                  {"跳转到运行详情"}
-                </button>
+                <Link className="link-button" to={runDetailLink}>
+                  {translateText("跳转运行详情")}
+                </Link>
               ) : null}
             </div>
           ) : null}

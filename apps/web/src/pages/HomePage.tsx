@@ -44,7 +44,7 @@ export function HomePage() {
   ].slice(0, 4);
 
   return (
-    <div className="page-stack">
+    <div className="page-stack home-page">
       <section className="page-header-shell">
         <div className="page-header-main">
           <div className="eyebrow">{I18N.nav.workbench}</div>

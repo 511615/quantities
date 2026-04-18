@@ -6,9 +6,8 @@ import { LaunchBacktestDrawer } from "../features/launch-backtest/LaunchBacktest
 import { useArtifactPreview, useRunDetail } from "../shared/api/hooks";
 import type { ArtifactView, RunDetailView } from "../shared/api/types";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
-import { formatModalityLabel } from "../shared/lib/labels";
 import { I18N } from "../shared/lib/i18n";
-import { formatArtifactLabel } from "../shared/lib/labels";
+import { formatArtifactLabel, formatModalityLabel, formatStatusLabel } from "../shared/lib/labels";
 import { mapRunDetail } from "../shared/view-model/mappers";
 import { GlossaryHint } from "../shared/ui/GlossaryHint";
 import { MetricGrid } from "../shared/ui/MetricGrid";
@@ -309,6 +308,20 @@ export function RunDetailPage() {
     { label: "任务类型", value: stringValue(detail.task_type) },
     { label: "数据集类型", value: stringValue(datasetSummary.dataset_type) },
     { label: "数据域", value: stringValue(datasetSummary.data_domains ?? datasetSummary.data_domain) },
+    { label: "特征模态", value: detail.feature_scope_modality ? formatModalityLabel(detail.feature_scope_modality) : "--" },
+    {
+      label: "源数据质量",
+      value: detail.source_dataset_quality_status
+        ? formatStatusLabel(detail.source_dataset_quality_status)
+        : "--",
+    },
+    {
+      label: "模态特征",
+      value:
+        detail.feature_scope_feature_names && detail.feature_scope_feature_names.length > 0
+          ? detail.feature_scope_feature_names.join(", ")
+          : "--",
+    },
     { label: "实体范围", value: stringValue(datasetSummary.entity_scope) },
     { label: "特征模式", value: stringValue(datasetSummary.feature_schema_hash) },
     { label: "快照版本", value: stringValue(datasetSummary.snapshot_version) },
@@ -318,6 +331,10 @@ export function RunDetailPage() {
   const displaySummaryMetrics = [
     { label: "模型", value: detail.model_name },
     { label: "模型家族", value: detail.family ?? "--" },
+    {
+      label: "训练模态",
+      value: detail.feature_scope_modality ? formatModalityLabel(detail.feature_scope_modality) : "--",
+    },
     { label: "数据集数量", value: datasetIds.length > 0 ? String(datasetIds.length) : "--" },
     {
       label: "时间范围",

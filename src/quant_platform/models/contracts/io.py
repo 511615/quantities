@@ -29,6 +29,9 @@ class ModelArtifactMeta(FrozenModel):
     checkpoint_tag: str | None = None
     input_metadata: dict[str, object] = Field(default_factory=dict)
     prediction_metadata: dict[str, object] = Field(default_factory=dict)
+    feature_scope_modality: str | None = None
+    feature_scope_feature_names: list[str] = Field(default_factory=list)
+    source_dataset_quality_status: str | None = None
 
     @property
     def artifact_path(self) -> Path:

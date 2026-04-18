@@ -220,8 +220,20 @@ const fetchMock = vi.fn(
                 recommended: true,
               },
             ],
+            template_options: [
+              {
+                value: "registry::elastic_net",
+                label: "Elastic Net default",
+                description: "Template sourced from model registry.",
+                recommended: true,
+              },
+            ],
             trainer_presets: [
               { value: "fast", label: "fast", description: null, recommended: true },
+            ],
+            feature_scope_modalities: [
+              { value: "market", label: "Market", description: null, recommended: true },
+              { value: "macro", label: "Macro", description: null, recommended: false },
             ],
             default_seed: 7,
             constraints: {},

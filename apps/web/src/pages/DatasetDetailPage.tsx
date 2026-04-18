@@ -22,9 +22,11 @@ import { api } from "../shared/api/client";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
+import { ModalityQualitySummary } from "../shared/ui/ModalityQualitySummary";
 import { StatusPill } from "../shared/ui/StatusPill";
 import { WorkbenchChart } from "../shared/ui/WorkbenchChart";
 import { LaunchTrainDrawer } from "../features/launch-training/LaunchTrainDrawer";
+import { LaunchDatasetMultimodalTrainDrawer } from "../features/launch-training/LaunchDatasetMultimodalTrainDrawer";
 
 const NLP_FEATURE_REGEX = /^(sentiment|text|news)_/i;
 
@@ -111,6 +113,20 @@ function resolveDatasetDownloadHref(datasetId: string, links: Array<{ kind?: str
     return marker.includes("download") || marker.includes("export") || marker.includes("获取");
   });
   return explicitLink?.href ?? explicitLink?.api_path ?? api.datasetDownloadUrl(datasetId);
+}
+
+function normalizedDatasetModalities(dataDomains: string[] = []) {
+  return Array.from(
+    new Set(
+      dataDomains.map((domain) => {
+        const normalized = domain.trim().toLowerCase();
+        if (normalized === "sentiment_events") {
+          return "nlp";
+        }
+        return normalized;
+      }),
+    ),
+  ).filter(Boolean);
 }
 
 export function DatasetDetailPage() {
@@ -290,6 +306,15 @@ export function DatasetDetailPage() {
     nlpInspection?.entity_link_coverage_ratio ??
     readinessQuery.data?.nlp_entity_link_coverage_ratio ??
     null;
+  const datasetModalities = normalizedDatasetModalities(detail.summary.raw.data_domains);
+  const insufficientObservationModalities = ["macro", "on_chain"].filter((modality) => {
+    const item = readinessQuery.data?.modality_quality_summary?.[modality];
+    return (
+      item?.status === "failed" &&
+      (item.freshness_lag_days ?? null) === 0 &&
+      item.blocking_reasons.some((reason) => reason.includes("below 300"))
+    );
+  });
 
   return (
     <div className="page-stack">
@@ -301,13 +326,22 @@ export function DatasetDetailPage() {
         </div>
         <div className="hero-actions">
           {detail.readiness.rawStatus !== "not_ready" ? (
-            <LaunchTrainDrawer
-              datasetId={datasetId}
-              datasetLabel={detail.summary.title}
-              triggerLabel="基于此数据集训练"
-              title="发起训练"
-              description="训练流程保持以数据集 ID 为主入口，并会直接使用当前数据集。"
-            />
+            <>
+              <LaunchTrainDrawer
+                datasetId={datasetId}
+                datasetLabel={detail.summary.title}
+                triggerLabel="基于此数据集训练"
+                title="发起训练"
+                description="训练流程保持以数据集 ID 为主入口，并会直接使用当前数据集。"
+              />
+              {datasetModalities.length >= 2 ? (
+                <LaunchDatasetMultimodalTrainDrawer
+                  datasetId={datasetId}
+                  datasetLabel={detail.summary.title}
+                  datasetModalities={datasetModalities as Array<"market" | "macro" | "on_chain" | "derivatives" | "nlp">}
+                />
+              ) : null}
+            </>
           ) : null}
           <a className="link-button" href={downloadHref}>
             获取该数据集
@@ -674,6 +708,43 @@ export function DatasetDetailPage() {
                 </div>
               ))}
             </div>
+            {readinessQuery.data?.modality_quality_summary ? (
+              <div className="page-stack compact-gap">
+                <strong>Modality Quality Summary</strong>
+                <ModalityQualitySummary
+                  summary={readinessQuery.data.modality_quality_summary}
+                  title="Dataset modality quality summary"
+                />
+              </div>
+            ) : null}
+            {insufficientObservationModalities.length > 0 ? (
+              <div className="dataset-callout">
+                <strong>宏观 / 链上当前是样本量不足，不是 freshness 不足</strong>
+                <span>
+                  {insufficientObservationModalities
+                    .map((modality) => `${modality === "macro" ? "宏观" : "链上"} freshness lag 为 0 天，但有效观测点数还没达到 300`)
+                    .join("；")}
+                  。这通常是因为当前时间窗只有半年左右，而这两类信号按较低频 canonical 采样后，可用点数不足。
+                </span>
+                <span>如果想让它们过门槛，建议优先拉长时间窗，而不是把问题理解成“数据太旧”。</span>
+              </div>
+            ) : null}
+            {readinessQuery.data?.aligned_multimodal_quality ? (
+              <div className="page-stack compact-gap">
+                <strong>Aligned Multimodal Window</strong>
+                <ModalityQualitySummary
+                  summary={{
+                    aligned_multimodal: {
+                      ...readinessQuery.data.aligned_multimodal_quality,
+                      modality:
+                        readinessQuery.data.aligned_multimodal_quality.modality ??
+                        "aligned_multimodal",
+                    },
+                  }}
+                  title="Aligned multimodal quality"
+                />
+              </div>
+            ) : null}
           </section>
 
           <section className="details-panel">

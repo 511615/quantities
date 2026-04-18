@@ -71,3 +71,32 @@ def test_build_prediction_frame_uses_feature_available_time_when_later() -> None
     assert frame.rows[0].feature_available_time == sample.available_time
     assert frame.metadata is not None
     assert frame.metadata.prediction_time == sample.available_time
+
+
+def test_prediction_adapter_calibrates_extreme_prediction_scales() -> None:
+    prediction_frame = PredictionFrame(
+        rows=[
+            PredictionRow(
+                entity_keys={"instrument": "BTCUSDT", "venue": "binance"},
+                timestamp=datetime(2024, 1, 1, hour, 0, tzinfo=timezone.utc),
+                prediction=value,
+                confidence=1.0,
+                model_run_id="run-scale",
+                feature_available_time=datetime(2024, 1, 1, hour, 0, tzinfo=timezone.utc),
+            )
+            for hour, value in enumerate([2.5e9, 0.0, -2.5e9], start=0)
+        ],
+        metadata=PredictionMetadata(inference_latency_ms=0, target_horizon=1),
+    )
+
+    signal_frame = PredictionToSignalAdapter().adapt(
+        prediction_frame=prediction_frame,
+        strategy_config=StrategyConfig(name="rank", direction_mode="long_short"),
+        latency_config=LatencyConfig(signal_delay_seconds=0),
+    )
+
+    normalized_values = [row.normalized_value for row in signal_frame.rows]
+    assert normalized_values[0] is not None and normalized_values[0] > 0.0
+    assert normalized_values[1] is not None and abs(normalized_values[1]) < 1e-9
+    assert normalized_values[2] is not None and normalized_values[2] < 0.0
+    assert all(value is not None and abs(value) <= 1.0 for value in normalized_values)

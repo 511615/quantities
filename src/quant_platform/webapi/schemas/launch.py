@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_platform.webapi.schemas.views import BacktestTemplateView
+from quant_platform.webapi.schemas.views import BacktestTemplateView, ModalityQualityView
 
 
 class LaunchApiModel(BaseModel):
@@ -19,6 +19,7 @@ class LaunchTrainRequest(LaunchApiModel):
     template_overrides: dict[str, Any] = Field(default_factory=dict)
     model_names: list[str] = Field(default_factory=list)
     trainer_preset: Literal["fast"] | None = None
+    feature_scope_modality: Literal["market", "macro", "on_chain", "derivatives", "nlp"] | None = None
     seed: int = 7
     experiment_name: str = "workbench-train"
     run_id_prefix: str | None = None
@@ -56,6 +57,22 @@ class LaunchModelCompositionRequest(LaunchApiModel):
     weights: dict[str, float] = Field(default_factory=dict)
 
 
+class LaunchDatasetMultimodalTrainRequest(LaunchApiModel):
+    dataset_id: str
+    selected_modalities: list[Literal["market", "macro", "on_chain", "derivatives", "nlp"]] = Field(
+        default_factory=list,
+        min_length=2,
+    )
+    template_by_modality: dict[str, str] = Field(default_factory=dict)
+    trainer_preset: Literal["fast"] = "fast"
+    experiment_name_prefix: str = "workbench-multimodal"
+    seed: int = 7
+    fusion_strategy: Literal["late_score_blend"] = "late_score_blend"
+    composition_name: str | None = None
+    auto_launch_official_backtest: bool = False
+    official_window_days: Literal[30, 90, 180, 365] | None = 30
+
+
 class LaunchJobResponse(LaunchApiModel):
     job_id: str
     status: Literal["queued", "running", "success", "failed"]
@@ -76,6 +93,7 @@ class TrainLaunchOptionsView(LaunchApiModel):
     model_options: list[PresetOptionView] = Field(default_factory=list)
     template_options: list[PresetOptionView] = Field(default_factory=list)
     trainer_presets: list[PresetOptionView] = Field(default_factory=list)
+    feature_scope_modalities: list[PresetOptionView] = Field(default_factory=list)
     default_seed: int = 7
     constraints: dict[str, Any] = Field(default_factory=dict)
 
@@ -120,6 +138,11 @@ class BacktestLaunchPreflightView(LaunchApiModel):
     missing_official_feature_names: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     blocking_reason_codes: list[str] = Field(default_factory=list)
+    modality_quality_summary: dict[str, ModalityQualityView] = Field(default_factory=dict)
+    quality_blocking_reasons: list[str] = Field(default_factory=list)
+    missing_required_metadata_keys: list[str] = Field(default_factory=list)
+    missing_required_metadata_labels: list[str] = Field(default_factory=list)
+    missing_stress_scenarios: list[str] = Field(default_factory=list)
     nlp_gate_status: str | None = None
     nlp_gate_reasons: list[str] = Field(default_factory=list)
     nlp_gate_reason_codes: list[str] = Field(default_factory=list)

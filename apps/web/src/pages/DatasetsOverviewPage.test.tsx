@@ -19,11 +19,13 @@ const fetchMock = vi.fn(
 
 beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
+  window.localStorage.clear();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   fetchMock.mockClear();
+  window.localStorage.clear();
 });
 
 test("renders dataset overview with domain-first information architecture", async () => {
@@ -41,4 +43,22 @@ test("renders dataset overview with domain-first information architecture", asyn
   expect(screen.getByText("训练面板速览")).toBeInTheDocument();
   expect(screen.getByText("数据申请任务")).toBeInTheDocument();
   expect(screen.getByText("job-dataset-1")).toBeInTheDocument();
+});
+
+test("renders dataset overview in English when locale is en-US", async () => {
+  window.localStorage.setItem("qp.ui.locale", "en-US");
+
+  renderWithProviders(<DatasetsOverviewPage />, "/datasets");
+
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { name: "Dataset Overview" })).toBeInTheDocument(),
+  );
+
+  expect(screen.getByText("Browse by Domain")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Open Dataset Browser" })).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Request New Dataset" }).length).toBeGreaterThan(0);
+  expect(screen.getByText("Market Data")).toBeInTheDocument();
+  expect(screen.getByText("Macro Data")).toBeInTheDocument();
+  expect(screen.getByText("Training Panel Snapshot")).toBeInTheDocument();
+  expect(screen.getByText("Dataset Request Jobs")).toBeInTheDocument();
 });

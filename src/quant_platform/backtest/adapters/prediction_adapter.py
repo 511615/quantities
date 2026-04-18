@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from quant_platform.backtest.contracts.backtest import LatencyConfig, StrategyConfig
 from quant_platform.backtest.contracts.signal import SignalFrame, SignalRecord
+from quant_platform.backtest.strategy.signal_calibration import robust_normalize
 from quant_platform.common.hashing.digest import stable_digest
 from quant_platform.training.contracts.training import PredictionFrame
 
@@ -19,13 +20,16 @@ class PredictionToSignalAdapter:
         source_prediction_uri: str | None = None,
     ) -> SignalFrame:
         rows: list[SignalRecord] = []
+        normalized_predictions, calibration_summary = robust_normalize(
+            [row.prediction for row in prediction_frame.rows]
+        )
         inference_latency = (
             timedelta(milliseconds=prediction_frame.metadata.inference_latency_ms)
             if prediction_frame.metadata
             else timedelta(0)
         )
         signal_delay = timedelta(seconds=latency_config.signal_delay_seconds)
-        for prediction in prediction_frame.rows:
+        for index, prediction in enumerate(prediction_frame.rows):
             signal_time = prediction.timestamp
             available_time = prediction.feature_available_time or prediction.timestamp
             if signal_time < available_time:
@@ -57,10 +61,15 @@ class PredictionToSignalAdapter:
                     horizon_end=None,
                     signal_type=strategy_config.signal_type,
                     raw_value=prediction.prediction,
-                    normalized_value=None,
+                    normalized_value=normalized_predictions[index] if index < len(normalized_predictions) else None,
                     confidence=prediction.confidence,
                     direction_mode=strategy_config.direction_mode,
-                    meta={},
+                    meta={
+                        "calibration_method": str(calibration_summary["method"]),
+                        "calibration_center": float(calibration_summary["center"]),
+                        "calibration_scale": float(calibration_summary["scale"]),
+                        "calibration_clip_z": float(calibration_summary["clip_z"]),
+                    },
                 )
             )
         return SignalFrame(

@@ -8,12 +8,16 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from quant_platform.common.enums.core import ModelFamily
 from quant_platform.common.io.files import LocalArtifactStore
+from quant_platform.common.types.core import SchemaField
 from quant_platform.data.contracts.ingestion import DataConnectorError
 from quant_platform.data.contracts.market import NormalizedMarketBar
 from quant_platform.data.contracts.series import NormalizedSeriesPoint
 from quant_platform.datasets.contracts.dataset import DatasetRef
 from quant_platform.datasets.manifests.dataset_manifest import DatasetBuildManifest
+from quant_platform.models.baselines.mean_baseline import MeanBaselineModel
+from quant_platform.models.contracts.model_spec import ModelSpec
 from quant_platform.webapi.app import create_app
 
 
@@ -372,6 +376,29 @@ def _launch_train_and_wait(
     return job_payload["result"]["run_ids"][0]
 
 
+def _infer_feature_scope_modality(feature_names: list[str]) -> str:
+    normalized = [name.strip().lower() for name in feature_names if name.strip()]
+    if not normalized:
+        return "market"
+    if all(name.startswith("macro_") for name in normalized):
+        return "macro"
+    if all(name.startswith("on_chain_") for name in normalized):
+        return "on_chain"
+    if all(name.startswith("derivatives_") for name in normalized):
+        return "derivatives"
+    nlp_prefixes = ("text_", "news_", "sentiment_")
+    nlp_exact = {
+        "news_event_count",
+        "news_mention_count",
+        "news_source_count",
+        "sentiment_score",
+        "text_event_intensity",
+    }
+    if all(name.startswith(nlp_prefixes) or name in nlp_exact for name in normalized):
+        return "nlp"
+    return "market"
+
+
 def _rewrite_backtest_result_uris_windows_style(app, result_uri: str) -> None:
     artifact_root = app.state.services.jobs.artifact_root
     store = LocalArtifactStore(artifact_root)
@@ -393,6 +420,7 @@ def _materialize_stub_run(
     dataset_id: str,
     feature_names: list[str],
     model_name: str = "elastic_net",
+    feature_scope_modality: str | None = None,
 ) -> None:
     artifact_root = app.state.services.jobs.artifact_root
     workbench = app.state.services.workbench
@@ -400,6 +428,11 @@ def _materialize_stub_run(
     dataset_readiness = workbench.get_dataset_readiness(dataset_id)
     assert dataset_detail is not None
     assert dataset_readiness is not None
+    resolved_modality = feature_scope_modality or _infer_feature_scope_modality(feature_names)
+    modality_quality = dataset_readiness.modality_quality_summary.get(resolved_modality)
+    source_dataset_quality_status = (
+        modality_quality.status if modality_quality is not None else dataset_readiness.readiness_status
+    )
 
     created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     model_dir = artifact_root / "models" / run_id
@@ -424,6 +457,16 @@ def _materialize_stub_run(
         "feature_schema_hash": dataset_readiness.feature_schema_hash,
         "dataset_readiness_status": dataset_readiness.readiness_status,
         "dataset_readiness_warnings": list(dataset_readiness.warnings),
+        "feature_scope_modality": resolved_modality,
+        "feature_scope_feature_names": list(feature_names),
+        "source_dataset_quality_status": source_dataset_quality_status,
+        "repro_context": {
+            "seed": 7,
+        },
+        "tracking": {
+            "trial_count": 0,
+        },
+        "synthetic_reference": False,
         "metrics": {},
     }
     metadata = {
@@ -471,6 +514,9 @@ def _materialize_stub_run(
         "checkpoint_tag": None,
         "input_metadata": {},
         "prediction_metadata": {},
+        "feature_scope_modality": resolved_modality,
+        "feature_scope_feature_names": list(feature_names),
+        "source_dataset_quality_status": source_dataset_quality_status,
     }
     evaluation_summary = {
         "run_id": run_id,
@@ -492,6 +538,7 @@ def _materialize_stub_run(
         "params": {
             "dataset_id": dataset_id,
             "model_name": model_name,
+            "feature_scope_modality": resolved_modality,
         },
         "run_id": run_id,
     }
@@ -517,6 +564,179 @@ def _materialize_stub_run(
         encoding="utf-8",
     )
     (prediction_dir / "full.json").write_text(json.dumps(prediction_stub, indent=2), encoding="utf-8")
+
+
+def _materialize_serialized_baseline_run(
+    app,
+    *,
+    run_id: str,
+    dataset_id: str,
+    feature_names: list[str],
+    mean_target: float = 0.0,
+    feature_scope_modality: str | None = None,
+) -> None:
+    artifact_root = app.state.services.jobs.artifact_root
+    workbench = app.state.services.workbench
+    dataset_detail = workbench.get_dataset_detail(dataset_id)
+    dataset_readiness = workbench.get_dataset_readiness(dataset_id)
+    assert dataset_detail is not None
+    assert dataset_readiness is not None
+    resolved_modality = feature_scope_modality or _infer_feature_scope_modality(feature_names)
+    modality_quality = dataset_readiness.modality_quality_summary.get(resolved_modality)
+    source_dataset_quality_status = (
+        modality_quality.status if modality_quality is not None else dataset_readiness.readiness_status
+    )
+
+    created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    model_dir = artifact_root / "models" / run_id
+    prediction_dir = artifact_root / "predictions" / run_id
+    model_dir.mkdir(parents=True, exist_ok=True)
+    prediction_dir.mkdir(parents=True, exist_ok=True)
+
+    spec = ModelSpec(
+        model_name="mean_baseline",
+        family=ModelFamily.BASELINE,
+        version="0.1.0",
+        input_schema=[
+            SchemaField(name=name, dtype="float", nullable=False, description=None)
+            for name in feature_names
+        ],
+        output_schema=[SchemaField(name="prediction", dtype="float", nullable=False, description=None)],
+        task_type="regression",
+        lookback=None,
+        target_horizon=dataset_detail.dataset.label_horizon or 1,
+        prediction_type="return",
+        hyperparams={},
+    )
+    model = MeanBaselineModel(spec)
+    model._mean_target = mean_target  # noqa: SLF001
+    model._training_sample_count = dataset_detail.dataset.sample_count or 0  # noqa: SLF001
+    model._feature_names = list(feature_names)  # noqa: SLF001
+    meta = model.save(model_dir)
+
+    train_manifest = {
+        "run_id": run_id,
+        "created_at": created_at,
+        "dataset_ref_uri": f"dataset://{dataset_id}",
+        "dataset_id": dataset_id,
+        "dataset_manifest_uri": str(
+            (artifact_root / "datasets" / f"{dataset_id}_dataset_manifest.json").resolve()
+        ),
+        "dataset_type": dataset_detail.dataset.dataset_type,
+        "data_domain": dataset_detail.dataset.data_domain,
+        "data_domains": list(dataset_detail.dataset.data_domains),
+        "snapshot_version": dataset_detail.dataset.snapshot_version,
+        "entity_scope": dataset_detail.dataset.entity_scope,
+        "entity_count": dataset_detail.dataset.entity_count,
+        "feature_schema_hash": dataset_readiness.feature_schema_hash,
+        "dataset_readiness_status": dataset_readiness.readiness_status,
+        "dataset_readiness_warnings": list(dataset_readiness.warnings),
+        "feature_scope_modality": resolved_modality,
+        "feature_scope_feature_names": list(feature_names),
+        "source_dataset_quality_status": source_dataset_quality_status,
+        "repro_context": {
+            "seed": 7,
+        },
+        "tracking": {
+            "trial_count": 0,
+        },
+        "synthetic_reference": False,
+        "metrics": {},
+    }
+    evaluation_summary = {
+        "run_id": run_id,
+        "dataset_id": dataset_id,
+        "task_type": "regression",
+        "selected_scope": "full",
+        "sample_count": dataset_detail.dataset.sample_count or 0,
+        "regression_metrics": {},
+        "split_metrics": {},
+        "coverage": {
+            "available_scopes": ["full"],
+            "sample_count": dataset_detail.dataset.sample_count or 0,
+        },
+        "series": {},
+    }
+    tracking = {
+        "created_at": created_at,
+        "metrics": {},
+        "params": {
+            "dataset_id": dataset_id,
+            "model_name": "mean_baseline",
+            "feature_scope_modality": resolved_modality,
+        },
+        "run_id": run_id,
+    }
+    prediction_stub = {
+        "rows": [],
+        "metadata": {
+            "feature_view_ref": None,
+            "prediction_time": created_at,
+            "inference_latency_ms": 0,
+            "target_horizon": dataset_detail.dataset.label_horizon or 1,
+        },
+    }
+
+    (artifact_root / "tracking").mkdir(parents=True, exist_ok=True)
+    (artifact_root / "tracking" / f"{run_id}.json").write_text(
+        json.dumps(tracking, indent=2),
+        encoding="utf-8",
+    )
+    (model_dir / "train_manifest.json").write_text(json.dumps(train_manifest, indent=2), encoding="utf-8")
+    metadata_payload = meta.model_dump(mode="json")
+    metadata_payload["feature_scope_modality"] = resolved_modality
+    metadata_payload["feature_scope_feature_names"] = list(feature_names)
+    metadata_payload["source_dataset_quality_status"] = source_dataset_quality_status
+    (model_dir / "metadata.json").write_text(
+        json.dumps(metadata_payload, indent=2),
+        encoding="utf-8",
+    )
+    (model_dir / "evaluation_summary.json").write_text(
+        json.dumps(evaluation_summary, indent=2),
+        encoding="utf-8",
+    )
+    (prediction_dir / "full.json").write_text(json.dumps(prediction_stub, indent=2), encoding="utf-8")
+
+
+OFFICIAL_AUXILIARY_FEATURES_BY_MODALITY = {
+    "macro": ["macro_dff_value"],
+    "on_chain": ["on_chain_ethereum_tvl"],
+    "derivatives": [
+        "derivatives_funding_rate",
+        "derivatives_open_interest",
+        "derivatives_global_long_short_ratio",
+        "derivatives_taker_buy_sell_ratio",
+    ],
+}
+
+
+def _launch_official_auxiliary_only_composed_run(app, client: TestClient, *, suffix: str) -> str:
+    source_run_ids: list[str] = []
+    weights: dict[str, float] = {}
+    for modality, feature_names in OFFICIAL_AUXILIARY_FEATURES_BY_MODALITY.items():
+        run_id = f"official-{modality}-compose-{suffix}"
+        _materialize_serialized_baseline_run(
+            app,
+            run_id=run_id,
+            dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
+            feature_names=feature_names,
+        )
+        source_run_ids.append(run_id)
+        weights[run_id] = 1.0 / len(OFFICIAL_AUXILIARY_FEATURES_BY_MODALITY)
+
+    composition_response = client.post(
+        "/api/launch/model-composition",
+        json={
+            "source_run_ids": source_run_ids,
+            "composition_name": f"official_auxiliary_only_{suffix}",
+            "fusion_strategy": "late_score_blend",
+            "weights": weights,
+        },
+    )
+    assert composition_response.status_code == 200
+    composition_job = _wait_for_job(client, composition_response.json()["job_id"], timeout_seconds=180.0)
+    assert composition_job["status"] == "success"
+    return composition_job["result"]["run_ids"][0]
 
 
 def _isoformat_z(dt: datetime) -> str:
@@ -673,6 +893,7 @@ def _patch_multi_domain_ingestion(
         frequency: str,
         start_time: datetime,
         end_time: datetime,
+        market_type: str | None = None,
     ) -> tuple[list[NormalizedMarketBar], str]:
         bars = _aligned_market_bars(
             start_time,
@@ -717,7 +938,7 @@ def _patch_multi_domain_ingestion(
                 identifier=identifier,
                 frequency=frequency,
                 offset=macro_offset,
-                metric_name="macro_dff_value",
+                metric_name="value",
                 value_offset=2.0,
             )
             return points, "live_fetch"
@@ -734,7 +955,7 @@ def _patch_multi_domain_ingestion(
                 identifier=identifier,
                 frequency=frequency,
                 offset=on_chain_offset,
-                metric_name="on_chain_value",
+                metric_name="tvl",
                 value_offset=500.0,
             )
             return points, "live_fetch"
@@ -1558,7 +1779,7 @@ def test_multi_domain_request_without_market_source_fails() -> None:
     assert "market" in (job_payload["error_message"] or "").lower()
 
 
-def test_multi_domain_request_with_frequency_mismatch_fails() -> None:
+def test_multi_domain_request_with_frequency_mismatch_succeeds_for_asof_alignment() -> None:
     app = create_app()
     client = TestClient(app)
     suffix = str(int(time.time() * 1000))
@@ -1571,6 +1792,32 @@ def test_multi_domain_request_with_frequency_mismatch_fails() -> None:
         request_name,
         start_time=start_time,
         end_time=end_time,
+    )
+    for source in payload["sources"]:
+        if source["data_domain"] == "macro":
+            source["frequency"] = "1d"
+
+    request_response = client.post("/api/datasets/requests", json=payload)
+    assert request_response.status_code == 200
+    job_payload = _wait_for_job(client, request_response.json()["job_id"])
+    assert job_payload["status"] == "success"
+    assert job_payload["result"]["dataset_id"]
+
+
+def test_multi_domain_request_with_frequency_mismatch_fails_for_strict_alignment() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+    request_name = f"multi_domain_request_freq_mismatch_strict_{suffix}"
+    start_time = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    end_time = start_time + timedelta(hours=3)
+
+    _patch_multi_domain_ingestion(app)
+    payload = _multi_domain_request_payload(
+        request_name,
+        start_time=start_time,
+        end_time=end_time,
+        merge_policy_name="strict_timestamp_inner",
     )
     for source in payload["sources"]:
         if source["data_domain"] == "macro":
@@ -2215,6 +2462,45 @@ def test_official_market_contract_allows_vendor_drift_when_symbols_match() -> No
     assert reasons == []
 
 
+def test_official_market_contract_allows_quote_symbol_alias_when_base_asset_matches() -> None:
+    app = create_app()
+    target_dataset_id = f"official_market_quote_alias_probe_{int(time.time() * 1000)}"
+    _clone_dataset_artifacts(
+        app,
+        source_dataset_id="baseline_real_benchmark_dataset",
+        target_dataset_id=target_dataset_id,
+    )
+
+    manifest_path = app.state.services.jobs.artifact_root / "datasets" / f"{target_dataset_id}_dataset_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    acquisition_profile = dict(manifest_payload.get("acquisition_profile") or {})
+    acquisition_profile["symbols"] = ["BTCUSDT"]
+    acquisition_profile["source_specs"] = [
+        {
+            "data_domain": "market",
+            "source_vendor": acquisition_profile.get("source_vendor") or "binance",
+            "exchange": acquisition_profile.get("exchange") or "binance",
+            "frequency": "1h",
+            "symbol_selector": {"symbols": ["BTCUSDT"]},
+        }
+    ]
+    manifest_payload["acquisition_profile"] = acquisition_profile
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+
+    reasons = app.state.services.jobs._official_source_contract_reasons_for_specs(
+        request_run_id="custom-market-quote-alias-probe",
+        source_specs=[
+            {
+                "run_id": "custom-market-quote-alias-probe",
+                "modality": "market",
+                "dataset_id": target_dataset_id,
+            }
+        ],
+    )
+
+    assert reasons == []
+
+
 def test_official_nlp_contract_allows_market_anchor_and_label_vendor_drift_when_symbols_match() -> None:
     app = create_app()
     anchor_dataset_id = f"official_market_anchor_vendor_probe_{int(time.time() * 1000)}"
@@ -2326,6 +2612,44 @@ def test_backtest_preflight_allows_current_multimodal_run_with_platform_compatib
     assert payload["blocking_reasons"] == []
 
 
+def test_backtest_preflight_blocks_run_when_source_dataset_quality_failed() -> None:
+    app = create_app()
+    client = TestClient(app)
+    run_id = f"quality-blocked-market-{int(time.time() * 1000)}"
+    _materialize_serialized_baseline_run(
+        app,
+        run_id=run_id,
+        dataset_id="smoke_dataset",
+        feature_names=[
+            "lag_return_1",
+            "lag_return_2",
+            "momentum_3",
+            "realized_vol_3",
+            "close_to_open",
+            "range_frac",
+            "volume_zscore",
+            "volume_ratio_3",
+        ],
+        feature_scope_modality="market",
+    )
+
+    response = client.post(
+        "/api/launch/backtest/preflight",
+        json={
+            "run_id": run_id,
+            "mode": "official",
+            "template_id": "system::official_backtest_protocol_v1",
+            "official_window_days": 30,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compatible"] is False
+    assert any("below 4000" in reason for reason in payload["blocking_reasons"])
+    assert any("below 4000" in reason for reason in payload["quality_blocking_reasons"])
+
+
 def test_backtest_preflight_reports_missing_nonstandard_nlp_feature() -> None:
     app = create_app()
     client = TestClient(app)
@@ -2357,6 +2681,147 @@ def test_backtest_preflight_reports_missing_nonstandard_nlp_feature() -> None:
     assert any(
         "text_reddit_embedding_768" in reason for reason in payload["blocking_reasons"]
     )
+
+
+def test_backtest_preflight_reports_missing_required_metadata_fields() -> None:
+    app = create_app()
+    client = TestClient(app)
+    run_id = f"metadata-missing-macro-{int(time.time() * 1000)}"
+    _materialize_serialized_baseline_run(
+        app,
+        run_id=run_id,
+        dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
+        feature_names=["macro_dff_value"],
+        feature_scope_modality="macro",
+    )
+
+    artifact_root = app.state.services.jobs.artifact_root
+    manifest_path = artifact_root / "models" / run_id / "train_manifest.json"
+    metadata_path = artifact_root / "models" / run_id / "metadata.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    manifest_payload.pop("repro_context", None)
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+    metadata_payload["model_spec"]["hyperparams"] = {}
+    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+
+    response = client.post(
+        "/api/launch/backtest/preflight",
+        json={
+            "run_id": run_id,
+            "mode": "official",
+            "template_id": "system::official_backtest_protocol_v1",
+            "official_window_days": 30,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compatible"] is False
+    assert "random_seed" in payload["missing_required_metadata_keys"]
+    assert "Random seed" in payload["missing_required_metadata_labels"]
+    assert any("Random seed" in reason for reason in payload["blocking_reasons"])
+
+
+def test_dataset_multimodal_train_launch_trains_selected_modalities_and_composes() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+
+    response = client.post(
+        "/api/launch/dataset-multimodal-train",
+        json={
+            "dataset_id": "official_reddit_pullpush_multimodal_v2_fusion",
+            "selected_modalities": ["market", "macro"],
+            "template_by_modality": {
+                "market": "registry::elastic_net",
+                "macro": "registry::elastic_net",
+            },
+            "trainer_preset": "fast",
+            "experiment_name_prefix": f"dataset-multimodal-{suffix}",
+            "seed": 7,
+            "fusion_strategy": "late_score_blend",
+            "composition_name": f"dataset-multimodal-compose-{suffix}",
+        },
+    )
+
+    assert response.status_code == 200
+    job_payload = _wait_for_job(client, response.json()["job_id"], timeout_seconds=300.0)
+    assert job_payload["status"] == "success"
+    assert len(job_payload["result"]["run_ids"]) == 3
+    composed_run_id = job_payload["result"]["run_ids"][0]
+    assert composed_run_id.startswith("multimodal-compose-")
+    run_detail_response = client.get(f"/api/runs/{composed_run_id}")
+    assert run_detail_response.status_code == 200
+    run_detail_payload = run_detail_response.json()
+    source_modalities = [
+        item["modality"] for item in run_detail_payload["composition"]["source_runs"]
+    ]
+    assert source_modalities == ["market", "macro"]
+
+
+def test_dataset_multimodal_train_launch_can_auto_backtest_officially() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+
+    response = client.post(
+        "/api/launch/dataset-multimodal-train",
+        json={
+            "dataset_id": "official_reddit_pullpush_multimodal_v2_fusion",
+            "selected_modalities": ["market", "macro"],
+            "template_by_modality": {
+                "market": "registry::elastic_net",
+                "macro": "registry::elastic_net",
+            },
+            "trainer_preset": "fast",
+            "experiment_name_prefix": f"dataset-multimodal-loop-{suffix}",
+            "seed": 7,
+            "fusion_strategy": "late_score_blend",
+            "composition_name": f"dataset-multimodal-loop-compose-{suffix}",
+            "auto_launch_official_backtest": True,
+            "official_window_days": 30,
+        },
+    )
+
+    assert response.status_code == 200
+    job_payload = _wait_for_job(client, response.json()["job_id"], timeout_seconds=300.0)
+    assert job_payload["status"] == "success"
+    assert len(job_payload["result"]["run_ids"]) == 3
+    assert len(job_payload["result"]["backtest_ids"]) == 1
+    assert job_payload["result"]["official"] is True
+    backtest_id = job_payload["result"]["backtest_ids"][0]
+    backtest_response = client.get(f"/api/backtests/{backtest_id}")
+    assert backtest_response.status_code == 200
+    backtest_payload = backtest_response.json()
+    assert backtest_payload["protocol"]["required_modalities"] == ["market", "macro"]
+
+
+def test_dataset_multimodal_train_launch_blocks_unavailable_modalities() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/launch/dataset-multimodal-train",
+        json={
+            "dataset_id": "smoke_dataset",
+            "selected_modalities": ["market", "macro"],
+            "template_by_modality": {
+                "market": "registry::elastic_net",
+                "macro": "registry::elastic_net",
+            },
+            "trainer_preset": "fast",
+            "experiment_name_prefix": "blocked-multimodal",
+            "seed": 7,
+            "fusion_strategy": "late_score_blend",
+            "composition_name": "blocked-multimodal-compose",
+        },
+    )
+
+    assert response.status_code == 200
+    job_payload = _wait_for_job(client, response.json()["job_id"], timeout_seconds=120.0)
+    assert job_payload["status"] == "failed"
+    assert "Selected modalities are not present in this dataset" in (job_payload["error_message"] or "")
 
 
 def test_launch_official_backtest_reuses_preflight_failure_reason_for_missing_schema() -> None:
@@ -2470,22 +2935,12 @@ def test_model_composition_allows_platform_compatible_sources() -> None:
     app = create_app()
     client = TestClient(app)
     suffix = str(int(time.time() * 1000))
-    sentiment_dataset_name = f"platform_compat_sentiment_{suffix}"
-    sentiment_response = client.post(
-        "/api/datasets/requests",
-        json=_sentiment_dataset_request_payload(sentiment_dataset_name),
-    )
-    assert sentiment_response.status_code == 200
-    sentiment_job = _wait_for_job(client, sentiment_response.json()["job_id"], timeout_seconds=120.0)
-    assert sentiment_job["status"] == "success"
-    sentiment_dataset_id = sentiment_job["result"]["dataset_id"]
-
     market_run_id = f"platform-compat-market-{suffix}"
     nlp_run_id = f"platform-compat-nlp-{suffix}"
     _materialize_stub_run(
         app,
         run_id=market_run_id,
-        dataset_id="smoke_dataset",
+        dataset_id="baseline_real_benchmark_dataset",
         feature_names=[
             "lag_return_1",
             "lag_return_2",
@@ -2500,7 +2955,7 @@ def test_model_composition_allows_platform_compatible_sources() -> None:
     _materialize_stub_run(
         app,
         run_id=nlp_run_id,
-        dataset_id=sentiment_dataset_id,
+        dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
         feature_names=[
             "news_event_count",
             "text_reddit_attention_zscore_24h",
@@ -2539,6 +2994,77 @@ def test_model_composition_allows_platform_compatible_sources() -> None:
     run_detail_payload = run_detail_response.json()
     assert run_detail_payload["official_template_eligible"] is True
     assert run_detail_payload["official_blocking_reasons"] == []
+
+
+def test_model_composition_rejects_source_when_modality_quality_is_not_ready() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+    sentiment_dataset_name = f"platform_compat_sentiment_{suffix}"
+    sentiment_response = client.post(
+        "/api/datasets/requests",
+        json=_sentiment_dataset_request_payload(sentiment_dataset_name),
+    )
+    assert sentiment_response.status_code == 200
+    sentiment_job = _wait_for_job(client, sentiment_response.json()["job_id"], timeout_seconds=120.0)
+    assert sentiment_job["status"] == "success"
+    sentiment_dataset_id = sentiment_job["result"]["dataset_id"]
+
+    market_run_id = f"platform-compat-market-{suffix}"
+    nlp_run_id = f"platform-compat-nlp-{suffix}"
+    _materialize_stub_run(
+        app,
+        run_id=market_run_id,
+        dataset_id="baseline_real_benchmark_dataset",
+        feature_names=[
+            "lag_return_1",
+            "lag_return_2",
+            "momentum_3",
+            "realized_vol_3",
+            "close_to_open",
+            "range_frac",
+            "volume_zscore",
+            "volume_ratio_3",
+        ],
+    )
+    _materialize_stub_run(
+        app,
+        run_id=nlp_run_id,
+        dataset_id=sentiment_dataset_id,
+        feature_names=[
+            "news_event_count",
+            "text_reddit_attention_zscore_24h",
+            "text_reddit_body_len_mean_1h",
+            "text_reddit_comment_count_1h",
+            "text_reddit_controversiality_ratio_1h",
+            "text_reddit_core_subreddit_ratio_1h",
+            "text_reddit_negative_ratio_1h",
+            "text_reddit_positive_ratio_1h",
+            "text_reddit_score_mean_1h",
+            "text_reddit_score_sum_1h",
+            "text_reddit_sentiment_mean_1h",
+            "text_reddit_sentiment_std_1h",
+            "text_reddit_unique_author_count_1h",
+            "sentiment_score",
+        ],
+    )
+
+    composition_response = client.post(
+        "/api/launch/model-composition",
+        json={
+            "source_run_ids": [market_run_id, nlp_run_id],
+            "composition_name": "blocked_multimodal_contract",
+            "fusion_strategy": "late_score_blend",
+            "weights": {
+                market_run_id: 0.6,
+                nlp_run_id: 0.4,
+            },
+        },
+    )
+    assert composition_response.status_code == 200
+    composition_job = _wait_for_job(client, composition_response.json()["job_id"], timeout_seconds=120.0)
+    assert composition_job["status"] == "failed"
+    assert "modality 'nlp' is not quality-ready" in (composition_job["error_message"] or "")
 
 
 def test_model_composition_marks_official_eligible_runs_for_preflight() -> None:
@@ -2625,6 +3151,135 @@ def test_model_composition_marks_official_eligible_runs_for_preflight() -> None:
     preflight_payload = preflight_response.json()
     assert preflight_payload["compatible"] is True
     assert preflight_payload["blocking_reasons"] == []
+
+
+def test_model_composition_allows_auxiliary_only_official_multimodal_sources() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+
+    composed_run_id = _launch_official_auxiliary_only_composed_run(
+        app,
+        client,
+        suffix=suffix,
+    )
+
+    run_detail_response = client.get(f"/api/runs/{composed_run_id}")
+    assert run_detail_response.status_code == 200
+    run_detail_payload = run_detail_response.json()
+    assert run_detail_payload["official_template_eligible"] is True
+    assert run_detail_payload["official_blocking_reasons"] == []
+    assert run_detail_payload["dataset_ids"] == ["official_reddit_pullpush_multimodal_v2_fusion"]
+
+    preflight_response = client.post(
+        "/api/launch/backtest/preflight",
+        json={
+            "run_id": composed_run_id,
+            "mode": "official",
+            "template_id": "system::official_backtest_protocol_v1",
+            "official_window_days": 30,
+        },
+    )
+    assert preflight_response.status_code == 200
+    preflight_payload = preflight_response.json()
+    assert preflight_payload["compatible"] is True
+    assert preflight_payload["blocking_reasons"] == []
+    assert preflight_payload["required_modalities"] == ["macro", "on_chain", "derivatives"]
+    assert preflight_payload["requires_text_features"] is False
+    assert preflight_payload["requires_auxiliary_features"] is True
+    assert preflight_payload["requires_multimodal_benchmark"] is True
+    assert preflight_payload["official_market_dataset_id"] == "baseline_real_benchmark_dataset"
+    assert (
+        preflight_payload["official_multimodal_dataset_id"]
+        == "official_reddit_pullpush_multimodal_v2_fusion"
+    )
+    assert preflight_payload["official_dataset_ids"] == [
+        "baseline_real_benchmark_dataset",
+        "official_reddit_pullpush_multimodal_v2_fusion",
+    ]
+
+
+def test_official_backtest_runs_for_auxiliary_only_composed_run() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+
+    composed_run_id = _launch_official_auxiliary_only_composed_run(
+        app,
+        client,
+        suffix=suffix,
+    )
+
+    preflight_response = client.post(
+        "/api/launch/backtest/preflight",
+        json={
+            "run_id": composed_run_id,
+            "mode": "official",
+            "template_id": "system::official_backtest_protocol_v1",
+            "official_window_days": 30,
+        },
+    )
+    assert preflight_response.status_code == 200
+    assert preflight_response.json()["compatible"] is True
+
+    launch_response = client.post(
+        "/api/launch/backtest",
+        json={
+            "run_id": composed_run_id,
+            "mode": "official",
+            "official_window_days": 30,
+            "strategy_preset": "sign",
+            "portfolio_preset": "research_default",
+            "cost_preset": "standard",
+        },
+    )
+    assert launch_response.status_code == 200
+    launch_job = _wait_for_job(client, launch_response.json()["job_id"], timeout_seconds=300.0)
+    assert launch_job["status"] == "success"
+    assert launch_job["result"]["dataset_id"] == "baseline_real_benchmark_dataset"
+    assert len(launch_job["result"]["dataset_ids"]) == 3
+
+    backtest_id = launch_job["result"]["backtest_ids"][0]
+    backtest_detail_response = client.get(f"/api/backtests/{backtest_id}")
+    assert backtest_detail_response.status_code == 200
+    backtest_detail_payload = backtest_detail_response.json()
+    assert backtest_detail_payload["run_id"] == composed_run_id
+    assert backtest_detail_payload["dataset_id"].endswith("__market_anchor_official_30d")
+    assert len(backtest_detail_payload["dataset_ids"]) == 5
+    assert "baseline_real_benchmark_dataset" in backtest_detail_payload["dataset_ids"]
+    assert any(dataset_id.endswith("__market_anchor_official_30d") for dataset_id in backtest_detail_payload["dataset_ids"])
+    assert backtest_detail_payload["protocol"]["required_modalities"] == [
+        "macro",
+        "on_chain",
+        "derivatives",
+    ]
+    assert backtest_detail_payload["protocol"]["official_dataset_ids"] == [
+        "baseline_real_benchmark_dataset",
+        "official_reddit_pullpush_multimodal_v2_fusion",
+    ]
+    assert (
+        backtest_detail_payload["protocol"]["official_market_dataset_id"]
+        == "baseline_real_benchmark_dataset"
+    )
+    assert (
+        backtest_detail_payload["protocol"]["official_multimodal_dataset_id"]
+        == "official_reddit_pullpush_multimodal_v2_fusion"
+    )
+    assert "market" not in backtest_detail_payload["protocol"]["required_modalities"]
+    gate_results = {
+        item["key"]: item for item in backtest_detail_payload["protocol"]["gate_results"]
+    }
+    assert gate_results["metadata_complete"]["passed"] is True
+    assert gate_results["stress_bundle_complete"]["passed"] is True
+    assert backtest_detail_payload["protocol"]["missing_stress_scenarios"] == []
+    assert backtest_detail_payload["execution_diagnostics_summary"]["signal_count"] > 0
+    assert backtest_detail_payload["execution_diagnostics_summary"]["order_count"] == 0
+    assert backtest_detail_payload["execution_diagnostics_summary"]["fill_count"] == 0
+    assert backtest_detail_payload["execution_diagnostics_summary"]["blocked_order_count"] > 0
+    assert any(
+        "zero target value" in reason or "neutral" in reason
+        for reason in backtest_detail_payload["execution_diagnostics_summary"]["block_reasons"]
+    )
 
 
 def test_dataset_fusion_surfaces_connector_errors_as_explicit_400() -> None:
@@ -3085,6 +3740,127 @@ def test_launch_train_supports_fusion_dataset_and_persists_fusion_manifest_metad
     assert manifest_payload["dataset_readiness_status"] in {"ready", "warning"}
     assert manifest_payload["source_dataset_ids"] == [base_dataset_id]
     assert set(manifest_payload["fusion_domains"]) >= {"market", "macro", "on_chain"}
+
+
+def test_fusion_dataset_keeps_panel_freshness_even_when_low_frequency_sources_are_older() -> None:
+    app = create_app()
+    client = TestClient(app)
+    base_dataset_id = f"freshness_base_{int(time.time() * 1000)}"
+    fusion_request_name = f"{base_dataset_id}_fusion"
+    start_time = datetime(2024, 1, 1, tzinfo=UTC)
+    end_time = datetime(2024, 1, 5, tzinfo=UTC)
+
+    def fake_fetch_series_points(*, data_domain, vendor, identifier, frequency, **_kwargs):
+        if data_domain == "macro":
+            return (
+                [
+                    _series_point(
+                        event_time=start_time + timedelta(days=offset),
+                        identifier=identifier,
+                        data_domain=data_domain,
+                        vendor=vendor,
+                        frequency=frequency,
+                        value=300.0 + offset,
+                    )
+                    for offset in range(4)
+                ],
+                "live_fetch",
+            )
+        if data_domain == "on_chain":
+            return (
+                [
+                    _series_point(
+                        event_time=start_time + timedelta(hours=offset),
+                        identifier=identifier,
+                        data_domain=data_domain,
+                        vendor=vendor,
+                        frequency=frequency,
+                        value=1_000_000.0 + offset,
+                    )
+                    for offset in range(int((end_time - start_time).total_seconds() // 3600) + 1)
+                ],
+                "live_fetch",
+            )
+        raise AssertionError(f"Unexpected fusion source request: {data_domain}/{vendor}/{identifier}")
+
+    app.state.services.workbench.facade.runtime.ingestion_service.fetch_series_points = fake_fetch_series_points
+
+    base_request_response = client.post(
+        "/api/datasets/requests",
+        json={
+            "request_name": base_dataset_id,
+            "data_domain": "market",
+            "asset_mode": "single_asset",
+            "time_window": {
+                "start_time": "2024-01-01T00:00:00Z",
+                "end_time": "2024-01-05T00:00:00Z",
+            },
+            "symbol_selector": {
+                "symbol_type": "spot",
+                "selection_mode": "explicit",
+                "symbols": ["BTCUSDT"],
+                "symbol_count": 1,
+                "tags": [],
+            },
+            "source_vendor": "internal_smoke",
+            "exchange": "binance",
+            "frequency": "1h",
+            "filters": {},
+            "build_config": {
+                "feature_set_id": "baseline_market_features",
+                "label_horizon": 1,
+                "label_kind": "regression",
+                "split_strategy": "time_series",
+                "sample_policy": {},
+                "alignment_policy": {},
+                "missing_feature_policy": {},
+            },
+        },
+    )
+    assert base_request_response.status_code == 200
+    base_request_job = _wait_for_job(client, base_request_response.json()["job_id"])
+    assert base_request_job["status"] == "success"
+
+    fusion_response = client.post(
+        "/api/datasets/fusions",
+        json={
+            "request_name": fusion_request_name,
+            "base_dataset_id": base_dataset_id,
+            "dataset_type": "fusion_training_panel",
+            "sample_policy_name": "fusion_training_panel_strict",
+            "alignment_policy_name": "available_time_safe_asof",
+            "missing_feature_policy_name": "drop_if_missing",
+            "sample_policy": {},
+            "alignment_policy": {},
+            "missing_feature_policy": {
+                "min_feature_coverage_ratio": 0.5,
+            },
+            "sources": [
+                {
+                    "data_domain": "macro",
+                    "vendor": "fred",
+                    "identifier": "DFF",
+                    "frequency": "1d",
+                    "metric_name": "value",
+                    "feature_name": "macro_dff_value",
+                    "options": {},
+                },
+                {
+                    "data_domain": "on_chain",
+                    "vendor": "defillama",
+                    "identifier": "ethereum",
+                    "frequency": "1h",
+                    "metric_name": "value",
+                    "feature_name": "on_chain_ethereum_tvl",
+                    "options": {},
+                },
+            ],
+        },
+    )
+    assert fusion_response.status_code == 200
+    fusion_payload = fusion_response.json()
+    assert fusion_payload["readiness"]["freshness_status"] == "fresh"
+    assert "freshness_outdated" not in fusion_payload["readiness"]["warnings"]
 
 
 def test_dataset_pipeline_base_only_runs_request_stages_in_one_job() -> None:

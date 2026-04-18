@@ -20,6 +20,8 @@ PROMOTION_SCENARIO_NAMES = (
     "LATENCY_SHOCK",
     "LIQUIDITY_DROUGHT",
     "LONG_ONLY_FALLBACK",
+    "STALE_SIGNAL",
+    "BROKEN_DATA_GUARD",
 )
 
 
@@ -113,6 +115,9 @@ def build_backtest_summary_row(
         "cost_x5_return_delta": simulation_metrics["cost_x5_return_delta"],
         "latency_shock_return_delta": simulation_metrics["latency_shock_return_delta"],
         "liquidity_drought_return_delta": simulation_metrics["liquidity_drought_return_delta"],
+        "long_only_fallback_return_delta": simulation_metrics["long_only_fallback_return_delta"],
+        "stale_signal_return_delta": simulation_metrics["stale_signal_return_delta"],
+        "broken_data_guard_return_delta": simulation_metrics["broken_data_guard_return_delta"],
         "worst_scenario_return_delta": simulation_metrics["worst_scenario_return_delta"],
         "stress_fail_count": simulation_metrics["stress_fail_count"],
     }
@@ -222,6 +227,8 @@ def load_protocol_metrics(
         "latency_shock_return_delta": selected.get("LATENCY_SHOCK", 0.0),
         "liquidity_drought_return_delta": selected.get("LIQUIDITY_DROUGHT", 0.0),
         "long_only_fallback_return_delta": selected.get("LONG_ONLY_FALLBACK", 0.0),
+        "stale_signal_return_delta": selected.get("STALE_SIGNAL", 0.0),
+        "broken_data_guard_return_delta": selected.get("BROKEN_DATA_GUARD", 0.0),
         "worst_scenario_return_delta": worst_scenario,
         "stress_fail_count": float(scenario_fail_count),
     }

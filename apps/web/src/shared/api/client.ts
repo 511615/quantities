@@ -23,6 +23,7 @@ import type {
   JobStatusView,
   LaunchBacktestRequest,
   LaunchBacktestPreflightRequest,
+  LaunchDatasetMultimodalTrainRequest,
   LaunchJobResponse,
   LaunchModelCompositionRequest,
   LaunchTrainRequest,
@@ -33,6 +34,7 @@ import type {
   ModelComparisonView,
   OhlcvBarsResponse,
   RunDetailView,
+  TrainedModelDetailView,
   TrainingDatasetListResponse,
   TrainingDatasetSummaryView,
   TrainLaunchOptionsView,
@@ -246,6 +248,11 @@ export const api = {
       method: "DELETE",
     });
   },
+  deleteTrainedModel(runId: string) {
+    return request<TrainedModelDetailView>(`/api/models/trained/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+    });
+  },
   backtestOptions() {
     return request<BacktestLaunchOptionsView>("/api/launch/backtest/options");
   },
@@ -257,6 +264,12 @@ export const api = {
   },
   launchTrain(body: LaunchTrainRequest) {
     return request<LaunchJobResponse>("/api/launch/train", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  launchDatasetMultimodalTrain(body: LaunchDatasetMultimodalTrainRequest) {
+    return request<LaunchJobResponse>("/api/launch/dataset-multimodal-train", {
       method: "POST",
       body: JSON.stringify(body),
     });

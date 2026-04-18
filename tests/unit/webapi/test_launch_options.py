@@ -7,6 +7,11 @@ from quant_platform.webapi.repositories.artifacts import ArtifactRepository
 from quant_platform.webapi.repositories.dataset_registry import DatasetRegistryRepository
 from quant_platform.webapi.schemas.launch import LaunchBacktestRequest
 from quant_platform.webapi.schemas.views import JobResultView
+from quant_platform.webapi.services.backtest_protocol import (
+    DEFAULT_BACKTEST_MAX_POSITION_WEIGHT,
+    DEFAULT_BACKTEST_MAX_TURNOVER_PER_REBALANCE,
+    build_official_backtest_request,
+)
 from quant_platform.webapi.services.catalog import ResearchWorkbenchService
 from quant_platform.webapi.services.jobs import JobService
 
@@ -79,3 +84,43 @@ def test_backtest_job_result_and_catalog_metadata_carry_backend_choices(tmp_path
     assert result.portfolio_method == "skfolio_mean_risk"
     assert metadata["research_backend"] == "vectorbt"
     assert metadata["portfolio_method"] == "skfolio_mean_risk"
+
+
+def test_official_backtest_request_uses_conservative_position_and_turnover_defaults() -> None:
+    request = build_official_backtest_request(
+        prediction_frame_uri="memory://predictions/frame.json",
+        benchmark_symbol="BTCUSDT",
+    )
+
+    assert request.portfolio_config.max_position_weight == DEFAULT_BACKTEST_MAX_POSITION_WEIGHT
+    assert (
+        request.portfolio_config.max_turnover_per_rebalance
+        == DEFAULT_BACKTEST_MAX_TURNOVER_PER_REBALANCE
+    )
+
+
+def test_dynamic_composition_weights_shrink_toward_equal_weight(tmp_path: Path) -> None:
+    _workbench, jobs = _build_services(tmp_path)
+
+    weighted = jobs._apply_dynamic_composition_weights(  # noqa: SLF001
+        [
+            {
+                "run_id": "market-run",
+                "weight": 1.0,
+                "combination_quality": {"valid_mae": 0.01, "sign_hit_rate": 0.56},
+            },
+            {
+                "run_id": "macro-run",
+                "weight": 1.0,
+                "combination_quality": {"valid_mae": 0.20, "sign_hit_rate": 0.50},
+            },
+        ]
+    )
+
+    market = next(item for item in weighted if item["run_id"] == "market-run")
+    macro = next(item for item in weighted if item["run_id"] == "macro-run")
+
+    assert market["weight"] > macro["weight"]
+    assert market["weight"] < 1.0
+    assert macro["weight"] > 0.0
+    assert market["weight_source"] == "dynamic_valid_mae_shrinkage"

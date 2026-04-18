@@ -32,6 +32,20 @@ export type WarningSummaryView = {
   items: string[];
 };
 
+export type ModalityQualityView = {
+  modality: string;
+  status: string;
+  blocking_reasons: string[];
+  usable_count?: number | null;
+  coverage_ratio?: number | null;
+  duplicate_ratio?: number | null;
+  max_gap_bars?: number | null;
+  freshness_lag_days?: number | null;
+  non_null_coverage_ratio?: number | null;
+  required_feature_names?: string[];
+  observed_feature_names?: string[];
+};
+
 export type PredictionArtifactView = {
   scope: string;
   sample_count: number;
@@ -77,6 +91,9 @@ export type ExperimentListItem = {
   prediction_scopes: string[];
   official_template_eligible?: boolean | null;
   official_blocking_reasons?: string[];
+  feature_scope_modality?: string | null;
+  feature_scope_feature_names?: string[];
+  source_dataset_quality_status?: string | null;
   tags: Record<string, string>;
 };
 
@@ -131,6 +148,9 @@ export type RunDetailView = {
   notes: string[];
   official_template_eligible?: boolean | null;
   official_blocking_reasons?: string[];
+  feature_scope_modality?: string | null;
+  feature_scope_feature_names?: string[];
+  source_dataset_quality_status?: string | null;
   review_summary: ReviewSummaryView | null;
   warning_summary: WarningSummaryView | null;
   glossary_hints: GlossaryHintView[];
@@ -186,15 +206,38 @@ export type RankComponentView = {
   detail: string | null;
 };
 
+export type ProtocolGateFailureView = {
+  key: string;
+  label: string;
+  label_key?: string | null;
+  severity: string;
+  reasons: string[];
+  reason_keys?: string[];
+};
+
+export type BacktestExecutionDiagnosticsSummaryView = {
+  signal_count?: number | null;
+  order_count?: number | null;
+  eligible_order_count?: number | null;
+  blocked_order_count?: number | null;
+  fill_count?: number | null;
+  position_open_count?: number | null;
+  block_reasons: string[];
+};
+
 export type BacktestProtocolResultView = {
   template: BacktestTemplateView | null;
   gate_status: string | null;
   gate_results: GateResultView[];
+  protocol_gate_failures?: ProtocolGateFailureView[];
   rank_components: RankComponentView[];
   slice_id: string | null;
   slice_coverage: string[];
   lookback_bucket: string | null;
   metadata_summary: Record<string, string | null>;
+  missing_required_metadata_keys?: string[];
+  missing_required_metadata_labels?: string[];
+  missing_stress_scenarios?: string[];
   required_modalities?: string[];
   official_dataset_ids?: string[];
   actual_market_start_time?: string | null;
@@ -206,6 +249,8 @@ export type BacktestProtocolResultView = {
   nlp_gate_status?: string | null;
   nlp_gate_reasons?: string[];
   nlp_gate_reason_keys?: string[];
+  modality_quality_summary?: Record<string, ModalityQualityView>;
+  quality_blocking_reasons?: string[];
   official_benchmark_version?: string | null;
   official_window_days?: number | null;
   official_window_start_time?: string | null;
@@ -309,12 +354,15 @@ export type BacktestReportView = {
   research_backend?: string | null;
   portfolio_method?: string | null;
   protocol?: BacktestProtocolResultView | null;
+  modality_quality_summary?: Record<string, ModalityQualityView>;
+  quality_blocking_reasons?: string[];
   passed_consistency_checks: boolean | null;
   comparison_warnings: string[];
   divergence_metrics: Record<string, number>;
   scenario_metrics: Record<string, number>;
   research: BacktestEngineView | null;
   simulation: BacktestEngineView | null;
+  execution_diagnostics_summary?: BacktestExecutionDiagnosticsSummaryView | null;
   artifacts: ArtifactView[];
   review_summary: ReviewSummaryView | null;
   warning_summary: WarningSummaryView | null;
@@ -326,6 +374,18 @@ export type BacktestDeleteResponse = {
   status: string;
   message: string;
   deleted_files: string[];
+};
+
+export type TrainedModelDetailView = {
+  run_id: string;
+  model_name: string;
+  family?: string | null;
+  dataset_id?: string | null;
+  created_at?: string | null;
+  status: string;
+  metrics: Record<string, number>;
+  note?: string | null;
+  is_deleted: boolean;
 };
 
 export type BenchmarkSelection = {
@@ -438,6 +498,7 @@ export type LaunchTrainRequest = {
   template_overrides?: Record<string, unknown>;
   model_names?: string[];
   trainer_preset?: "fast";
+  feature_scope_modality?: "market" | "macro" | "on_chain" | "derivatives" | "nlp";
   seed: number;
   experiment_name: string;
   run_id_prefix?: string;
@@ -447,6 +508,19 @@ export type LaunchModelCompositionRequest = {
   source_run_ids: string[];
   composition_name: string;
   dataset_ids?: string[];
+};
+
+export type LaunchDatasetMultimodalTrainRequest = {
+  dataset_id: string;
+  selected_modalities: Array<"market" | "macro" | "on_chain" | "derivatives" | "nlp">;
+  template_by_modality: Partial<Record<"market" | "macro" | "on_chain" | "derivatives" | "nlp", string>>;
+  trainer_preset?: "fast";
+  experiment_name_prefix: string;
+  seed: number;
+  fusion_strategy?: "late_score_blend";
+  composition_name?: string | null;
+  auto_launch_official_backtest?: boolean;
+  official_window_days?: 30 | 90 | 180 | 365 | null;
 };
 
 export type LaunchBacktestRequest = {
@@ -493,6 +567,7 @@ export type TrainLaunchOptionsView = {
   model_options: PresetOptionView[];
   template_options: PresetOptionView[];
   trainer_presets: PresetOptionView[];
+  feature_scope_modalities?: PresetOptionView[];
   default_seed: number;
   constraints: Record<string, unknown>;
 };
@@ -537,6 +612,11 @@ export type BacktestLaunchPreflightView = {
   missing_official_feature_names: string[];
   blocking_reasons: string[];
   blocking_reason_codes?: string[];
+  modality_quality_summary?: Record<string, ModalityQualityView>;
+  quality_blocking_reasons?: string[];
+  missing_required_metadata_keys?: string[];
+  missing_required_metadata_labels?: string[];
+  missing_stress_scenarios?: string[];
   nlp_gate_status?: string | null;
   nlp_gate_reasons: string[];
   nlp_gate_reason_codes?: string[];
@@ -861,6 +941,8 @@ export type DatasetReadinessSummaryView = {
   official_template_eligible?: boolean | null;
   official_nlp_gate_status?: string | null;
   official_nlp_gate_reasons?: string[];
+  modality_quality_summary?: Record<string, ModalityQualityView>;
+  aligned_multimodal_quality?: ModalityQualityView | null;
   archival_nlp_source_only?: boolean | null;
   nlp_requested_start_time?: string | null;
   nlp_requested_end_time?: string | null;

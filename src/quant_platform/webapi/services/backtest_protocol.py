@@ -24,6 +24,8 @@ from quant_platform.webapi.schemas.views import (
     BacktestProtocolResultView,
     BacktestTemplateView,
     GateResultView,
+    ModalityQualityView,
+    ProtocolGateFailureView,
     RankComponentView,
 )
 
@@ -44,6 +46,10 @@ OFFICIAL_SCENARIO_BUNDLE = (
     "STALE_SIGNAL",
     "BROKEN_DATA_GUARD",
 )
+OPTIONAL_REQUIRED_METADATA_KEYS = {
+    "actual_nlp_coverage_window",
+    "official_multimodal_benchmark_dataset_id",
+}
 OFFICIAL_NLP_MIN_TEST_COVERAGE_RATIO = 0.60
 OFFICIAL_NLP_MAX_TEST_EMPTY_BARS = 168
 OFFICIAL_NLP_MAX_DUPLICATE_RATIO = 0.05
@@ -53,6 +59,8 @@ OFFICIAL_NLP_ARCHIVAL_VENDORS = (
     "reddit_archive",
     "gdelt",
 )
+DEFAULT_BACKTEST_MAX_POSITION_WEIGHT = 0.25
+DEFAULT_BACKTEST_MAX_TURNOVER_PER_REBALANCE = 0.05
 
 CUSTOM_TEMPLATE_REQUIREMENTS = (
     ("custom_any_compatible_run", "Any compatible run can be launched in custom mode."),
@@ -207,7 +215,8 @@ def build_official_backtest_request(
         portfolio_config=PortfolioConfig(
             initial_cash=100000.0,
             max_gross_leverage=1.0,
-            max_position_weight=1.0,
+            max_position_weight=DEFAULT_BACKTEST_MAX_POSITION_WEIGHT,
+            max_turnover_per_rebalance=DEFAULT_BACKTEST_MAX_TURNOVER_PER_REBALANCE,
         ),
         cost_model=CostModel(fee_bps=5.0, slippage_bps=2.0),
         benchmark_spec=BenchmarkSpec(name="buy_and_hold", symbol=benchmark_symbol),
@@ -236,7 +245,8 @@ def build_custom_backtest_request(
         portfolio_config=PortfolioConfig(
             initial_cash=100000.0,
             max_gross_leverage=1.0,
-            max_position_weight=1.0,
+            max_position_weight=DEFAULT_BACKTEST_MAX_POSITION_WEIGHT,
+            max_turnover_per_rebalance=DEFAULT_BACKTEST_MAX_TURNOVER_PER_REBALANCE,
         ),
         cost_model=CostModel(fee_bps=5.0, slippage_bps=2.0),
         benchmark_spec=BenchmarkSpec(name="buy_and_hold", symbol=benchmark_symbol),
@@ -289,7 +299,7 @@ def build_protocol_metadata(
         ]
     )
     slice_coverage = [part for part in slice_candidates if part]
-    return {
+    protocol_metadata = {
         "template_id": template.template_id,
         "template_name": template.name,
         "official": template.official,
@@ -306,7 +316,16 @@ def build_protocol_metadata(
         "required_metadata_keys": list(template.required_metadata_keys),
         "notes": list(template.notes),
         "note_keys": list(template.note_keys),
-        "metadata_summary": metadata_summary,
+        "metadata_summary": _normalized_protocol_metadata_summary(
+            metadata_summary=metadata_summary,
+            required_modalities=list(required_modalities or []),
+            official_benchmark_version=official_benchmark_version,
+            official_window_days=official_window_days,
+            official_window_start_time=official_window_start_time,
+            official_window_end_time=official_window_end_time,
+            official_market_dataset_id=official_market_dataset_id,
+            official_multimodal_dataset_id=official_multimodal_dataset_id,
+        ),
         "required_modalities": list(required_modalities or []),
         "lookback_bucket": lookback_bucket,
         "slice_coverage": slice_coverage,
@@ -319,6 +338,7 @@ def build_protocol_metadata(
         "official_dataset_ids": list(official_dataset_ids or []),
         "slice_id": stable_digest({"template_id": template.template_id, "slice": slice_coverage}),
     }
+    return protocol_metadata
 
 
 def compute_protocol_result(
@@ -352,13 +372,36 @@ def compute_protocol_result(
         notes=_str_list(protocol_metadata.get("notes")),
         note_keys=_str_list(protocol_metadata.get("note_keys")),
     )
-    metadata_summary = {
-        str(key): (_str(value) if value is not None else None)
-        for key, value in dict(protocol_metadata.get("metadata_summary") or {}).items()
+    metadata_summary = _metadata_summary_from_protocol(protocol_metadata, template)
+    modality_quality_summary = {
+        str(key): (
+            value
+            if isinstance(value, ModalityQualityView)
+            else ModalityQualityView.model_validate(value)
+        )
+        for key, value in dict(protocol_metadata.get("modality_quality_summary") or {}).items()
+        if isinstance(key, str) and value is not None
     }
-    metadata_complete = all(metadata_summary.get(key) for key in metadata_summary)
+    quality_blocking_reasons = _str_list(protocol_metadata.get("quality_blocking_reasons"))
+    missing_required_metadata_keys, missing_required_metadata_labels = _missing_required_metadata(
+        template=template,
+        protocol_metadata=protocol_metadata,
+        metadata_summary=metadata_summary,
+    )
+    metadata_complete = len(missing_required_metadata_keys) == 0
+    missing_stress_scenarios = _stress_bundle_missing_scenarios(protocol_metadata, scenario_metrics)
     nlp_gate_status = _str(protocol_metadata.get("nlp_gate_status"))
     nlp_gate_reasons = _str_list(protocol_metadata.get("nlp_gate_reasons"))
+    metadata_detail = (
+        "Missing required disclosure fields: " + ", ".join(missing_required_metadata_labels)
+        if missing_required_metadata_labels
+        else "Official comparison requires the training and backtest disclosure fields to be populated."
+    )
+    stress_bundle_detail = (
+        "Missing official scenario deltas: " + ", ".join(missing_stress_scenarios)
+        if missing_stress_scenarios
+        else "Official comparison requires the fixed stress bundle to be present."
+    )
     gate_results = [
         GateResultView(
             key="metadata_complete",
@@ -366,7 +409,7 @@ def compute_protocol_result(
             label_key="metadata_complete",
             passed=metadata_complete,
             severity="warning",
-            detail="Official comparison requires the training and backtest disclosure fields to be populated.",
+            detail=metadata_detail,
             detail_key="training_and_backtest_disclosure_required",
         ),
         GateResultView(
@@ -382,9 +425,9 @@ def compute_protocol_result(
             key="stress_bundle_complete",
             label="Stress Bundle Complete",
             label_key="stress_bundle_complete",
-            passed=_stress_bundle_complete(protocol_metadata, scenario_metrics),
+            passed=not missing_stress_scenarios,
             severity="error",
-            detail="Official comparison requires the fixed stress bundle to be present.",
+            detail=stress_bundle_detail,
             detail_key="fixed_stress_bundle_required",
         ),
         GateResultView(
@@ -421,6 +464,18 @@ def compute_protocol_result(
     has_error_failure = any(item.passed is False and item.severity == "error" for item in gate_results)
     has_warning = bool(comparison_warnings) or any(item.passed is False for item in gate_results)
     gate_status = "failed" if has_error_failure else ("warning" if has_warning else "passed")
+    protocol_gate_failures = [
+        ProtocolGateFailureView(
+            key=item.key,
+            label=item.label,
+            label_key=item.label_key,
+            severity=item.severity,
+            reasons=[item.detail] if item.detail else [],
+            reason_keys=[item.detail_key] if item.detail_key else [],
+        )
+        for item in gate_results
+        if item.passed is False
+    ]
     rank_components = [
         RankComponentView(
             key="annual_return",
@@ -463,11 +518,15 @@ def compute_protocol_result(
         template=template,
         gate_status=gate_status,
         gate_results=gate_results,
+        protocol_gate_failures=protocol_gate_failures,
         rank_components=rank_components,
         slice_id=_str(protocol_metadata.get("slice_id")),
         slice_coverage=_str_list(protocol_metadata.get("slice_coverage")),
         lookback_bucket=_str(protocol_metadata.get("lookback_bucket")),
         metadata_summary=metadata_summary,
+        missing_required_metadata_keys=missing_required_metadata_keys,
+        missing_required_metadata_labels=missing_required_metadata_labels,
+        missing_stress_scenarios=missing_stress_scenarios,
         required_modalities=_str_list(protocol_metadata.get("required_modalities")),
         official_dataset_ids=_str_list(protocol_metadata.get("official_dataset_ids")),
         actual_market_start_time=_dt(protocol_metadata.get("actual_market_start_time")),
@@ -481,6 +540,8 @@ def compute_protocol_result(
         nlp_gate_reason_keys=[
             key for item in nlp_gate_reasons if (key := _nlp_gate_reason_key(item)) is not None
         ],
+        modality_quality_summary=modality_quality_summary,
+        quality_blocking_reasons=quality_blocking_reasons,
         official_benchmark_version=_str(protocol_metadata.get("official_benchmark_version")),
         official_window_days=_int(protocol_metadata.get("official_window_days")),
         official_window_start_time=_dt(protocol_metadata.get("official_window_start_time")),
@@ -502,6 +563,13 @@ def derive_lookback_bucket(start_time: datetime | None, end_time: datetime | Non
 
 
 def _stress_bundle_complete(protocol_metadata: dict[str, Any], scenario_metrics: dict[str, float]) -> bool:
+    return len(_stress_bundle_missing_scenarios(protocol_metadata, scenario_metrics)) == 0
+
+
+def _stress_bundle_missing_scenarios(
+    protocol_metadata: dict[str, Any],
+    scenario_metrics: dict[str, float],
+) -> list[str]:
     required = {
         name for name in _str_list(protocol_metadata.get("scenario_bundle")) if name != "BASELINE"
     }
@@ -511,14 +579,17 @@ def _stress_bundle_complete(protocol_metadata: dict[str, Any], scenario_metrics:
         "LATENCY_SHOCK": "latency_shock_return_delta",
         "LIQUIDITY_DROUGHT": "liquidity_drought_return_delta",
         "LONG_ONLY_FALLBACK": "long_only_fallback_return_delta",
+        "STALE_SIGNAL": "stale_signal_return_delta",
+        "BROKEN_DATA_GUARD": "broken_data_guard_return_delta",
     }
+    missing: list[str] = []
     for scenario_name in required:
         metric_name = available_map.get(scenario_name)
         if metric_name is None:
             continue
         if metric_name not in scenario_metrics:
-            return False
-    return True
+            missing.append(scenario_name)
+    return missing
 
 
 def _risk_limits_passed(
@@ -578,3 +649,117 @@ def _str_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if isinstance(item, (int, float, str))]
+
+
+def _normalized_protocol_metadata_summary(
+    *,
+    metadata_summary: dict[str, str | None],
+    required_modalities: list[str],
+    official_benchmark_version: str | None,
+    official_window_days: int | None,
+    official_window_start_time: str | None,
+    official_window_end_time: str | None,
+    official_market_dataset_id: str | None,
+    official_multimodal_dataset_id: str | None,
+) -> dict[str, str | None]:
+    raw = {str(key): (_str(value) if value is not None else None) for key, value in metadata_summary.items()}
+    has_auxiliary_modalities = any(modality != "market" for modality in required_modalities)
+    includes_nlp = "nlp" in required_modalities
+    return {
+        "train_dataset_window": raw.get("train_dataset_window")
+        or _join_window(raw.get("train_start_time"), raw.get("train_end_time")),
+        "lookback_window": raw.get("lookback_window"),
+        "label_horizon": raw.get("label_horizon"),
+        "modalities_and_fusion_summary": raw.get("modalities_and_fusion_summary")
+        or _join_summary([raw.get("modalities"), raw.get("fusion_summary")]),
+        "random_seed": raw.get("random_seed"),
+        "tuning_trial_count": raw.get("tuning_trial_count") or raw.get("tuning_trials"),
+        "external_pretraining_flag": raw.get("external_pretraining_flag") or raw.get("external_pretraining"),
+        "synthetic_data_flag": raw.get("synthetic_data_flag") or raw.get("synthetic_data"),
+        "actual_market_dataset_window": raw.get("actual_market_dataset_window")
+        or _join_window(raw.get("actual_market_start_time"), raw.get("actual_market_end_time")),
+        "actual_official_backtest_window": raw.get("actual_official_backtest_window")
+        or _join_window(raw.get("actual_backtest_start_time"), raw.get("actual_backtest_end_time")),
+        "actual_nlp_coverage_window": raw.get("actual_nlp_coverage_window")
+        or (
+            _join_summary(
+                [
+                    _join_window(raw.get("actual_nlp_start_time"), raw.get("actual_nlp_end_time")),
+                    raw.get("nlp_gate_status"),
+                ]
+            )
+            if includes_nlp or raw.get("actual_nlp_start_time") or raw.get("actual_nlp_end_time")
+            else "not_required"
+        ),
+        "required_modalities_resolved": raw.get("required_modalities_resolved")
+        or ", ".join(required_modalities),
+        "official_rolling_benchmark_version": raw.get("official_rolling_benchmark_version")
+        or official_benchmark_version,
+        "official_rolling_window_size": raw.get("official_rolling_window_size")
+        or _join_summary(
+            [
+                f"{official_window_days}d" if official_window_days is not None else None,
+                _join_window(official_window_start_time, official_window_end_time),
+            ]
+        ),
+        "official_market_benchmark_dataset_id": raw.get("official_market_benchmark_dataset_id")
+        or official_market_dataset_id,
+        "official_multimodal_benchmark_dataset_id": raw.get("official_multimodal_benchmark_dataset_id")
+        or (official_multimodal_dataset_id if has_auxiliary_modalities else "not_required"),
+    }
+
+
+def _metadata_summary_from_protocol(
+    protocol_metadata: dict[str, Any],
+    template: BacktestTemplateView,
+) -> dict[str, str | None]:
+    raw = dict(protocol_metadata.get("metadata_summary") or {})
+    return _normalized_protocol_metadata_summary(
+        metadata_summary={str(key): (_str(value) if value is not None else None) for key, value in raw.items()},
+        required_modalities=_str_list(protocol_metadata.get("required_modalities")),
+        official_benchmark_version=_str(protocol_metadata.get("official_benchmark_version")),
+        official_window_days=_int(protocol_metadata.get("official_window_days")),
+        official_window_start_time=_str(protocol_metadata.get("official_window_start_time")),
+        official_window_end_time=_str(protocol_metadata.get("official_window_end_time")),
+        official_market_dataset_id=_str(protocol_metadata.get("official_market_dataset_id")),
+        official_multimodal_dataset_id=_str(protocol_metadata.get("official_multimodal_dataset_id")),
+    )
+
+
+def _missing_required_metadata(
+    *,
+    template: BacktestTemplateView,
+    protocol_metadata: dict[str, Any],
+    metadata_summary: dict[str, str | None],
+) -> tuple[list[str], list[str]]:
+    required_modalities = _str_list(protocol_metadata.get("required_modalities"))
+    has_auxiliary_modalities = any(modality != "market" for modality in required_modalities)
+    includes_nlp = "nlp" in required_modalities
+    missing_keys: list[str] = []
+    missing_labels: list[str] = []
+    for key, label in zip(template.required_metadata_keys, template.required_metadata, strict=False):
+        if key in OPTIONAL_REQUIRED_METADATA_KEYS:
+            if key == "actual_nlp_coverage_window" and not includes_nlp:
+                continue
+            if key == "official_multimodal_benchmark_dataset_id" and not has_auxiliary_modalities:
+                continue
+        value = metadata_summary.get(key)
+        if value in {None, ""}:
+            missing_keys.append(key)
+            missing_labels.append(label)
+    return missing_keys, missing_labels
+
+
+def _join_window(start_time: str | None, end_time: str | None) -> str | None:
+    if start_time and end_time:
+        return f"{start_time} -> {end_time}"
+    if start_time:
+        return f"{start_time} -> --"
+    if end_time:
+        return f"-- -> {end_time}"
+    return None
+
+
+def _join_summary(parts: list[str | None]) -> str | None:
+    present = [part for part in parts if part]
+    return " | ".join(present) if present else None

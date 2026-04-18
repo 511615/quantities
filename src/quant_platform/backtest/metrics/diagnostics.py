@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 from quant_platform.backtest.contracts.order import ChildOrder, FillEvent
 from quant_platform.backtest.contracts.portfolio import PortfolioSnapshot
 from quant_platform.backtest.contracts.signal import SignalFrame
@@ -9,6 +11,11 @@ def compute_execution_metrics(
     orders: list[ChildOrder],
     fills: list[FillEvent],
     snapshots: list[PortfolioSnapshot],
+    *,
+    initial_cash: float | None = None,
+    eligible_order_count: int | None = None,
+    blocked_order_count: int | None = None,
+    position_open_count: int | None = None,
 ) -> dict[str, float]:
     filled_orders = {fill.order_id for fill in fills}
     rejected = [order for order in orders if order.status == "REJECTED"]
@@ -21,7 +28,8 @@ def compute_execution_metrics(
         if fills
         else 0.0
     )
-    return {
+    capital_base = float(initial_cash) if initial_cash and initial_cash > 0.0 else 1.0
+    metrics = {
         "order_count": float(len(orders)),
         "fill_count": float(len(fills)),
         "fill_rate": len(filled_orders) / len(orders) if orders else 0.0,
@@ -29,9 +37,16 @@ def compute_execution_metrics(
         "partial_fill_rate": len(partial) / len(orders) if orders else 0.0,
         "average_fee_bps": average_fee_bps,
         "average_slippage_bps": average_slippage_bps,
-        "turnover_total": sum(snapshot.turnover_1d for snapshot in snapshots),
+        "turnover_total": sum(fill.notional for fill in fills) / capital_base,
         "implementation_shortfall": sum(fill.slippage_cost + fill.fee for fill in fills),
     }
+    if eligible_order_count is not None:
+        metrics["eligible_order_count"] = float(eligible_order_count)
+    if blocked_order_count is not None:
+        metrics["blocked_order_count"] = float(blocked_order_count)
+    if position_open_count is not None:
+        metrics["position_open_count"] = float(position_open_count)
+    return metrics
 
 
 def compute_signal_metrics(
@@ -71,3 +86,11 @@ def compute_signal_metrics(
         ),
         "signal_autocorrelation": autocorr,
     }
+
+
+def summarize_block_reasons(reasons: list[str]) -> list[str]:
+    counts = Counter(reason for reason in reasons if reason)
+    return [
+        f"{reason} ({count})" if count > 1 else reason
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]

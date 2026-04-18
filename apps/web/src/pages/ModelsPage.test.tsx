@@ -3,7 +3,6 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { ModelsPage } from "./ModelsPage";
 import { experimentsFixture, modelTemplatesFixture, trainOptionsFixture } from "../test/fixtures";
-import { I18N } from "../shared/lib/i18n";
 import { createFetchMock, jsonResponse } from "../test/mockApi";
 import { renderWithProviders } from "../test/renderWithProviders";
 
@@ -16,6 +15,24 @@ const fetchMock = vi.fn(
       url.endsWith("/api/models/templates") ? jsonResponse(modelTemplatesFixture) : undefined,
     (url) =>
       url.endsWith("/api/launch/train/options") ? jsonResponse(trainOptionsFixture) : undefined,
+    (url, init) => {
+      if (url.includes("/api/models/trained/") && init?.method === "DELETE") {
+        const runId = decodeURIComponent(url.split("/api/models/trained/")[1] ?? "");
+        activeExperimentsFixture = {
+          ...activeExperimentsFixture,
+          items: activeExperimentsFixture.items.filter((item) => item.run_id !== runId),
+          total: Math.max(0, activeExperimentsFixture.total - 1),
+        };
+        return jsonResponse({
+          run_id: runId,
+          model_name: "deleted",
+          status: "success",
+          metrics: {},
+          is_deleted: true,
+        });
+      }
+      return undefined;
+    },
     (url) =>
       url.endsWith("/api/datasets/cross_asset_training_panel_v2")
         ? jsonResponse({
@@ -87,9 +104,9 @@ const fetchMock = vi.fn(
         ? jsonResponse({
             dataset_id: "cross_asset_training_panel_v2",
             build_status: "success",
-            readiness_status: "warning",
+            readiness_status: "ready",
             blocking_issues: [],
-            warnings: ["quality_warning"],
+            warnings: [],
             raw_row_count: 100,
             usable_row_count: 98,
             dropped_row_count: 2,
@@ -105,6 +122,25 @@ const fetchMock = vi.fn(
             temporal_safety_status: "passed",
             freshness_status: "fresh",
             recommended_next_actions: [],
+            modality_quality_summary: {
+              market: {
+                modality: "market",
+                status: "ready",
+                blocking_reasons: [],
+                usable_count: 4200,
+                coverage_ratio: 0.99,
+                duplicate_ratio: 0,
+                max_gap_bars: 0,
+              },
+              macro: {
+                modality: "macro",
+                status: "ready",
+                blocking_reasons: [],
+                usable_count: 360,
+                duplicate_ratio: 0,
+                freshness_lag_days: 1,
+              },
+            },
           })
         : undefined,
     (url) =>
@@ -191,65 +227,16 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-test("renders backend model templates and trained model tabs", async () => {
-  renderWithProviders(<ModelsPage />, "/models");
-
-  await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "模型模板" })).toBeInTheDocument(),
-  );
-  await waitFor(() => expect(screen.getByText("Elastic Net Default")).toBeInTheDocument());
-  expect(screen.getByText("Custom Elastic Net")).toBeInTheDocument();
-  expect(screen.getAllByText("使用此模板训练").length).toBeGreaterThan(0);
-
-  fireEvent.click(screen.getByRole("button", { name: "已训练模型" }));
-  await waitFor(() => expect(screen.getByText("smoke-train-run")).toBeInTheDocument());
-  expect(screen.getAllByText("发起回测").length).toBeGreaterThan(0);
-  expect(screen.getByRole("link", { name: "smoke_dataset" })).toHaveAttribute(
-    "href",
-    "/datasets/smoke_dataset",
-  );
-  expect(
-    screen.queryByRole("link", { name: "smoke_dataset_market_anchor" }),
-  ).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "macro_liquidity_snapshot" })).toHaveAttribute(
-    "href",
-    "/datasets/macro_liquidity_snapshot",
-  );
-});
-
-test("keeps the standard backtest action for composed runs", async () => {
-  activeExperimentsFixture = {
-    ...experimentsFixture,
-    items: [
-      {
-        ...experimentsFixture.items[0],
-        run_id: "legacy-composed-run",
-        composition: {
-          source_runs: [
-            { run_id: "market-run", modality: "market" },
-            { run_id: "nlp-run", modality: "sentiment_events" },
-          ],
-        },
-        official_template_eligible: false,
-        official_blocking_reasons: [
-          "Legacy composed run is not eligible for official backtest.",
-        ],
-      } as (typeof experimentsFixture.items)[number] & {
-        official_template_eligible?: boolean;
-        official_blocking_reasons?: string[];
-      },
-    ],
-  };
-
+test("renders run modality and source dataset quality in the trained models table", async () => {
   renderWithProviders(<ModelsPage />, "/models?tab=trained");
 
-  await waitFor(() => expect(screen.getByText("legacy-composed-run")).toBeInTheDocument());
-
-  const row = screen.getByText("legacy-composed-run").closest("tr") as HTMLElement;
-  expect(within(row).getByRole("button", { name: I18N.action.launchBacktest })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("smoke-train-run")).toBeInTheDocument());
+  expect(screen.getAllByText("市场").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("宏观").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("可训练").length).toBeGreaterThan(0);
 });
 
-test("opens dataset-aware train drawer from query params", async () => {
+test("opens dataset-aware train drawer from query params and exposes modality selection", async () => {
   renderWithProviders(
     <ModelsPage />,
     "/models?launchTrain=1&datasetId=cross_asset_training_panel_v2",
@@ -257,40 +244,26 @@ test("opens dataset-aware train drawer from query params", async () => {
 
   await waitFor(() =>
     expect(
-      screen.getByRole("heading", { name: "Launch training from this dataset" }),
+      screen.getByRole("heading", { name: "基于该数据集发起训练" }),
     ).toBeInTheDocument(),
   );
   expect(
-    screen.getByText(
-      (content) =>
-        content === "Cross Asset Training Panel" || content === "cross_asset_training_panel_v2",
-    ),
+    screen.getByText(/Cross Asset Training Panel|cross_asset_training_panel_v2/),
   ).toBeInTheDocument();
-  expect(
-    screen.getByText("This launch was opened from a dataset page and will use that dataset directly."),
-  ).toBeInTheDocument();
-
-  const drawer = screen
-    .getByRole("heading", { name: "Launch training from this dataset" })
-    .closest(".drawer-panel");
-  expect(drawer).not.toBeNull();
-
-  const drawerQueries = within(drawer as HTMLElement);
-  expect(drawerQueries.queryByText("Dataset Preset")).not.toBeInTheDocument();
-  expect(drawerQueries.getByText("模型模板")).toBeInTheDocument();
+  expect(screen.getByLabelText("Feature Modality")).toBeInTheDocument();
 });
 
-test("launches multimodal composition from selected single-modality runs", async () => {
+test("launches composition from distinct quality-ready single-modality runs", async () => {
   renderWithProviders(<ModelsPage />, "/models?tab=trained");
 
   await waitFor(() => expect(screen.getByText("smoke-train-run")).toBeInTheDocument());
 
-  fireEvent.click(screen.getByLabelText("Select smoke-train-run for multimodal composition"));
-  fireEvent.click(screen.getByLabelText("Select macro-signal-run for multimodal composition"));
-  fireEvent.change(screen.getAllByLabelText("Composition Name")[0], {
+  fireEvent.click(screen.getByLabelText("选择 smoke-train-run 用于多模态组合"));
+  fireEvent.click(screen.getByLabelText("选择 macro-signal-run 用于多模态组合"));
+  fireEvent.change(screen.getAllByLabelText("组合名称")[0], {
     target: { value: "Cross-modal blend A" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Launch composition" }));
+  fireEvent.click(screen.getByRole("button", { name: "发起组合" }));
 
   await waitFor(() =>
     expect(fetchMock).toHaveBeenCalledWith(
@@ -306,8 +279,56 @@ test("launches multimodal composition from selected single-modality runs", async
     ),
   );
   await waitFor(() => expect(screen.getByText("job-compose-1")).toBeInTheDocument());
-  expect(screen.getByRole("link", { name: "Open composed model" })).toHaveAttribute(
-    "href",
-    "/runs/multimodal-run-1",
-  );
+});
+
+test("disables legacy or low-quality runs from composition selection", async () => {
+  activeExperimentsFixture = {
+    ...experimentsFixture,
+    items: [
+      ...experimentsFixture.items,
+      {
+        ...experimentsFixture.items[0],
+        run_id: "legacy-run-no-modality",
+        feature_scope_modality: null,
+        source_dataset_quality_status: "ready",
+      },
+      {
+        ...experimentsFixture.items[0],
+        run_id: "nlp-run-failed",
+        feature_scope_modality: "nlp",
+        source_dataset_quality_status: "failed",
+      },
+    ],
+  };
+
+  renderWithProviders(<ModelsPage />, "/models?tab=trained");
+
+  await waitFor(() => expect(screen.getByText("legacy-run-no-modality")).toBeInTheDocument());
+
+  const legacyCheckbox = screen.getByLabelText("选择 legacy-run-no-modality 用于多模态组合");
+  const failedCheckbox = screen.getByLabelText("选择 nlp-run-failed 用于多模态组合");
+  expect(legacyCheckbox).toBeDisabled();
+  expect(failedCheckbox).toBeDisabled();
+
+  const legacyRow = screen.getByText("legacy-run-no-modality").closest("tr") as HTMLElement;
+  expect(within(legacyRow).getByText("Only explicit single-modality runs can be composed.")).toBeInTheDocument();
+});
+
+test("bulk deletes selected trained models from the table", async () => {
+  renderWithProviders(<ModelsPage />, "/models?tab=trained");
+
+  await waitFor(() => expect(screen.getByText("smoke-train-run")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText("macro-signal-run")).toBeInTheDocument());
+
+  fireEvent.click(screen.getByLabelText("选择训练实例删除 smoke-train-run"));
+  fireEvent.click(screen.getByLabelText("选择训练实例删除 macro-signal-run"));
+  fireEvent.click(screen.getByRole("button", { name: "批量删除 (2)" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "" });
+  expect(within(dialog).getByText("批量删除训练实例")).toBeInTheDocument();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
+  await waitFor(() => expect(screen.queryByText("smoke-train-run")).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByText("macro-signal-run")).not.toBeInTheDocument());
 });

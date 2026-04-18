@@ -11,7 +11,7 @@ import type {
   DatasetOptionValueView,
   DatasetRequestOptionsView,
 } from "../../shared/api/types";
-import { I18N } from "../../shared/lib/i18n";
+import { I18N, translateText } from "../../shared/lib/i18n";
 import { formatStageNameLabel } from "../../shared/lib/labels";
 import { GlossaryHint } from "../../shared/ui/GlossaryHint";
 import { StatusPill } from "../../shared/ui/StatusPill";
@@ -71,10 +71,22 @@ function dateInputValue(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function defaultDateRange() {
+function isoStartOfDay(dateValue: string) {
+  return `${dateValue}T00:00:00Z`;
+}
+
+function isoRequestEndTime(dateValue: string) {
+  const today = dateInputValue(new Date());
+  if (dateValue === today) {
+    return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  }
+  return `${dateValue}T23:59:59Z`;
+}
+
+function defaultDateRange(days = 30) {
   const end = new Date();
   const start = new Date(end);
-  start.setDate(start.getDate() - 30);
+  start.setDate(start.getDate() - days);
   return {
     startDate: dateInputValue(start),
     endDate: dateInputValue(end),
@@ -348,13 +360,36 @@ function alignDraftFrequencies(
   return drafts.map((draft) => ({ ...draft, frequency: nextFrequency }));
 }
 
+function canonicalFiveModalityDrafts(options: DatasetRequestOptionsView | undefined) {
+  return alignDraftFrequencies(
+    DEFAULT_DOMAIN_ORDER.map((domain) =>
+      hydrateDraft(
+        {
+          ...createDraft(domain),
+          dataDomain: domain,
+          sourceVendor: DEFAULT_VENDOR_BY_DOMAIN[domain] ?? "",
+          exchange: DEFAULT_EXCHANGE_BY_DOMAIN[domain] ?? "",
+          frequency: "1h",
+          symbolType: "spot",
+          selectionMode: "manual_list",
+          symbols: domain === "market" ? DEFAULT_SYMBOL : "",
+          identifier: domain === "market" ? "" : DEFAULT_IDENTIFIER_BY_DOMAIN[domain] ?? "",
+        },
+        options,
+      ),
+    ),
+    options,
+  );
+}
+
 export function DatasetRequestDrawer({
-  title = "\u7533\u8bf7\u6570\u636e\u96c6",
-  description = "\u4e00\u6b21\u9009\u62e9 1..n \u4e2a\u57df\uff0c\u591a\u57df\u65f6\u76f4\u63a5\u4ea7\u51fa\u5408\u5e76\u6570\u636e\u96c6\uff0c\u7136\u540e\u7528\u6570\u636e\u96c6 ID \u8fde\u5230\u8bad\u7ec3\u548c\u56de\u6d4b\u3002",
+  title = translateText("申请数据集"),
+  description = translateText("一次选择 1..n 个域，多域时直接产出合并数据集，然后用数据集 ID 连到训练和回测。"),
   triggerTone = "primary",
   initialValues,
 }: DatasetRequestDrawerProps) {
   const initialDateRange = useMemo(() => defaultDateRange(), []);
+  const canonicalDateRange = useMemo(() => defaultDateRange(365), []);
   const queryClient = useQueryClient();
   const optionsQuery = useDatasetRequestOptions();
   const [open, setOpen] = useState(false);
@@ -446,9 +481,6 @@ export function DatasetRequestDrawer({
     if (multiDomain && marketCount !== 1) {
       return "\u53ef\u8bad\u7ec3 / \u53ef\u56de\u6d4b\u7684\u5408\u5e76\u8bf7\u6c42\u5fc5\u987b\u5305\u542b\u4e14\u4ec5\u5305\u542b\u4e00\u4e2a\u5e02\u573a\u951a\u70b9\u3002";
     }
-    if (multiDomain && new Set(drafts.map((draft) => draft.frequency)).size !== 1) {
-      return "\u591a\u57df\u76f4\u63a5\u5408\u5e76\u8981\u6c42\u6240\u6709\u6570\u636e\u6e90\u7684\u9891\u7387\u5b8c\u5168\u4e00\u81f4\u3002";
-    }
     const marketDraft = drafts.find((draft) => draft.dataDomain === "market");
     if (marketDraft && !marketDraft.symbols.trim()) {
       return "请至少为市场数据域填写一个标的。";
@@ -460,6 +492,13 @@ export function DatasetRequestDrawer({
       return `请为${domainLabel(missingIdentifier.dataDomain)}填写标识符。`;
     }
     return null;
+  }
+
+  function applyCanonicalPreset() {
+    setStartDate(canonicalDateRange.startDate);
+    setEndDate(canonicalDateRange.endDate);
+    setSourceDrafts(canonicalFiveModalityDrafts(optionsQuery.data));
+    setFormError(null);
   }
 
   function submitRequest() {
@@ -492,8 +531,8 @@ export function DatasetRequestDrawer({
       dataset_type: "training_panel",
       asset_mode: "single_asset",
       time_window: {
-        start_time: `${startDate}T00:00:00Z`,
-        end_time: `${endDate}T23:59:59Z`,
+        start_time: isoStartOfDay(startDate),
+        end_time: isoRequestEndTime(endDate),
       },
       symbol_selector: isSingleMarket ? buildSymbolSelector(marketDraft) : undefined,
       selection_mode: singleSelectionMode,
@@ -543,7 +582,7 @@ export function DatasetRequestDrawer({
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
-        {"\u7533\u8bf7\u65b0\u6570\u636e\u96c6"}
+        {translateText("申请新数据集")}
       </button>
       {open ? (
         <div className="drawer-panel">
@@ -553,13 +592,13 @@ export function DatasetRequestDrawer({
           <div className="dataset-callout">
             <strong>
               {sourceDrafts.length > 1
-                ? "\u591a\u57df\u76f4\u63a5\u5408\u5e76"
-                : "\u5355\u57df\u8bad\u7ec3\u6570\u636e\u96c6"}
+                ? translateText("多域直接合并")
+                : translateText("单域训练数据集")}
             </strong>
             <span>
               {sourceDrafts.length > 1
-                ? "\u591a\u57df\u65f6\u4f1a\u7528\u5e02\u573a\u57df\u4f5c\u4e3a\u552f\u4e00\u951a\u70b9\uff0c\u540e\u7aef\u6309\u201c\u6309\u53ef\u7528\u65f6\u95f4\u5b89\u5168\u5bf9\u9f50\u201d\u7b56\u7565\u76f4\u63a5\u5408\u5e76\u4e3a\u6700\u7ec8\u6570\u636e\u96c6\u3002"
-                : "\u5355\u57df\u65f6\u4f1a\u76f4\u63a5\u4ea7\u51fa\u53ef\u7ee7\u7eed\u4f7f\u7528\u6570\u636e\u96c6 ID \u53d1\u8d77\u8bad\u7ec3\u7684\u6570\u636e\u96c6\u3002"}
+                ? translateText("多域时会用市场域作为唯一锚点，后端按“按可用时间安全对齐”策略直接合并为最终数据集。")
+                : translateText("单域时会直接产出可继续使用数据集 ID 发起训练的数据集。")}
             </span>
           </div>
 
@@ -597,14 +636,32 @@ export function DatasetRequestDrawer({
                   <strong>{"\u57df\u914d\u7f6e"}</strong>
                   <GlossaryHint hintKey="data_domain" iconOnly />
                 </span>
-                <button
-                  className="link-button"
-                  disabled={availableDomainsToAdd.length === 0}
-                  onClick={addDomain}
-                  type="button"
-                >
-                  添加数据域
-                </button>
+                <div className="table-actions">
+                  <button
+                    className="link-button"
+                    data-testid="canonical-five-modality-preset"
+                    onClick={applyCanonicalPreset}
+                    type="button"
+                  >
+                    使用五模态真实预设
+                  </button>
+                  <button
+                    className="link-button"
+                    disabled={availableDomainsToAdd.length === 0}
+                    onClick={addDomain}
+                    type="button"
+                  >
+                    添加数据域
+                  </button>
+                </div>
+              </div>
+
+              <div className="dataset-callout">
+                <strong>五模态真实采集预设</strong>
+                <span>
+                  默认填入 BTCUSDT / DFF / ethereum / BTCUSDT futures / Reddit Archive，并锁定最近
+                  365 天；市场、衍生品与 NLP 走 1h，宏观 / 链上按各自 canonical 频率取数，方便直接走完整多模态链路。
+                </span>
               </div>
 
               {sourceDrafts.map((draft, index) => {
@@ -653,7 +710,7 @@ export function DatasetRequestDrawer({
                       </label>
 
                       <label>
-                        <span>{"鏉ユ簮"}</span>
+                        <span>{"来源"}</span>
                         <select
                           className="field"
                           onChange={(event) =>
@@ -695,7 +752,7 @@ export function DatasetRequestDrawer({
                       {draft.dataDomain === "market" ? (
                         <>
                           <label>
-                            <span>{"浜ゆ槗鎵€"}</span>
+                            <span>{"交易所"}</span>
                             <select
                               className="field"
                               onChange={(event) =>
@@ -769,7 +826,7 @@ export function DatasetRequestDrawer({
                                 identifier: event.target.value,
                               }))
                             }
-                            placeholder={DEFAULT_IDENTIFIER_BY_DOMAIN[draft.dataDomain] ?? "璇疯緭鍏ユ爣璇嗙"}
+                            placeholder={DEFAULT_IDENTIFIER_BY_DOMAIN[draft.dataDomain] ?? "请输入标识符"}
                             value={draft.identifier}
                           />
                         </label>
@@ -797,6 +854,7 @@ export function DatasetRequestDrawer({
 
             <button
               className="action-button secondary"
+              data-testid="submit-dataset-request"
               disabled={requestMutation.isPending}
               onClick={submitRequest}
               type="button"

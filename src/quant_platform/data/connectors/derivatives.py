@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -18,6 +18,7 @@ from quant_platform.data.contracts.series import NormalizedSeriesPoint
 
 class BinanceFuturesMetricsConnector(DataConnector):
     BASE_URL = "https://fapi.binance.com"
+    PAGE_LIMIT = 500
     DEFAULT_METRICS = (
         "funding_rate",
         "open_interest",
@@ -97,35 +98,60 @@ class BinanceFuturesMetricsConnector(DataConnector):
         end_time: datetime,
         frequency: str,
     ) -> list[NormalizedSeriesPoint]:
-        endpoint, params = self._endpoint_for_metric(
-            symbol=symbol,
-            metric_name=metric_name,
-            start_time=start_time,
-            end_time=end_time,
-        )
-        with urlopen(f"{self.base_url}{endpoint}?{urlencode(params)}", timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        if not isinstance(payload, list):
-            raise DataConnectorError(
-                data_domain="derivatives",
-                vendor="binance_futures",
-                identifier=symbol,
-                message=f"Unexpected payload for metric '{metric_name}'.",
-                retryable=True,
-                code="invalid_payload",
-            )
         rows: list[NormalizedSeriesPoint] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            parsed = self._parse_metric_row(
+        seen_keys: set[tuple[str, str]] = set()
+        cursor_start = start_time
+        while cursor_start <= end_time:
+            endpoint, params = self._endpoint_for_metric(
                 symbol=symbol,
                 metric_name=metric_name,
-                item=item,
-                frequency=frequency,
+                start_time=cursor_start,
+                end_time=end_time,
             )
-            if parsed is not None and start_time <= parsed.event_time <= end_time:
+            with urlopen(f"{self.base_url}{endpoint}?{urlencode(params)}", timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, list):
+                raise DataConnectorError(
+                    data_domain="derivatives",
+                    vendor="binance_futures",
+                    identifier=symbol,
+                    message=f"Unexpected payload for metric '{metric_name}'.",
+                    retryable=True,
+                    code="invalid_payload",
+                )
+            batch_max_time: datetime | None = None
+            batch_size = 0
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                parsed = self._parse_metric_row(
+                    symbol=symbol,
+                    metric_name=metric_name,
+                    item=item,
+                    frequency=frequency,
+                )
+                if parsed is None or parsed.event_time < start_time or parsed.event_time > end_time:
+                    continue
+                batch_size += 1
+                batch_max_time = (
+                    parsed.event_time
+                    if batch_max_time is None or parsed.event_time > batch_max_time
+                    else batch_max_time
+                )
+                dedupe_key = (parsed.metric_name, parsed.event_time.isoformat())
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
                 rows.append(parsed)
+            if batch_max_time is None:
+                break
+            next_cursor = batch_max_time + timedelta(milliseconds=1)
+            if next_cursor <= cursor_start:
+                break
+            cursor_start = next_cursor
+            if batch_size == 0:
+                break
+        rows.sort(key=lambda item: item.event_time)
         return rows
 
     def _endpoint_for_metric(
@@ -140,7 +166,7 @@ class BinanceFuturesMetricsConnector(DataConnector):
             "symbol": symbol,
             "startTime": int(start_time.timestamp() * 1000),
             "endTime": int(end_time.timestamp() * 1000),
-            "limit": 500,
+            "limit": self.PAGE_LIMIT,
         }
         if metric_name == "funding_rate":
             return "/fapi/v1/fundingRate", params

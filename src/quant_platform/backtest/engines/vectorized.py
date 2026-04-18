@@ -24,6 +24,7 @@ from quant_platform.backtest.metrics.attribution import compute_pnl_attribution
 from quant_platform.backtest.metrics.diagnostics import (
     compute_execution_metrics,
     compute_signal_metrics,
+    summarize_block_reasons,
 )
 from quant_platform.backtest.metrics.performance import compute_performance_metrics
 from quant_platform.backtest.metrics.risk import compute_risk_metrics
@@ -88,6 +89,7 @@ class ResearchBacktestEngine:
             execution_metrics=baseline_payload["execution_metrics"],
             risk_metrics=baseline_payload["risk_metrics"],
             signal_metrics=baseline_payload["signal_metrics"],
+            block_reasons=baseline_payload["block_reasons"],
             warnings=baseline_payload["warnings"],
         )
         report = BacktestReport(
@@ -172,8 +174,11 @@ class ResearchBacktestEngine:
         fills = []
         risk_events = []
         warnings: list[str] = []
+        block_reasons: list[str] = []
         next_target_index = 0
         snapshots = []
+        eligible_order_count = 0
+        blocked_order_count = 0
         for event in events:
             ledger.mark(event)
             while (
@@ -200,7 +205,15 @@ class ResearchBacktestEngine:
                 delta_quantity = desired_quantity - current_quantity
                 order_notional = abs(delta_quantity * event.open)
                 if abs(delta_quantity) <= 1e-12:
+                    blocked_order_count += 1
+                    if abs(clipped_target.target_value) <= 1e-12 and abs(current_quantity) <= 1e-12:
+                        block_reasons.append("all signals resolved to zero target value")
+                    elif abs(clipped_target.target_value) <= 1e-12:
+                        block_reasons.append("risk constraints clipped target to zero")
+                    else:
+                        block_reasons.append("target already matched current position")
                     continue
+                eligible_order_count += 1
                 order_id_seed = {
                     "signal_id": clipped_target.signal_ref,
                     "instrument": clipped_target.instrument,
@@ -228,8 +241,11 @@ class ResearchBacktestEngine:
                     risk_constraints=risk_constraints,
                 )
                 if child_order.status == "REJECTED":
+                    blocked_order_count += 1
                     child_orders.append(child_order)
-                    warnings.append(child_order.rejection_reason or "rejected")
+                    rejection_reason = child_order.rejection_reason or "rejected"
+                    warnings.append(rejection_reason)
+                    block_reasons.append(rejection_reason)
                     continue
                 participation = min(
                     child_order.participation_cap,
@@ -262,11 +278,27 @@ class ResearchBacktestEngine:
                     )
                 )
             snapshots.append(ledger.snapshot(event.event_time))
+        position_open_count = len(
+            {
+                position.instrument
+                for snapshot in snapshots
+                for position in snapshot.positions
+                if abs(position.quantity) > 1e-12
+            }
+        )
         performance_metrics = compute_performance_metrics(
             snapshots,
             benchmark_returns(events, request.benchmark_spec.symbol),
         )
-        execution_metrics = compute_execution_metrics(child_orders, fills, snapshots)
+        execution_metrics = compute_execution_metrics(
+            child_orders,
+            fills,
+            snapshots,
+            initial_cash=request.portfolio_config.initial_cash,
+            eligible_order_count=eligible_order_count,
+            blocked_order_count=blocked_order_count,
+            position_open_count=position_open_count,
+        )
         risk_metrics = compute_risk_metrics(snapshots, len(risk_events))
         signal_metrics = compute_signal_metrics(
             scenario_signal_frame,
@@ -283,6 +315,7 @@ class ResearchBacktestEngine:
             "snapshots": snapshots,
             "risk_events": risk_events,
             "warnings": warnings,
+            "block_reasons": summarize_block_reasons(block_reasons),
             "performance_metrics": performance_metrics,
             "execution_metrics": execution_metrics,
             "risk_metrics": risk_metrics,

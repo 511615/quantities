@@ -49,6 +49,7 @@ from quant_platform.webapi.schemas.views import (
     ArtifactView,
     BacktestAlignmentView,
     BacktestDeleteResponse,
+    BacktestExecutionDiagnosticsSummaryView,
     BacktestEngineView,
     BacktestListItemView,
     BacktestReportView,
@@ -100,6 +101,7 @@ from quant_platform.webapi.schemas.views import (
     ModelTemplateListResponse,
     ModelTemplateUpdateRequest,
     ModelTemplateView,
+    ModalityQualityView,
     OhlcvBarView,
     OhlcvBarsResponse,
     PredictionArtifactView,
@@ -178,6 +180,13 @@ OFFICIAL_MULTIMODAL_STANDARD_AUX_FEATURES_V1: list[str] = [
 ]
 
 OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION = "official_multimodal_standard_v3"
+WORKBENCH_MODALITIES: tuple[str, ...] = ("market", "macro", "on_chain", "derivatives", "nlp")
+DERIVATIVES_REQUIRED_FEATURES_V1: tuple[str, ...] = (
+    "derivatives_funding_rate",
+    "derivatives_open_interest",
+    "derivatives_global_long_short_ratio",
+    "derivatives_taker_buy_sell_ratio",
+)
 
 
 class ResearchWorkbenchService:
@@ -198,6 +207,10 @@ class ResearchWorkbenchService:
         self.facade = facade
         self.templates_root = self.repository.artifact_root / "webapi" / "model_templates"
         self.trained_root = self.repository.artifact_root / "webapi" / "trained_models"
+        self._dataset_readiness_cache: dict[
+            tuple[str, bool],
+            tuple[tuple[tuple[str, int | None, int | None], ...], DatasetReadinessSummaryView],
+        ] = {}
         self.templates_root.mkdir(parents=True, exist_ok=True)
         self.trained_root.mkdir(parents=True, exist_ok=True)
 
@@ -382,6 +395,26 @@ class ResearchWorkbenchService:
             "sentiment_score": "sentiment_score",
         }
         return metric_map.get(metric_name)
+
+    @staticmethod
+    def _official_nlp_metric_name_from_feature_name(feature_name: str) -> str | None:
+        feature_map = {
+            "news_event_count": "event_count",
+            "text_reddit_attention_zscore_24h": "reddit_attention_zscore_24h",
+            "text_reddit_body_len_mean_1h": "reddit_body_len_mean_1h",
+            "text_reddit_comment_count_1h": "reddit_comment_count_1h",
+            "text_reddit_controversiality_ratio_1h": "reddit_controversiality_ratio_1h",
+            "text_reddit_core_subreddit_ratio_1h": "reddit_core_subreddit_ratio_1h",
+            "text_reddit_negative_ratio_1h": "reddit_negative_ratio_1h",
+            "text_reddit_positive_ratio_1h": "reddit_positive_ratio_1h",
+            "text_reddit_score_mean_1h": "reddit_score_mean_1h",
+            "text_reddit_score_sum_1h": "reddit_score_sum_1h",
+            "text_reddit_sentiment_mean_1h": "reddit_sentiment_mean_1h",
+            "text_reddit_sentiment_std_1h": "reddit_sentiment_std_1h",
+            "text_reddit_unique_author_count_1h": "reddit_unique_author_count_1h",
+            "sentiment_score": "sentiment_score",
+        }
+        return feature_map.get(feature_name)
 
     @staticmethod
     def _official_auxiliary_source_specs() -> list[dict[str, str]]:
@@ -1610,6 +1643,17 @@ class ResearchWorkbenchService:
             notes.append(f"当前 run 缺少标准训练产物：{', '.join(missing_artifacts)}。")
         if dataset_summary.get("readiness_status") == "warning":
             notes.append("训练数据集带有 warning 状态，请结合数据详情页理解风险。")
+        feature_scope_modality = self._str(metadata.get("feature_scope_modality")) or self._str(
+            manifest.get("feature_scope_modality")
+        )
+        feature_scope_feature_names = [
+            str(item)
+            for item in (metadata.get("feature_scope_feature_names") or manifest.get("feature_scope_feature_names") or [])
+            if isinstance(item, str) and item
+        ]
+        source_dataset_quality_status = self._str(metadata.get("source_dataset_quality_status")) or self._str(
+            manifest.get("source_dataset_quality_status")
+        )
         return RunDetailView(
             run_id=run_id,
             model_name=model_name,
@@ -1654,6 +1698,9 @@ class ResearchWorkbenchService:
             notes=notes,
             official_template_eligible=official_template_eligible,
             official_blocking_reasons=official_blocking_reasons,
+            feature_scope_modality=feature_scope_modality,
+            feature_scope_feature_names=feature_scope_feature_names,
+            source_dataset_quality_status=source_dataset_quality_status,
             summary=StableSummaryView(status="success", headline=f"Run {run_id}"),
             pipeline_summary=None,
             review_summary=self._review_unavailable(),
@@ -1831,9 +1878,20 @@ class ResearchWorkbenchService:
             if row.get("backtest_id") != backtest_id:
                 continue
             artifacts = self._backtest_artifacts(row)
-            protocol = self._protocol_result_from_row(row)
             dataset_ids = self._backtest_dataset_ids(row)
             primary_dataset_id = dataset_ids[0] if dataset_ids else self._str(row.get("dataset_id"))
+            research = self._engine(row.get("research_result_uri"))
+            simulation = self._engine(row.get("simulation_result_uri"))
+            scenario_metrics = self._enrich_scenario_metrics(
+                row.get("scenario_metrics", {}),
+                simulation,
+            )
+            protocol = self._protocol_result_from_row(
+                {
+                    **row,
+                    "scenario_metrics": scenario_metrics,
+                }
+            )
             return BacktestReportView(
                 backtest_id=backtest_id,
                 model_name=self._str(row.get("model_name")),
@@ -1849,6 +1907,12 @@ class ResearchWorkbenchService:
                 research_backend=self._research_backend(row),
                 portfolio_method=self._portfolio_method(row),
                 protocol=protocol,
+                modality_quality_summary=(
+                    protocol.modality_quality_summary if protocol is not None else {}
+                ),
+                quality_blocking_reasons=(
+                    list(protocol.quality_blocking_reasons) if protocol is not None else []
+                ),
                 passed_consistency_checks=(
                     bool(row.get("passed_consistency_checks"))
                     if isinstance(row.get("passed_consistency_checks"), bool)
@@ -1860,9 +1924,10 @@ class ResearchWorkbenchService:
                     if isinstance(item, str)
                 ],
                 divergence_metrics=self._metrics(row.get("divergence_metrics", {})),
-                scenario_metrics=self._metrics(row.get("scenario_metrics", {})),
-                research=self._engine(row.get("research_result_uri")),
-                simulation=self._engine(row.get("simulation_result_uri")),
+                scenario_metrics=scenario_metrics,
+                research=research,
+                simulation=simulation,
+                execution_diagnostics_summary=self._execution_diagnostics_summary(simulation, research),
                 artifacts=artifacts,
                 summary=StableSummaryView(status="success", headline=f"Backtest {backtest_id}"),
                 pipeline_summary=None,
@@ -2667,6 +2732,141 @@ class ResearchWorkbenchService:
             vendor="reddit_archive",
         )
 
+    def _official_multimodal_fallback_points(
+        self,
+        *,
+        data_domain: str,
+        vendor: str,
+        identifier: str,
+        frequency: str,
+        start_time: datetime,
+        end_time: datetime,
+        metric_name: str | None = None,
+    ) -> tuple[list[NormalizedSeriesPoint], str] | None:
+        payload = self._dataset_ref(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
+        if not isinstance(payload, dict):
+            return None
+
+        normalized_identifier = self._str(identifier)
+        normalized_vendor = (
+            self._canonical_sentiment_vendor(vendor)
+            if data_domain == "sentiment_events"
+            else self._str(vendor)
+        )
+        requested_metric = self._str(metric_name)
+
+        if (
+            data_domain == "sentiment_events"
+            and normalized_vendor == "reddit_archive"
+            and normalized_identifier.lower() in {"btc", "btc_news"}
+            and frequency == "1h"
+        ):
+            points = [
+                point
+                for point in self._official_reddit_archive_points(payload)
+                if start_time <= point.event_time <= end_time
+            ]
+            return (points, "official_benchmark_fallback") if points else None
+
+        candidate_specs = [
+            spec
+            for spec in self._official_auxiliary_source_specs()
+            if spec["data_domain"] == data_domain
+            and spec["vendor"] == normalized_vendor
+            and spec["identifier"].lower() == normalized_identifier.lower()
+            and (requested_metric is None or spec["metric_name"] == requested_metric)
+        ]
+        if not candidate_specs:
+            return None
+
+        feature_rows = self._dataset_feature_rows(payload)
+        points: list[NormalizedSeriesPoint] = []
+        for spec in candidate_specs:
+            for row in feature_rows:
+                if not isinstance(row, dict):
+                    continue
+                event_time = self._dt(row.get("timestamp"))
+                if event_time is None or event_time < start_time or event_time > end_time:
+                    continue
+                available_time = self._dt(row.get("available_time")) or event_time
+                values = row.get("values")
+                if not isinstance(values, dict):
+                    continue
+                raw_value = values.get(spec["feature_name"])
+                if not isinstance(raw_value, (int, float)):
+                    continue
+                points.append(
+                    NormalizedSeriesPoint(
+                        event_time=event_time,
+                        available_time=available_time,
+                        series_key=f"{spec['identifier']}:{spec['feature_name']}",
+                        entity_key=spec["identifier"],
+                        domain=spec["data_domain"],
+                        vendor=spec["vendor"],
+                        metric_name=spec["metric_name"],
+                        frequency=frequency,
+                        value=float(raw_value),
+                        dimensions={
+                            "identifier": spec["identifier"],
+                            "feature_name": spec["feature_name"],
+                            "official_benchmark_fallback": "true",
+                        },
+                    )
+                )
+        if not points:
+            return None
+        points.sort(key=lambda item: (item.event_time, item.metric_name))
+        return points, "official_benchmark_fallback"
+
+    def _fetch_series_points_with_official_fallback(
+        self,
+        *,
+        data_domain: str,
+        identifier: str,
+        vendor: str,
+        frequency: str,
+        start_time: datetime,
+        end_time: datetime,
+        options: dict[str, Any],
+    ) -> tuple[list[NormalizedSeriesPoint], str]:
+        try:
+            points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
+                data_domain=data_domain,
+                identifier=identifier,
+                vendor=vendor,
+                frequency=frequency,
+                start_time=start_time,
+                end_time=end_time,
+                options=options,
+            )
+        except Exception:
+            fallback = self._official_multimodal_fallback_points(
+                data_domain=data_domain,
+                vendor=vendor,
+                identifier=identifier,
+                frequency=frequency,
+                start_time=start_time,
+                end_time=end_time,
+                metric_name=self._str(options.get("metric_name")),
+            )
+            if fallback is not None:
+                return fallback
+            raise
+        if points:
+            return points, fetch_status
+        fallback = self._official_multimodal_fallback_points(
+            data_domain=data_domain,
+            vendor=vendor,
+            identifier=identifier,
+            frequency=frequency,
+            start_time=start_time,
+            end_time=end_time,
+            metric_name=self._str(options.get("metric_name")),
+        )
+        if fallback is not None:
+            return fallback
+        return points, fetch_status
+
     def get_dataset_nlp_inspection(self, dataset_id: str) -> DatasetNlpInspectionView | None:
         payload = self._dataset_ref(dataset_id)
         if payload is None:
@@ -3005,7 +3205,7 @@ class ResearchWorkbenchService:
                 raise ValueError(
                     "Fusion dataset building currently supports auxiliary sources from macro, on_chain, derivatives, and sentiment_events domains."
                 )
-            points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
+            points, fetch_status = self._fetch_series_points_with_official_fallback(
                 data_domain=source.data_domain,
                 identifier=source.identifier,
                 vendor=source.vendor,
@@ -3191,7 +3391,7 @@ class ResearchWorkbenchService:
                 )
             )
         freshness_rank = {"fresh": 0, "warning": 1, "stale": 2, "outdated": 3, "unknown": 4}
-        worst_freshness = sorted(
+        worst_source_freshness = sorted(
             freshness_candidates,
             key=lambda item: freshness_rank.get(item or "unknown", 99),
         )[-1]
@@ -3226,7 +3426,9 @@ class ResearchWorkbenchService:
                 "label_alignment_status": "aligned",
                 "split_integrity_status": "valid",
                 "temporal_safety_status": "passed" if temporal_safety_passed else "failed",
-                "freshness_status": worst_freshness,
+                # Use the fused training panel freshness as the dataset-level gate.
+                # Per-source freshness is still captured separately in modality diagnostics.
+                "freshness_status": dataset_manifest.freshness_status,
                 "quality_status": "warning" if coverage_warning else "healthy",
                 "build_config": {
                     "sample_policy_name": request.sample_policy_name,
@@ -3242,6 +3444,8 @@ class ResearchWorkbenchService:
                         "coverage_by_feature": coverage_by_feature,
                         **request.missing_feature_policy,
                     },
+                    "source_freshness_candidates": freshness_candidates,
+                    "worst_source_freshness": worst_source_freshness,
                 },
                 "acquisition_profile": {
                     **dict(base_manifest_payload.get("acquisition_profile") or {}),
@@ -3430,7 +3634,7 @@ class ResearchWorkbenchService:
                 min_feature_coverage_ratio = min(min_feature_coverage_ratio, 0.8)
             if source.data_domain == "derivatives":
                 min_feature_coverage_ratio = min(min_feature_coverage_ratio, 0.9)
-            if source.frequency != base_frequency:
+            if merge_policy_name == "strict_timestamp_inner" and source.frequency != base_frequency:
                 raise ValueError(
                     f"Multi-domain source '{source.data_domain}' must use frequency '{base_frequency}', got '{source.frequency}'."
                 )
@@ -3439,7 +3643,7 @@ class ResearchWorkbenchService:
                     f"Multi-domain source '{source.data_domain}' requires an identifier for merged requests."
                 )
             try:
-                points, fetch_status = self.facade.runtime.ingestion_service.fetch_series_points(
+                points, fetch_status = self._fetch_series_points_with_official_fallback(
                     data_domain=source.data_domain,
                     identifier=source.identifier,
                     vendor=source.vendor,
@@ -3484,30 +3688,48 @@ class ResearchWorkbenchService:
                             vendor=source.vendor,
                             identifier=source.identifier,
                             frequency=source.frequency,
-                            feature_name=f"derivatives_{self._slugify_dataset_id(metric_name, suffix='')}",
+                            feature_name=self._fusion_feature_name_for_metric(source, metric_name),
+                            exchange=source.exchange,
+                            metric_name=metric_name,
+                            options=dict(source.filters),
+                        )
+                    )
+            elif source.data_domain == "sentiment_events":
+                canonical_vendor = self._canonical_sentiment_vendor(source.vendor) or source.vendor
+                sentiment_metric_names = (
+                    [
+                        metric_name
+                        for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
+                        for metric_name in [self._official_nlp_metric_name_from_feature_name(feature_name)]
+                        if metric_name is not None
+                    ]
+                    if canonical_vendor == "reddit_archive"
+                    else [self._str(source.filters.get("metric_name")) or "event_count"]
+                )
+                for metric_name in sentiment_metric_names:
+                    fusion_sources.append(
+                        DatasetFusionSourceRequest(
+                            data_domain=source.data_domain,
+                            vendor=source.vendor,
+                            identifier=source.identifier,
+                            frequency=source.frequency,
+                            feature_name=self._fusion_feature_name_for_metric(source, metric_name),
                             exchange=source.exchange,
                             metric_name=metric_name,
                             options=dict(source.filters),
                         )
                     )
             else:
+                metric_name = self._str(source.filters.get("metric_name")) or self._default_fusion_metric_name(source)
                 fusion_sources.append(
                     DatasetFusionSourceRequest(
                         data_domain=source.data_domain,
                         vendor=source.vendor,
                         identifier=source.identifier,
                         frequency=source.frequency,
-                        feature_name=self._fusion_feature_name(source),
+                        feature_name=self._fusion_feature_name_for_metric(source, metric_name),
                         exchange=source.exchange,
-                        metric_name=(
-                            self._str(source.filters.get("metric_name"))
-                            or self._str(source.filters.get("feature_name"))
-                            or (
-                                "macro_dff_value"
-                                if source.data_domain == "macro"
-                                else ("on_chain_value" if source.data_domain == "on_chain" else "value")
-                            )
-                        ),
+                        metric_name=metric_name,
                         options=dict(source.filters),
                     )
                 )
@@ -4481,6 +4703,597 @@ class ResearchWorkbenchService:
             "entity_link_coverage_ratio": None,
         }
 
+    @staticmethod
+    def _normalize_modality_name(value: str | None) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized == "market":
+            return "market"
+        if normalized == "macro":
+            return "macro"
+        if normalized in {"on_chain", "onchain", "on-chain"}:
+            return "on_chain"
+        if normalized in {"derivatives", "derivative", "futures", "perp", "perpetual"}:
+            return "derivatives"
+        if normalized in {"nlp", "sentiment", "sentiment_events", "text", "news"}:
+            return "nlp"
+        return normalized or "unknown"
+
+    def _feature_modality(self, feature_name: str) -> str:
+        if feature_name in OFFICIAL_MARKET_STANDARD_FEATURES_V1:
+            return "market"
+        if feature_name.startswith("macro_"):
+            return "macro"
+        if feature_name.startswith(("on_chain_", "onchain_")):
+            return "on_chain"
+        if feature_name.startswith(("derivatives_", "derivative_", "futures_", "perp_")):
+            return "derivatives"
+        if feature_name.startswith(("sentiment_", "text_", "news_", "social_")):
+            return "nlp"
+        return "market"
+
+    def _schema_feature_names_by_modality(self, payload: dict[str, Any]) -> dict[str, list[str]]:
+        grouped: dict[str, list[str]] = {modality: [] for modality in WORKBENCH_MODALITIES}
+        for field in (payload.get("feature_view_ref") or {}).get("feature_schema", []):
+            if not isinstance(field, dict) or not isinstance(field.get("name"), str):
+                continue
+            feature_name = str(field["name"])
+            modality = self._feature_modality(feature_name)
+            grouped.setdefault(modality, []).append(feature_name)
+        return grouped
+
+    def _input_ref_modality(self, input_ref: dict[str, Any]) -> str:
+        tags = input_ref.get("tags")
+        if isinstance(tags, list):
+            for item in tags:
+                if isinstance(item, str) and item.startswith("domain:"):
+                    return self._normalize_modality_name(item.split(":", 1)[1])
+                if isinstance(item, str) and item.strip().lower() == "sentiment_events":
+                    return "nlp"
+        source = (self._str(input_ref.get("source")) or "").lower()
+        if any(token in source for token in ("futures", "derivative", "perp")):
+            return "derivatives"
+        if "fred" in source:
+            return "macro"
+        if "llama" in source or "chain" in source:
+            return "on_chain"
+        if any(token in source for token in ("reddit", "sentiment", "news", "social")):
+            return "nlp"
+        if "binance" in source or "market" in source:
+            return "market"
+        return "unknown"
+
+    @staticmethod
+    def _expected_timestamps(
+        start_time: datetime | None,
+        end_time: datetime | None,
+        frequency: str | None,
+    ) -> list[datetime]:
+        if start_time is None or end_time is None:
+            return []
+        normalized = frequency.lower().strip() if isinstance(frequency, str) else None
+        if normalized not in {"1h", "1d"}:
+            return []
+        step = timedelta(hours=1) if normalized == "1h" else timedelta(days=1)
+        current = start_time.astimezone(UTC)
+        end_utc = end_time.astimezone(UTC)
+        values: list[datetime] = []
+        while current <= end_utc:
+            values.append(current)
+            current += step
+        return values
+
+    @staticmethod
+    def _duplicate_ratio(total_count: int, unique_count: int) -> float | None:
+        if total_count <= 0:
+            return None
+        duplicates = max(total_count - unique_count, 0)
+        return round(duplicates / total_count, 4)
+
+    @staticmethod
+    def _coverage_ratio(covered_count: int, expected_count: int) -> float | None:
+        if expected_count <= 0:
+            return None
+        return round(covered_count / expected_count, 4)
+
+    def _empty_modality_quality(
+        self,
+        modality: str,
+        *,
+        status: str = "unknown",
+        blocking_reasons: list[str] | None = None,
+        usable_count: int | None = None,
+        coverage_ratio: float | None = None,
+        duplicate_ratio: float | None = None,
+        max_gap_bars: int | None = None,
+        freshness_lag_days: float | None = None,
+        non_null_coverage_ratio: float | None = None,
+        required_feature_names: list[str] | None = None,
+        observed_feature_names: list[str] | None = None,
+    ) -> ModalityQualityView:
+        return ModalityQualityView(
+            modality=modality,
+            status=status,
+            blocking_reasons=blocking_reasons or [],
+            usable_count=usable_count,
+            coverage_ratio=coverage_ratio,
+            duplicate_ratio=duplicate_ratio,
+            max_gap_bars=max_gap_bars,
+            freshness_lag_days=freshness_lag_days,
+            non_null_coverage_ratio=non_null_coverage_ratio,
+            required_feature_names=required_feature_names or [],
+            observed_feature_names=observed_feature_names or [],
+        )
+
+    def _series_points_from_storage_uri(self, storage_uri: str) -> list[NormalizedSeriesPoint]:
+        path = self._resolve_artifact_path(storage_uri)
+        if not path.exists():
+            return []
+        rows = self._load(path).get("rows", [])
+        if not isinstance(rows, list):
+            return []
+        points: list[NormalizedSeriesPoint] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                points.append(NormalizedSeriesPoint.model_validate(row))
+            except Exception:  # noqa: BLE001
+                continue
+        return points
+
+    def _dataset_auxiliary_points(self, payload: dict[str, Any], modality: str) -> list[NormalizedSeriesPoint]:
+        normalized_modality = self._normalize_modality_name(modality)
+        if normalized_modality == "nlp":
+            return self._dataset_nlp_points(payload)
+        points: list[NormalizedSeriesPoint] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        manifest = self._dataset_manifest(payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        fusion_sources = acquisition_profile.get("fusion_sources")
+        if isinstance(fusion_sources, list):
+            for source in fusion_sources:
+                if not isinstance(source, dict):
+                    continue
+                if self._normalize_modality_name(self._str(source.get("data_domain"))) != normalized_modality:
+                    continue
+                storage_uri = self._str(source.get("storage_uri"))
+                if not storage_uri:
+                    continue
+                for point in self._series_points_from_storage_uri(storage_uri):
+                    key = (
+                        point.vendor,
+                        point.metric_name,
+                        point.entity_key,
+                        point.event_time.isoformat(),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    points.append(point)
+        if points:
+            points.sort(key=lambda item: (item.event_time, item.metric_name, item.vendor))
+            return points
+        for input_ref in self._dataset_input_refs(payload):
+            if self._input_ref_modality(input_ref) != normalized_modality:
+                continue
+            storage_uri = self._str(input_ref.get("storage_uri"))
+            if not storage_uri:
+                continue
+            for point in self._series_points_from_storage_uri(storage_uri):
+                key = (
+                    point.vendor,
+                    point.metric_name,
+                    point.entity_key,
+                    point.event_time.isoformat(),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                points.append(point)
+        points.sort(key=lambda item: (item.event_time, item.metric_name, item.vendor))
+        return points
+
+    def _requested_end_time_for_modality(self, payload: dict[str, Any], modality: str) -> datetime | None:
+        normalized_modality = self._normalize_modality_name(modality)
+        manifest = self._dataset_manifest(payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        candidates: list[datetime] = []
+        fusion_sources = acquisition_profile.get("fusion_sources")
+        if isinstance(fusion_sources, list):
+            for source in fusion_sources:
+                if not isinstance(source, dict):
+                    continue
+                if self._normalize_modality_name(self._str(source.get("data_domain"))) != normalized_modality:
+                    continue
+                time_range = source.get("time_range")
+                if isinstance(time_range, dict):
+                    if (resolved := self._dt(time_range.get("end"))) is not None:
+                        candidates.append(resolved)
+        for input_ref in self._dataset_input_refs(payload):
+            if self._input_ref_modality(input_ref) != normalized_modality:
+                continue
+            time_range = input_ref.get("time_range")
+            if not isinstance(time_range, dict):
+                continue
+            if (resolved := self._dt(time_range.get("end"))) is not None:
+                candidates.append(resolved)
+        return max(candidates, default=None)
+
+    def _market_modality_quality(
+        self,
+        dataset_id: str,
+        payload: dict[str, Any],
+        *,
+        observed_feature_names: list[str],
+    ) -> ModalityQualityView:
+        bars = self.load_market_bars_for_dataset(dataset_id)
+        if not bars:
+            return self._empty_modality_quality(
+                "market",
+                status="failed",
+                blocking_reasons=["No market bars were materialized for this dataset."],
+                required_feature_names=list(OFFICIAL_MARKET_STANDARD_FEATURES_V1),
+                observed_feature_names=observed_feature_names,
+            )
+        frequency = self._dataset_summary(payload).frequency or "1h"
+        unique_times = sorted({self._floor_time_to_frequency(bar.event_time, frequency) for bar in bars})
+        covered_times = set(unique_times)
+        input_refs = [
+            input_ref for input_ref in self._dataset_input_refs(payload) if self._input_ref_modality(input_ref) == "market"
+        ]
+        start_time = min(
+            (
+                self._dt((input_ref.get("time_range") or {}).get("start"))
+                for input_ref in input_refs
+                if isinstance(input_ref.get("time_range"), dict)
+            ),
+            default=(unique_times[0] if unique_times else None),
+        )
+        end_time = max(
+            (
+                self._dt((input_ref.get("time_range") or {}).get("end"))
+                for input_ref in input_refs
+                if isinstance(input_ref.get("time_range"), dict)
+            ),
+            default=(unique_times[-1] if unique_times else None),
+        )
+        expected_times = self._expected_timestamps(start_time, end_time, frequency)
+        usable_count = len(unique_times)
+        coverage_ratio = self._coverage_ratio(len(covered_times), len(expected_times))
+        duplicate_ratio = self._duplicate_ratio(len(bars), usable_count)
+        max_gap_bars = self._max_consecutive_empty_bars(expected_times, covered_times)
+        blocking_reasons: list[str] = []
+        if usable_count < 4000:
+            blocking_reasons.append(f"Market usable 1h bars {usable_count} is below 4000.")
+        if coverage_ratio is None or coverage_ratio < 0.95:
+            blocking_reasons.append(
+                f"Market coverage {coverage_ratio:.1%} is below 95%." if coverage_ratio is not None else "Market coverage could not be computed."
+            )
+        if duplicate_ratio is None or duplicate_ratio > 0.01:
+            blocking_reasons.append(
+                f"Market duplicate ratio {duplicate_ratio:.1%} exceeds 1%." if duplicate_ratio is not None else "Market duplicate ratio could not be computed."
+            )
+        if max_gap_bars is None or max_gap_bars > 24:
+            blocking_reasons.append(
+                f"Market max consecutive gap {max_gap_bars} exceeds 24 bars." if max_gap_bars is not None else "Market gap continuity could not be computed."
+            )
+        return self._empty_modality_quality(
+            "market",
+            status="ready" if not blocking_reasons else "failed",
+            blocking_reasons=blocking_reasons,
+            usable_count=usable_count,
+            coverage_ratio=coverage_ratio,
+            duplicate_ratio=duplicate_ratio,
+            max_gap_bars=max_gap_bars,
+            required_feature_names=list(OFFICIAL_MARKET_STANDARD_FEATURES_V1),
+            observed_feature_names=observed_feature_names,
+        )
+
+    def _freshness_modality_quality(
+        self,
+        payload: dict[str, Any],
+        *,
+        modality: str,
+        points: list[NormalizedSeriesPoint],
+        required_feature_names: list[str],
+        observed_feature_names: list[str],
+        minimum_count: int,
+    ) -> ModalityQualityView:
+        if not points:
+            return self._empty_modality_quality(
+                modality,
+                status="failed",
+                blocking_reasons=[f"No {modality} observations were materialized for this dataset."],
+                required_feature_names=required_feature_names,
+                observed_feature_names=observed_feature_names,
+            )
+        unique_keys = {
+            (point.metric_name, point.entity_key, point.event_time.isoformat())
+            for point in points
+            if point.value is not None
+        }
+        usable_count = len(unique_keys)
+        duplicate_ratio = self._duplicate_ratio(len(points), len(unique_keys))
+        requested_end_time = self._requested_end_time_for_modality(payload, modality)
+        actual_end_time = max((point.available_time for point in points), default=None)
+        freshness_lag_days = (
+            round(
+                max((requested_end_time - actual_end_time).total_seconds(), 0.0) / 86400.0,
+                4,
+            )
+            if requested_end_time is not None and actual_end_time is not None
+            else None
+        )
+        blocking_reasons: list[str] = []
+        if usable_count < minimum_count:
+            blocking_reasons.append(f"{modality} usable observations {usable_count} is below {minimum_count}.")
+        if duplicate_ratio is None or duplicate_ratio > 0.01:
+            blocking_reasons.append(
+                f"{modality} duplicate ratio {duplicate_ratio:.1%} exceeds 1%." if duplicate_ratio is not None else f"{modality} duplicate ratio could not be computed."
+            )
+        if freshness_lag_days is None or freshness_lag_days > 7.0:
+            blocking_reasons.append(
+                f"{modality} freshness lag {freshness_lag_days:.2f} days exceeds 7 days." if freshness_lag_days is not None else f"{modality} freshness lag could not be computed."
+            )
+        return self._empty_modality_quality(
+            modality,
+            status="ready" if not blocking_reasons else "failed",
+            blocking_reasons=blocking_reasons,
+            usable_count=usable_count,
+            duplicate_ratio=duplicate_ratio,
+            freshness_lag_days=freshness_lag_days,
+            required_feature_names=required_feature_names,
+            observed_feature_names=observed_feature_names,
+        )
+
+    def _derivatives_modality_quality(
+        self,
+        payload: dict[str, Any],
+        *,
+        points: list[NormalizedSeriesPoint],
+        observed_feature_names: list[str],
+    ) -> ModalityQualityView:
+        by_metric: dict[str, list[NormalizedSeriesPoint]] = {metric: [] for metric in DERIVATIVES_REQUIRED_FEATURES_V1}
+        metric_name_aliases = {
+            "derivatives_funding_rate": "funding_rate",
+            "derivatives_open_interest": "open_interest",
+            "derivatives_global_long_short_ratio": "global_long_short_ratio",
+            "derivatives_taker_buy_sell_ratio": "taker_buy_sell_ratio",
+        }
+        for point in points:
+            for feature_name, metric_name in metric_name_aliases.items():
+                if point.metric_name == metric_name:
+                    by_metric[feature_name].append(point)
+                    break
+        requested_end_time = self._requested_end_time_for_modality(payload, "derivatives")
+        frequency = "1h"
+        expected_times = self._expected_timestamps(
+            min((point.event_time for point in points), default=None),
+            requested_end_time or max((point.event_time for point in points), default=None),
+            frequency,
+        )
+        blocking_reasons: list[str] = []
+        usable_counts: list[int] = []
+        coverage_values: list[float] = []
+        duplicate_values: list[float] = []
+        gap_values: list[int] = []
+        for feature_name in DERIVATIVES_REQUIRED_FEATURES_V1:
+            metric_points = by_metric.get(feature_name, [])
+            if not metric_points:
+                blocking_reasons.append(f"Derivatives metric '{feature_name}' is missing.")
+                continue
+            unique_times = sorted({self._floor_time_to_frequency(point.event_time, frequency) for point in metric_points})
+            usable_count = len(unique_times)
+            coverage_ratio = self._coverage_ratio(len(unique_times), len(expected_times))
+            duplicate_ratio = self._duplicate_ratio(len(metric_points), len(unique_times))
+            max_gap_bars = self._max_consecutive_empty_bars(expected_times, set(unique_times))
+            usable_counts.append(usable_count)
+            if coverage_ratio is not None:
+                coverage_values.append(coverage_ratio)
+            if duplicate_ratio is not None:
+                duplicate_values.append(duplicate_ratio)
+            if max_gap_bars is not None:
+                gap_values.append(max_gap_bars)
+            if usable_count < 2000:
+                blocking_reasons.append(f"Derivatives metric '{feature_name}' usable bars {usable_count} is below 2000.")
+            if coverage_ratio is None or coverage_ratio < 0.85:
+                blocking_reasons.append(
+                    f"Derivatives metric '{feature_name}' coverage {coverage_ratio:.1%} is below 85%." if coverage_ratio is not None else f"Derivatives metric '{feature_name}' coverage could not be computed."
+                )
+            if duplicate_ratio is None or duplicate_ratio > 0.01:
+                blocking_reasons.append(
+                    f"Derivatives metric '{feature_name}' duplicate ratio {duplicate_ratio:.1%} exceeds 1%." if duplicate_ratio is not None else f"Derivatives metric '{feature_name}' duplicate ratio could not be computed."
+                )
+            if max_gap_bars is None or max_gap_bars > 24:
+                blocking_reasons.append(
+                    f"Derivatives metric '{feature_name}' max consecutive gap {max_gap_bars} exceeds 24 bars." if max_gap_bars is not None else f"Derivatives metric '{feature_name}' gap continuity could not be computed."
+                )
+        return self._empty_modality_quality(
+            "derivatives",
+            status="ready" if not blocking_reasons else "failed",
+            blocking_reasons=blocking_reasons,
+            usable_count=min(usable_counts) if usable_counts else 0,
+            coverage_ratio=min(coverage_values) if coverage_values else None,
+            duplicate_ratio=max(duplicate_values) if duplicate_values else None,
+            max_gap_bars=max(gap_values) if gap_values else None,
+            required_feature_names=list(DERIVATIVES_REQUIRED_FEATURES_V1),
+            observed_feature_names=observed_feature_names,
+        )
+
+    def _nlp_modality_quality(
+        self,
+        payload: dict[str, Any],
+        *,
+        nlp_gate: dict[str, Any],
+        observed_feature_names: list[str],
+    ) -> ModalityQualityView:
+        points = self._dataset_nlp_points(payload)
+        event_bucket_count = len(
+            {
+                self._floor_time_to_frequency(point.available_time, "1h")
+                for point in points
+                if point.metric_name == "event_count"
+            }
+        )
+        blocking_reasons = list(nlp_gate.get("official_template_gate_reasons") or [])
+        if event_bucket_count < 500:
+            blocking_reasons.append(f"NLP event_count buckets {event_bucket_count} is below 500.")
+        status = "ready" if (nlp_gate.get("official_template_gate_status") == "passed" and event_bucket_count >= 500) else "failed"
+        return self._empty_modality_quality(
+            "nlp",
+            status=status,
+            blocking_reasons=blocking_reasons,
+            usable_count=event_bucket_count,
+            coverage_ratio=self._float(nlp_gate.get("coverage_ratio")),
+            duplicate_ratio=self._float(nlp_gate.get("duplicate_ratio")),
+            max_gap_bars=self._int_or_none(nlp_gate.get("max_consecutive_empty_bars")),
+            required_feature_names=list(OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1),
+            observed_feature_names=observed_feature_names,
+        )
+
+    def _aligned_multimodal_quality(
+        self,
+        payload: dict[str, Any],
+        *,
+        feature_names_by_modality: dict[str, list[str]],
+    ) -> ModalityQualityView:
+        relevant_modalities = [modality for modality in ("macro", "on_chain", "derivatives", "nlp") if feature_names_by_modality.get(modality)]
+        if not relevant_modalities:
+            return self._empty_modality_quality("aligned_multimodal", status="not_applicable")
+        feature_rows = self._dataset_feature_rows(payload)
+        row_count = len(feature_rows)
+        blocking_reasons: list[str] = []
+        coverage_by_modality: dict[str, float] = {}
+        if row_count < 2000:
+            blocking_reasons.append(f"Aligned multimodal rows {row_count} is below 2000.")
+        for modality in relevant_modalities:
+            modality_feature_names = feature_names_by_modality.get(modality, [])
+            non_null_rows = 0
+            for row in feature_rows:
+                values = row.get("values")
+                if not isinstance(values, dict):
+                    continue
+                if any(values.get(feature_name) is not None for feature_name in modality_feature_names):
+                    non_null_rows += 1
+            coverage_ratio = self._coverage_ratio(non_null_rows, row_count)
+            coverage_by_modality[modality] = coverage_ratio or 0.0
+            if coverage_ratio is None or coverage_ratio < 0.8:
+                blocking_reasons.append(
+                    f"Aligned {modality} non-null coverage {coverage_ratio:.1%} is below 80%." if coverage_ratio is not None else f"Aligned {modality} non-null coverage could not be computed."
+                )
+        return self._empty_modality_quality(
+            "aligned_multimodal",
+            status="ready" if not blocking_reasons else "failed",
+            blocking_reasons=blocking_reasons,
+            usable_count=row_count,
+            non_null_coverage_ratio=min(coverage_by_modality.values()) if coverage_by_modality else None,
+            required_feature_names=[
+                feature_name
+                for modality in relevant_modalities
+                for feature_name in feature_names_by_modality.get(modality, [])
+            ],
+            observed_feature_names=[
+                feature_name
+                for modality in relevant_modalities
+                for feature_name in feature_names_by_modality.get(modality, [])
+            ],
+        )
+
+    def _dataset_modality_quality_summary(
+        self,
+        dataset_id: str,
+        payload: dict[str, Any],
+        *,
+        nlp_gate: dict[str, Any],
+    ) -> tuple[dict[str, ModalityQualityView], ModalityQualityView | None]:
+        feature_names_by_modality = self._schema_feature_names_by_modality(payload)
+        modality_quality_summary: dict[str, ModalityQualityView] = {}
+        modality_quality_summary["market"] = self._market_modality_quality(
+            dataset_id,
+            payload,
+            observed_feature_names=feature_names_by_modality.get("market", []),
+        )
+        modality_quality_summary["macro"] = self._freshness_modality_quality(
+            payload,
+            modality="macro",
+            points=self._dataset_auxiliary_points(payload, "macro"),
+            required_feature_names=["macro_dff_value"],
+            observed_feature_names=feature_names_by_modality.get("macro", []),
+            minimum_count=300,
+        )
+        modality_quality_summary["on_chain"] = self._freshness_modality_quality(
+            payload,
+            modality="on_chain",
+            points=self._dataset_auxiliary_points(payload, "on_chain"),
+            required_feature_names=["on_chain_ethereum_tvl"],
+            observed_feature_names=feature_names_by_modality.get("on_chain", []),
+            minimum_count=300,
+        )
+        modality_quality_summary["derivatives"] = self._derivatives_modality_quality(
+            payload,
+            points=self._dataset_auxiliary_points(payload, "derivatives"),
+            observed_feature_names=feature_names_by_modality.get("derivatives", []),
+        )
+        modality_quality_summary["nlp"] = self._nlp_modality_quality(
+            payload,
+            nlp_gate=nlp_gate,
+            observed_feature_names=feature_names_by_modality.get("nlp", []),
+        )
+        aligned_quality = self._aligned_multimodal_quality(
+            payload,
+            feature_names_by_modality=feature_names_by_modality,
+        )
+        return modality_quality_summary, aligned_quality
+
+    def _dataset_readiness_dependency_signature(
+        self,
+        dataset_id: str,
+        payload: dict[str, Any],
+    ) -> tuple[tuple[str, int | None, int | None], ...]:
+        manifest = self._dataset_manifest(payload)
+        datasets_root = self.repository.artifact_root / "datasets"
+        candidate_paths: dict[str, Path] = {}
+
+        def add_path(path: Path) -> None:
+            candidate_paths[str(path.resolve())] = path
+
+        add_path(datasets_root / f"{dataset_id}_dataset_ref.json")
+        add_path(datasets_root / f"{dataset_id}_dataset_manifest.json")
+        add_path(datasets_root / f"{dataset_id}_feature_rows.json")
+        add_path(datasets_root / f"{dataset_id}_dataset_samples.json")
+        add_path(datasets_root / f"{dataset_id}_sentiment_points.json")
+
+        feature_view_ref = payload.get("feature_view_ref") or {}
+        storage_uri = self._str(feature_view_ref.get("storage_uri"))
+        if storage_uri:
+            add_path(self._resolve_artifact_path(storage_uri))
+
+        for input_ref in self._dataset_input_refs(payload):
+            storage_uri = self._str(input_ref.get("storage_uri"))
+            if storage_uri:
+                add_path(self._resolve_artifact_path(storage_uri))
+
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        fusion_sources = acquisition_profile.get("fusion_sources")
+        if isinstance(fusion_sources, list):
+            for source in fusion_sources:
+                if not isinstance(source, dict):
+                    continue
+                storage_uri = self._str(source.get("storage_uri"))
+                if storage_uri:
+                    add_path(self._resolve_artifact_path(storage_uri))
+
+        signature: list[tuple[str, int | None, int | None]] = []
+        for key in sorted(candidate_paths):
+            path = candidate_paths[key]
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                signature.append((key, None, None))
+                continue
+            signature.append((key, stat.st_mtime_ns, stat.st_size))
+        return tuple(signature)
+
     def get_dataset_readiness(
         self,
         dataset_id: str,
@@ -4490,6 +5303,11 @@ class ResearchWorkbenchService:
         payload = self._dataset_ref(dataset_id)
         if payload is None:
             return None
+        cache_key = (dataset_id, include_official_nlp_gate)
+        dependency_signature = self._dataset_readiness_dependency_signature(dataset_id, payload)
+        cached = self._dataset_readiness_cache.get(cache_key)
+        if cached is not None and cached[0] == dependency_signature:
+            return cached[1].model_copy(deep=True)
         manifest = self._dataset_manifest(payload)
         summary = self._dataset_summary(payload)
         quality_summary = self._dataset_quality_summary(payload)
@@ -4529,6 +5347,11 @@ class ResearchWorkbenchService:
             if include_official_nlp_gate
             else self._empty_official_nlp_gate_summary()
         )
+        modality_quality_summary, aligned_multimodal_quality = self._dataset_modality_quality_summary(
+            dataset_id,
+            payload,
+            nlp_gate=nlp_gate,
+        )
 
         blocking_issues: list[str] = []
         warnings: list[str] = []
@@ -4567,6 +5390,15 @@ class ResearchWorkbenchService:
             warnings.append("multi_asset_universe_is_small")
         if nlp_gate["official_template_gate_status"] == "failed":
             warnings.append("official_nlp_gate_failed")
+        failed_modalities = [
+            modality
+            for modality, quality in modality_quality_summary.items()
+            if quality.status == "failed"
+        ]
+        if failed_modalities:
+            warnings.append("modality_quality_failed")
+        if aligned_multimodal_quality is not None and aligned_multimodal_quality.status == "failed":
+            warnings.append("aligned_multimodal_quality_failed")
 
         readiness_status = self._str(payload.get("readiness_status")) or self._str(manifest.get("readiness_status"))
         if blocking_issues:
@@ -4589,8 +5421,16 @@ class ResearchWorkbenchService:
             recommended_next_actions.append("刷新或重采集底层数据，再生成训练数据集。")
         if nlp_gate["official_template_gate_status"] == "failed":
             recommended_next_actions.append("补齐与 market 模板一致时间窗的 archival NLP 数据，并通过官方质量门禁后再参与 official backtest。")
+        if failed_modalities:
+            recommended_next_actions.append(
+                "先修复失败模态的数据质量，再进行单模态训练、模型组合或官方回测。"
+            )
+        if aligned_multimodal_quality is not None and aligned_multimodal_quality.status == "failed":
+            recommended_next_actions.append(
+                "提高多模态对齐窗口内的非空覆盖率并扩展有效样本行数，再进行融合与官方多模态回测。"
+            )
 
-        return DatasetReadinessSummaryView(
+        result = DatasetReadinessSummaryView(
             dataset_id=dataset_id,
             data_domains=self._resolved_data_domains(acquisition_profile),
             build_status=build_status,
@@ -4615,6 +5455,8 @@ class ResearchWorkbenchService:
             official_template_eligible=nlp_gate["official_template_eligible"],
             official_nlp_gate_status=nlp_gate["official_template_gate_status"],
             official_nlp_gate_reasons=nlp_gate["official_template_gate_reasons"],
+            modality_quality_summary=modality_quality_summary,
+            aligned_multimodal_quality=aligned_multimodal_quality,
             archival_nlp_source_only=nlp_gate["archival_source_only"],
             nlp_requested_start_time=nlp_gate["requested_start_time"],
             nlp_requested_end_time=nlp_gate["requested_end_time"],
@@ -4630,6 +5472,11 @@ class ResearchWorkbenchService:
             nlp_duplicate_ratio=nlp_gate["duplicate_ratio"],
             nlp_entity_link_coverage_ratio=nlp_gate["entity_link_coverage_ratio"],
         )
+        self._dataset_readiness_cache[cache_key] = (
+            dependency_signature,
+            result.model_copy(deep=True),
+        )
+        return result
 
     def _resolved_dataset_type(
         self,
@@ -4688,6 +5535,8 @@ class ResearchWorkbenchService:
                     return item.split(":", 1)[1]
         source = self._str(input_ref.get("source")) or ""
         lowered = source.lower()
+        if "futures" in lowered or "derivative" in lowered or "perp" in lowered:
+            return "derivatives"
         if "fred" in lowered:
             return "macro"
         if "llama" in lowered or "chain" in lowered:
@@ -4796,6 +5645,39 @@ class ResearchWorkbenchService:
         metric_name = getattr(source, "metric_name", None) or "value"
         raw = f"{domain}_{identifier}_{metric_name}"
         return self._slugify_dataset_id(raw, suffix="")
+
+    def _fusion_feature_name_for_metric(self, source: Any, metric_name: str) -> str:
+        identifier = self._str(getattr(source, "identifier", None)) or "series"
+        domain = self._str(getattr(source, "data_domain", None)) or "aux"
+        vendor = self._str(getattr(source, "vendor", None)) or ""
+        if domain == "macro":
+            return f"macro_{self._slugify_dataset_id(identifier, suffix='')}_{self._slugify_dataset_id(metric_name, suffix='')}"
+        if domain == "on_chain":
+            return (
+                f"on_chain_{self._slugify_dataset_id(identifier, suffix='')}_"
+                f"{self._slugify_dataset_id(metric_name, suffix='')}"
+            )
+        if domain == "derivatives":
+            return f"derivatives_{self._slugify_dataset_id(metric_name, suffix='')}"
+        if domain == "sentiment_events":
+            canonical_vendor = self._canonical_sentiment_vendor(vendor) or vendor
+            if canonical_vendor == "reddit_archive":
+                official_feature_name = self._official_nlp_feature_name_from_metric_name(metric_name)
+                if official_feature_name is not None:
+                    return official_feature_name
+            return self._sentiment_feature_name(metric_name, canonical_vendor or vendor)
+        raw = f"{domain}_{identifier}_{metric_name}"
+        return self._slugify_dataset_id(raw, suffix="")
+
+    def _default_fusion_metric_name(self, source: Any) -> str:
+        domain = self._str(getattr(source, "data_domain", None)) or ""
+        if domain == "macro":
+            return "value"
+        if domain == "on_chain":
+            return "tvl"
+        if domain == "sentiment_events":
+            return "event_count"
+        return "value"
 
     def _sentiment_feature_name(self, metric_name: str, vendor: str | None = None) -> str:
         if vendor is None:
@@ -5495,6 +6377,109 @@ class ResearchWorkbenchService:
                 if isinstance(row.get("passed_consistency_checks"), bool)
                 else None
             ),
+        )
+
+    def _enrich_scenario_metrics(
+        self,
+        raw_metrics: object,
+        simulation: BacktestEngineView | None,
+    ) -> dict[str, float]:
+        metrics = self._metrics(raw_metrics if isinstance(raw_metrics, dict) else {})
+        scenario_key_map = {
+            "COST_X2": "cost_x2_return_delta",
+            "COST_X5": "cost_x5_return_delta",
+            "LATENCY_SHOCK": "latency_shock_return_delta",
+            "LIQUIDITY_DROUGHT": "liquidity_drought_return_delta",
+            "LONG_ONLY_FALLBACK": "long_only_fallback_return_delta",
+            "STALE_SIGNAL": "stale_signal_return_delta",
+            "BROKEN_DATA_GUARD": "broken_data_guard_return_delta",
+        }
+        if simulation is not None:
+            scenario_values = {
+                item.scenario_name: item.cumulative_return_delta for item in simulation.scenarios
+            }
+            for scenario_name, metric_name in scenario_key_map.items():
+                if metric_name in metrics:
+                    continue
+                if scenario_name in scenario_values:
+                    metrics[metric_name] = float(scenario_values[scenario_name])
+        if "worst_scenario_return_delta" not in metrics:
+            stress_deltas = [
+                value
+                for key, value in metrics.items()
+                if key.endswith("_return_delta") and key != "worst_scenario_return_delta"
+            ]
+            if stress_deltas:
+                metrics["worst_scenario_return_delta"] = min(stress_deltas)
+        return metrics
+
+    def _execution_diagnostics_summary(
+        self,
+        simulation: BacktestEngineView | None,
+        research: BacktestEngineView | None,
+    ) -> BacktestExecutionDiagnosticsSummaryView | None:
+        diagnostics = simulation.diagnostics if simulation is not None else {}
+        execution = diagnostics.get("execution_metrics") if isinstance(diagnostics, dict) else {}
+        signal = diagnostics.get("signal_metrics") if isinstance(diagnostics, dict) else {}
+        risk = diagnostics.get("risk_metrics") if isinstance(diagnostics, dict) else {}
+        if not isinstance(execution, dict):
+            execution = {}
+        if not isinstance(signal, dict):
+            signal = {}
+        if not isinstance(risk, dict):
+            risk = {}
+        signal_count = self._float(signal.get("signal_count"))
+        order_count = self._float(execution.get("order_count"))
+        eligible_order_count = self._float(execution.get("eligible_order_count"))
+        blocked_order_count = self._float(execution.get("blocked_order_count"))
+        fill_count = self._float(execution.get("fill_count"))
+        position_open_count = self._float(execution.get("position_open_count")) or self._float(
+            risk.get("position_count")
+        )
+        raw_block_reasons = diagnostics.get("block_reasons") if isinstance(diagnostics, dict) else []
+        if not isinstance(raw_block_reasons, list):
+            raw_block_reasons = []
+        block_reasons = [
+            str(item)
+            for item in raw_block_reasons
+            if isinstance(item, str) and item.strip()
+        ]
+        if not block_reasons and (signal_count or 0.0) > 0 and (order_count or 0.0) == 0.0:
+            average_signal = self._float(signal.get("average_signal")) or 0.0
+            if abs(average_signal) <= 1e-12:
+                block_reasons.append("all aligned predictions were neutral after fusion")
+            else:
+                block_reasons.append("signals were generated but no eligible orders were created")
+        if (
+            not block_reasons
+            and (order_count or 0.0) > 0.0
+            and (fill_count or 0.0) == 0.0
+        ):
+            block_reasons.append("eligible orders were created but none of them filled")
+        if not block_reasons and research is not None:
+            research_signal = (
+                research.diagnostics.get("signal_metrics")
+                if isinstance(research.diagnostics, dict)
+                else {}
+            )
+            if isinstance(research_signal, dict) and (self._float(research_signal.get("signal_count")) or 0.0) > 0 and (fill_count or 0.0) == 0.0:
+                block_reasons.append("research generated signals, but simulation produced no fills")
+        if (
+            signal_count is None
+            and order_count is None
+            and fill_count is None
+            and position_open_count is None
+            and not block_reasons
+        ):
+            return None
+        return BacktestExecutionDiagnosticsSummaryView(
+            signal_count=signal_count,
+            order_count=order_count,
+            eligible_order_count=eligible_order_count,
+            blocked_order_count=blocked_order_count,
+            fill_count=fill_count,
+            position_open_count=position_open_count,
+            block_reasons=block_reasons,
         )
 
     def _protocol_metadata_from_job_result(self, job_result: dict[str, Any]) -> dict[str, Any]:
@@ -6254,6 +7239,11 @@ class ResearchWorkbenchService:
             metrics=detail.metrics,
             backtest_count=len(detail.related_backtests),
             prediction_scopes=[p.scope for p in detail.predictions],
+            official_template_eligible=detail.official_template_eligible,
+            official_blocking_reasons=detail.official_blocking_reasons,
+            feature_scope_modality=detail.feature_scope_modality,
+            feature_scope_feature_names=detail.feature_scope_feature_names,
+            source_dataset_quality_status=detail.source_dataset_quality_status,
             tags={},
         )
 
@@ -6294,6 +7284,17 @@ class ResearchWorkbenchService:
         official_template_eligible, official_blocking_reasons = self._official_composition_status(
             manifest
         )
+        feature_scope_modality = self._str(metadata.get("feature_scope_modality")) or self._str(
+            manifest.get("feature_scope_modality")
+        )
+        feature_scope_feature_names = [
+            str(item)
+            for item in (metadata.get("feature_scope_feature_names") or manifest.get("feature_scope_feature_names") or [])
+            if isinstance(item, str) and item
+        ]
+        source_dataset_quality_status = self._str(metadata.get("source_dataset_quality_status")) or self._str(
+            manifest.get("source_dataset_quality_status")
+        )
         return ExperimentListItem(
             run_id=run_id,
             model_name=model_name,
@@ -6317,6 +7318,9 @@ class ResearchWorkbenchService:
             prediction_scopes=prediction_scopes,
             official_template_eligible=official_template_eligible,
             official_blocking_reasons=official_blocking_reasons,
+            feature_scope_modality=feature_scope_modality,
+            feature_scope_feature_names=feature_scope_feature_names,
+            source_dataset_quality_status=source_dataset_quality_status,
             tags={},
         )
 

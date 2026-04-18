@@ -51,6 +51,8 @@ test("renders browser results and shows blocked delete dependencies", async () =
   expect(screen.queryByText("Macro Liquidity Snapshot")).not.toBeInTheDocument();
   expect(screen.getByText(/当前结果/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "申请新数据集" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "当前可用数据集" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "先浏览，再决定是否训练" })).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "申请新数据集" }));
   await waitFor(() => expect(screen.getAllByText("申请新数据集").length).toBeGreaterThan(1));

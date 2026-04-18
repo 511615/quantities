@@ -7,6 +7,7 @@ import {
   useCreateModelTemplateMutation,
   useDatasetDetail,
   useDeleteModelTemplateMutation,
+  useDeleteTrainedModelMutation,
   useJobStatus,
   useLaunchModelCompositionMutation,
   useModelTemplates,
@@ -26,6 +27,7 @@ import {
   templateDraftFromRun,
   templateDraftFromView,
 } from "../shared/lib/modelRegistry";
+import { formatModalityLabel, formatStatusLabel } from "../shared/lib/labels";
 import { ConfirmDialog } from "../shared/ui/ConfirmDialog";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
@@ -131,6 +133,33 @@ function singleDatasetIdForRun(run: {
   return ids.length === 1 ? ids[0] : null;
 }
 
+function runFeatureScopeModality(run: {
+  feature_scope_modality?: string | null;
+}) {
+  return run.feature_scope_modality?.trim() || null;
+}
+
+function runSelectionBlockingReason(run: {
+  feature_scope_modality?: string | null;
+  source_dataset_quality_status?: string | null;
+}) {
+  const modality = runFeatureScopeModality(run);
+  if (!modality) {
+    return "Only explicit single-modality runs can be composed.";
+  }
+  if ((run.source_dataset_quality_status ?? "").toLowerCase() !== "ready") {
+    return `Source dataset quality is ${formatStatusLabel(run.source_dataset_quality_status ?? "unknown")}.`;
+  }
+  return null;
+}
+
+function filterValidIds(current: string[], validIds: Set<string>) {
+  const next = current.filter((id) => validIds.has(id));
+  return next.length === current.length && next.every((id, index) => id === current[index])
+    ? current
+    : next;
+}
+
 export function ModelsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [runMeta, setRunMeta] = useState<Record<string, TrainedModelMeta>>(() => loadRunMeta());
@@ -140,6 +169,8 @@ export function ModelsPage() {
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [templateDeleteId, setTemplateDeleteId] = useState<string | null>(null);
   const [runDeleteId, setRunDeleteId] = useState<string | null>(null);
+  const [selectedRunIdsForBulkDelete, setSelectedRunIdsForBulkDelete] = useState<string[]>([]);
+  const [pendingBulkDeleteRunIds, setPendingBulkDeleteRunIds] = useState<string[]>([]);
   const [editingRunId, setEditingRunId] = useState<string | null>(null);
   const [runNoteDraft, setRunNoteDraft] = useState({ displayName: "", note: "" });
   const [runSearch, setRunSearch] = useState("");
@@ -176,6 +207,7 @@ export function ModelsPage() {
   const createTemplateMutation = useCreateModelTemplateMutation();
   const updateTemplateMutation = useUpdateModelTemplateMutation();
   const deleteTemplateMutation = useDeleteModelTemplateMutation();
+  const deleteTrainedModelMutation = useDeleteTrainedModelMutation();
   const compositionMutation = useLaunchModelCompositionMutation();
   const compositionJobQuery = useJobStatus(compositionJobId);
 
@@ -316,39 +348,122 @@ export function ModelsPage() {
     setEditingRunId(null);
   }
 
-  function hideRunFromWorkbench() {
-    if (!runDeleteId) {
+  async function hideRunFromWorkbench(runIds: string[]) {
+    if (runIds.length === 0) {
       return;
     }
-    setRunMeta((current) => ({
-      ...current,
-      [runDeleteId]: {
-        runId: runDeleteId,
-        displayName: current[runDeleteId]?.displayName ?? "",
-        note: current[runDeleteId]?.note ?? "",
-        hidden: true,
-      },
-    }));
+    for (const runId of runIds) {
+      await deleteTrainedModelMutation.mutateAsync(runId);
+    }
+    setRunMeta((current) => {
+      const next = { ...current };
+      for (const runId of runIds) {
+        next[runId] = {
+          runId,
+          displayName: current[runId]?.displayName ?? "",
+          note: current[runId]?.note ?? "",
+          hidden: true,
+        };
+      }
+      return next;
+    });
+    setSelectedRunIdsForBulkDelete((current) => current.filter((id) => !runIds.includes(id)));
+    setSelectedRunIdsForComposition((current) => current.filter((id) => !runIds.includes(id)));
     setRunDeleteId(null);
+    setPendingBulkDeleteRunIds([]);
   }
 
-  const visibleRuns = (runsQuery.data?.items ?? []).filter((item) => !runMeta[item.run_id]?.hidden);
+  const visibleRuns = useMemo(
+    () => (runsQuery.data?.items ?? []).filter((item) => !runMeta[item.run_id]?.hidden),
+    [runsQuery.data?.items, runMeta],
+  );
+  const visibleRunIdsKey = useMemo(() => visibleRuns.map((run) => run.run_id).join("|"), [visibleRuns]);
+  const allVisibleRunsSelectedForDelete =
+    visibleRuns.length > 0 && visibleRuns.every((run) => selectedRunIdsForBulkDelete.includes(run.run_id));
+  const pendingBulkDeleteRuns = visibleRuns.filter((run) => pendingBulkDeleteRunIds.includes(run.run_id));
   const templateSavePending = createTemplateMutation.isPending || updateTemplateMutation.isPending;
   const selectedRuns = visibleRuns.filter((run) => selectedRunIdsForComposition.includes(run.run_id));
+  const selectedRunModalities = selectedRuns
+    .map((run) => runFeatureScopeModality(run))
+    .filter((value): value is string => Boolean(value));
+  const uniqueSelectedModalities = Array.from(new Set(selectedRunModalities));
   const selectedRunDatasetIds = selectedRuns.flatMap((run) => datasetIdsForRun(run));
   const uniqueSelectedDatasetIds = Array.from(new Set(selectedRunDatasetIds));
-  const selectedRunsHaveOnlySingleDataset = selectedRuns.every(
-    (run) => datasetIdsForRun(run).length === 1,
-  );
+  const selectedRunsAreEligible = selectedRuns.every((run) => !runSelectionBlockingReason(run));
+  const hasDuplicateSelectedModality = uniqueSelectedModalities.length !== selectedRunModalities.length;
   const compositionReady =
     selectedRuns.length >= 2 &&
-    selectedRunsHaveOnlySingleDataset &&
-    uniqueSelectedDatasetIds.length >= 2;
+    selectedRuns.length <= 5 &&
+    selectedRunsAreEligible &&
+    !hasDuplicateSelectedModality;
+
+  const compositionConstraintMessage =
+    selectedRuns.length === 0
+      ? null
+      : selectedRuns.length < 2
+        ? translateText("请至少选择两个单模态训练实例。")
+        : selectedRuns.length > 5
+          ? "Composition supports between 2 and 5 distinct modalities."
+          : !selectedRunsAreEligible
+            ? selectedRuns
+                .map((run) => runSelectionBlockingReason(run))
+                .find((item): item is string => Boolean(item)) ?? null
+            : hasDuplicateSelectedModality
+              ? "Each selected run must use a different modality."
+              : null;
+
+  useEffect(() => {
+    const validIds = new Set(visibleRuns.map((run) => run.run_id));
+    setSelectedRunIdsForBulkDelete((current) => filterValidIds(current, validIds));
+    setPendingBulkDeleteRunIds((current) => filterValidIds(current, validIds));
+    setSelectedRunIdsForComposition((current) => filterValidIds(current, validIds));
+  }, [visibleRunIdsKey, visibleRuns]);
 
   function toggleRunSelection(runId: string, checked: boolean) {
-    setSelectedRunIdsForComposition((current) =>
-      checked ? Array.from(new Set([...current, runId])) : current.filter((value) => value !== runId),
+    const targetRun = visibleRuns.find((run) => run.run_id === runId);
+    if (!targetRun) {
+      return;
+    }
+    const blockingReason = runSelectionBlockingReason(targetRun);
+    const targetModality = runFeatureScopeModality(targetRun);
+    setSelectedRunIdsForComposition((current) => {
+      if (!checked) {
+        return current.filter((value) => value !== runId);
+      }
+      if (blockingReason) {
+        setCompositionError(blockingReason);
+        return current;
+      }
+      const nextSelected = visibleRuns.filter((run) => current.includes(run.run_id));
+      const hasDuplicateModality =
+        Boolean(targetModality) &&
+        nextSelected.some((run) => runFeatureScopeModality(run) === targetModality);
+      if (hasDuplicateModality) {
+        setCompositionError("Each modality can appear only once in a composition.");
+        return current;
+      }
+      if (current.length >= 5) {
+        setCompositionError("Composition supports at most 5 modalities.");
+        return current;
+      }
+      setCompositionError(null);
+      return Array.from(new Set([...current, runId]));
+    });
+  }
+
+  function toggleRunBulkDeleteSelection(runId: string, checked: boolean) {
+    setSelectedRunIdsForBulkDelete((current) =>
+      checked ? Array.from(new Set([...current, runId])) : current.filter((id) => id !== runId),
     );
+  }
+
+  function toggleSelectAllRunsForDelete(checked: boolean) {
+    setSelectedRunIdsForBulkDelete((current) => {
+      if (!checked) {
+        return current.filter((id) => !visibleRuns.some((run) => run.run_id === id));
+      }
+      return Array.from(new Set([...current, ...visibleRuns.map((run) => run.run_id)]));
+    });
   }
 
   async function handleLaunchComposition() {
@@ -356,12 +471,20 @@ export function ModelsPage() {
       setCompositionError(translateText("请至少选择两个单模态训练实例。"));
       return;
     }
-    if (!selectedRunsHaveOnlySingleDataset) {
-      setCompositionError(translateText("当前只支持组合单数据集训练实例。"));
+    if (selectedRuns.length > 5) {
+      setCompositionError("Composition supports between 2 and 5 modalities.");
       return;
     }
-    if (uniqueSelectedDatasetIds.length < 2) {
-      setCompositionError(translateText("请选择至少来自两个不同数据集的训练实例。"));
+    if (!selectedRunsAreEligible) {
+      setCompositionError(
+        selectedRuns
+          .map((run) => runSelectionBlockingReason(run))
+          .find((item): item is string => Boolean(item)) ?? "Selected runs are not composition-ready.",
+      );
+      return;
+    }
+    if (hasDuplicateSelectedModality) {
+      setCompositionError("Each selected run must use a different modality.");
       return;
     }
     if (!compositionName.trim()) {
@@ -382,7 +505,7 @@ export function ModelsPage() {
   }
 
   return (
-    <div className="page-stack">
+    <div className="page-stack models-page">
       <section className="panel">
         <PanelHeader
           eyebrow={I18N.nav.models}
@@ -667,12 +790,28 @@ export function ModelsPage() {
               title={I18N.nav.trainedModels}
               description={I18N.model.trainedSection}
               action={
-                <input
-                  className="field search-field"
-                  onChange={(event) => setRunSearch(event.target.value)}
-                  placeholder={translateText("搜索训练实例 ID / 模型 / 数据集")}
-                  value={runSearch}
-                />
+                <div className="table-actions">
+                  <input
+                    className="field search-field"
+                    data-testid="trained-run-search"
+                    onChange={(event) => setRunSearch(event.target.value)}
+                    placeholder={translateText("搜索训练实例 ID / 模型 / 数据集")}
+                    value={runSearch}
+                  />
+                  <button
+                    className="link-button danger-link"
+                    disabled={selectedRunIdsForBulkDelete.length === 0 || deleteTrainedModelMutation.isPending}
+                    onClick={() => {
+                      deleteTrainedModelMutation.reset();
+                      setPendingBulkDeleteRunIds(selectedRunIdsForBulkDelete);
+                    }}
+                    type="button"
+                  >
+                    {selectedRunIdsForBulkDelete.length > 0
+                      ? `${translateText("批量删除")} (${selectedRunIdsForBulkDelete.length})`
+                      : translateText("批量删除")}
+                  </button>
+                </div>
               }
             />
             {runsQuery.isLoading ? <LoadingState label={I18N.state.loading} /> : null}
@@ -683,9 +822,19 @@ export function ModelsPage() {
                   <table className="data-table trained-models-table">
                     <thead>
                       <tr>
+                        <th>
+                          <input
+                            aria-label={translateText("全选当前训练实例")}
+                            checked={allVisibleRunsSelectedForDelete}
+                            onChange={(event) => toggleSelectAllRunsForDelete(event.target.checked)}
+                            type="checkbox"
+                          />
+                        </th>
                         <th>{translateText("选择")}</th>
                         <th>{translateText("训练实例")}</th>
                         <th>{translateText("模型")}</th>
+                        <th>Modality</th>
+                        <th>Dataset Quality</th>
                         <th>{translateText("数据集")}</th>
                         <th>{translateText("创建时间")}</th>
                         <th>{translateText("指标")}</th>
@@ -696,27 +845,81 @@ export function ModelsPage() {
                     </thead>
                     <tbody>
                       {visibleRuns.map((run) => {
+                        const modality = runFeatureScopeModality(run);
+                        const rowBlockingReason = runSelectionBlockingReason(run);
+                        const duplicateModalityBlocked =
+                          !selectedRunIdsForComposition.includes(run.run_id) &&
+                          modality !== null &&
+                          uniqueSelectedModalities.includes(modality);
+                        const capacityBlocked =
+                          !selectedRunIdsForComposition.includes(run.run_id) &&
+                          selectedRunIdsForComposition.length >= 5;
+                        const checkboxDisabled =
+                          Boolean(rowBlockingReason) || duplicateModalityBlocked || capacityBlocked;
+                        const checkboxHelp =
+                          rowBlockingReason ??
+                          (duplicateModalityBlocked
+                            ? "Another selected run already uses this modality."
+                            : capacityBlocked
+                              ? "A composition can include at most 5 modalities."
+                              : null);
                         return (
                           <tr key={run.run_id}>
                             <td>
                               <input
+                                aria-label={`${translateText("选择训练实例删除")} ${run.run_id}`}
+                                checked={selectedRunIdsForBulkDelete.includes(run.run_id)}
+                                onChange={(event) =>
+                                  toggleRunBulkDeleteSelection(run.run_id, event.target.checked)
+                                }
+                                type="checkbox"
+                              />
+                            </td>
+                            <td>
+                              <input
                                 aria-label={`${translateText("选择")} ${run.run_id} ${translateText("用于多模态组合")}`}
                                 checked={selectedRunIdsForComposition.includes(run.run_id)}
+                                disabled={checkboxDisabled}
                                 onChange={(event) =>
                                   toggleRunSelection(run.run_id, event.target.checked)
                                 }
+                                title={checkboxHelp ?? undefined}
                                 type="checkbox"
                               />
                             </td>
                             <td>
                               <div className="table-title-cell">
                                 <strong>{runMeta[run.run_id]?.displayName || run.run_id}</strong>
-                                <span>{runMeta[run.run_id]?.note || run.model_name}</span>
+                                <span>
+                                  {runMeta[run.run_id]?.note || run.model_name}
+                                  {modality ? ` / ${formatModalityLabel(modality)}` : ""}
+                                </span>
+                                {checkboxHelp ? <span>{checkboxHelp}</span> : null}
                               </div>
                             </td>
                             <td>
                               {modelLabel(run.model_name)}
                               <div className="table-subcopy">{modelCategory(run.model_name)}</div>
+                            </td>
+                            <td>
+                              <div className="table-title-cell">
+                                <strong>{modality ? formatModalityLabel(modality) : "--"}</strong>
+                                <span>{modality ? "Single-modality run" : "Legacy / unsupported run"}</span>
+                              </div>
+                            </td>
+                            <td>
+                              <div className="table-title-cell">
+                                <strong>
+                                  {run.source_dataset_quality_status
+                                    ? formatStatusLabel(run.source_dataset_quality_status)
+                                    : "--"}
+                                </strong>
+                                <span>
+                                  {run.source_dataset_quality_status === "ready"
+                                    ? "Eligible for composition"
+                                    : "Blocked until the source dataset quality becomes ready"}
+                                </span>
+                              </div>
                             </td>
                             <td>
                               <div className="table-title-cell">
@@ -780,7 +983,10 @@ export function ModelsPage() {
                                 </button>
                                 <button
                                   className="link-button danger-link"
-                                  onClick={() => setRunDeleteId(run.run_id)}
+                                  onClick={() => {
+                                    deleteTrainedModelMutation.reset();
+                                    setRunDeleteId(run.run_id);
+                                  }}
                                   type="button"
                                 >
                                   {I18N.action.delete}
@@ -806,13 +1012,14 @@ export function ModelsPage() {
             <PanelHeader
               eyebrow={translateText("模型组合")}
               title={translateText("组合多模态模型")}
-              description={translateText("选择至少两个单模态训练实例，发起组合模型。")}
+              description="Select 2 to 5 quality-ready single-modality runs. Each selected run must use a different modality."
             />
             <div className="form-section-grid">
               <label>
                 <span>{translateText("组合名称")}</span>
                 <input
                   className="field"
+                  data-testid="composition-name-input"
                   onChange={(event) => setCompositionName(event.target.value)}
                   value={compositionName}
                 />
@@ -822,7 +1029,11 @@ export function ModelsPage() {
                 <strong>{selectedRuns.length}</strong>
               </div>
               <div className="metric-tile">
-                <span>{translateText("数据集数")}</span>
+                <span>Distinct Modalities</span>
+                <strong>{uniqueSelectedModalities.length}</strong>
+              </div>
+              <div className="metric-tile">
+                <span>{translateText("涉及数据集")}</span>
                 <strong>{uniqueSelectedDatasetIds.length}</strong>
               </div>
             </div>
@@ -832,7 +1043,8 @@ export function ModelsPage() {
                   <div className="stack-item align-start" key={run.run_id}>
                     <strong>{run.run_id}</strong>
                     <span>
-                      {datasetIdsForRun(run).join(", ") || "--"} | {modelLabel(run.model_name)}
+                      {datasetIdsForRun(run).join(", ") || "--"} | {modelLabel(run.model_name)} |{" "}
+                      {formatModalityLabel(runFeatureScopeModality(run))}
                     </span>
                   </div>
                 ))}
@@ -843,18 +1055,7 @@ export function ModelsPage() {
                 body={translateText("请先在上方选择至少两个单模态训练实例，再发起多模态组合。")}
               />
             )}
-            {!selectedRunsHaveOnlySingleDataset && selectedRuns.length > 0 ? (
-              <p className="form-error">
-                {translateText("当前选择中包含多数据集训练实例，暂时只支持组合单数据集训练实例。")}
-              </p>
-            ) : null}
-            {selectedRunsHaveOnlySingleDataset &&
-            selectedRuns.length >= 2 &&
-            uniqueSelectedDatasetIds.length < 2 ? (
-              <p className="form-error">
-                {translateText("当前选择未覆盖两个不同数据集，因此无法创建多模态组合。")}
-              </p>
-            ) : null}
+            {compositionConstraintMessage ? <p className="form-error">{compositionConstraintMessage}</p> : null}
             {compositionError ? <p className="form-error">{compositionError}</p> : null}
             {compositionMutation.isError ? (
               <p className="form-error">{(compositionMutation.error as Error).message}</p>
@@ -862,6 +1063,7 @@ export function ModelsPage() {
             <div className="dialog-actions inline-actions">
               <button
                 className="action-button"
+                data-testid="launch-composition-button"
                 disabled={compositionMutation.isPending || !compositionReady}
                 onClick={() => void handleLaunchComposition()}
                 type="button"
@@ -956,14 +1158,63 @@ export function ModelsPage() {
       />
       <ConfirmDialog
         cancelLabel={I18N.action.cancel}
-        confirmLabel={I18N.action.confirmDelete}
+        confirmDisabled={deleteTrainedModelMutation.isPending}
+        confirmLabel={deleteTrainedModelMutation.isPending ? translateText("删除中...") : I18N.action.confirmDelete}
         message={I18N.model.deleteRunMessage}
-        onCancel={() => setRunDeleteId(null)}
-        onConfirm={hideRunFromWorkbench}
+        onCancel={() => {
+          deleteTrainedModelMutation.reset();
+          setRunDeleteId(null);
+        }}
+        onConfirm={() => void hideRunFromWorkbench(runDeleteId ? [runDeleteId] : [])}
         open={Boolean(runDeleteId)}
         title={I18N.action.delete}
         tone="danger"
-      />
+      >
+        {deleteTrainedModelMutation.isError ? (
+          <div className="dialog-section">
+            <strong>{translateText("删除失败")}</strong>
+            <p>{(deleteTrainedModelMutation.error as Error).message}</p>
+          </div>
+        ) : null}
+      </ConfirmDialog>
+      <ConfirmDialog
+        cancelLabel={I18N.action.cancel}
+        confirmDisabled={pendingBulkDeleteRunIds.length === 0 || deleteTrainedModelMutation.isPending}
+        confirmLabel={deleteTrainedModelMutation.isPending ? translateText("删除中...") : I18N.action.confirmDelete}
+        message={
+          pendingBulkDeleteRunIds.length > 0
+            ? translateText("所选训练实例会从模型管理中批量移除，并同步写入后端的已删除状态。")
+            : ""
+        }
+        onCancel={() => {
+          deleteTrainedModelMutation.reset();
+          setPendingBulkDeleteRunIds([]);
+        }}
+        onConfirm={() => void hideRunFromWorkbench(pendingBulkDeleteRunIds)}
+        open={pendingBulkDeleteRunIds.length > 0}
+        title={translateText("批量删除训练实例")}
+        tone="danger"
+      >
+        {pendingBulkDeleteRuns.length > 0 ? (
+          <div className="dialog-section">
+            <strong>{translateText("即将删除以下训练实例")}</strong>
+            <div className="stack-list">
+              {pendingBulkDeleteRuns.map((run) => (
+                <div className="stack-item align-start" key={run.run_id}>
+                  <strong>{runMeta[run.run_id]?.displayName || run.run_id}</strong>
+                  <span>{run.model_name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {deleteTrainedModelMutation.isError ? (
+          <div className="dialog-section">
+            <strong>{translateText("删除失败")}</strong>
+            <p>{(deleteTrainedModelMutation.error as Error).message}</p>
+          </div>
+        ) : null}
+      </ConfirmDialog>
     </div>
   );
 }

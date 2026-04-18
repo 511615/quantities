@@ -61,7 +61,7 @@ export function AppShell() {
                 onClick={() => setLocale("en-US")}
                 type="button"
               >
-                EN
+                {translateText("EN")}
               </button>
             </div>
           </div>
@@ -87,7 +87,7 @@ export function AppShell() {
         </section>
       </aside>
 
-      <main className="workspace-main">
+      <main className="workspace-main" key={locale}>
         <Outlet />
       </main>
     </div>

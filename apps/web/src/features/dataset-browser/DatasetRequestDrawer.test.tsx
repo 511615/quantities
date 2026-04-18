@@ -10,6 +10,7 @@ const datasetRequestOptions = {
     { value: "market", label: "Market", recommended: true },
     { value: "macro", label: "Macro" },
     { value: "on_chain", label: "On-chain" },
+    { value: "derivatives", label: "Derivatives" },
     { value: "sentiment_events", label: "Sentiment Events" },
   ],
   asset_modes: [
@@ -25,7 +26,9 @@ const datasetRequestOptions = {
     { value: "binance", label: "Binance", recommended: true },
     { value: "fred", label: "FRED" },
     { value: "defillama", label: "DeFiLlama" },
+    { value: "binance_futures", label: "Binance Futures" },
     { value: "news_archive", label: "News Archive" },
+    { value: "reddit_archive", label: "Reddit Archive" },
   ],
   exchanges: [
     { value: "binance", label: "Binance", recommended: true },
@@ -63,8 +66,12 @@ const datasetRequestOptions = {
       supported_vendors: ["defillama"],
       supported_frequencies: ["1d"],
     },
+    derivatives: {
+      supported_vendors: ["binance_futures"],
+      supported_frequencies: ["1h"],
+    },
     sentiment_events: {
-      supported_vendors: ["news_archive"],
+      supported_vendors: ["news_archive", "reddit_archive"],
       supported_frequencies: ["1h"],
     },
   },
@@ -175,6 +182,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   fetchMock.mockReset();
   fetchMock.mockImplementation(defaultFetchMock);
@@ -281,6 +289,114 @@ test("shows train CTA after single-domain request succeeds", async () => {
 
   const datasetLink = screen.getByRole("link", { name: "查看数据集详情" });
   expect(datasetLink).toHaveAttribute("href", "/datasets/frontend-single-dataset");
+});
+
+test("canonical five-modality preset submits mixed-frequency real-source request", async () => {
+  renderWithProviders(<DatasetRequestDrawer />);
+
+  fireEvent.click(screen.getByRole("button", { name: "申请新数据集" }));
+  await waitFor(() => screen.getByRole("button", { name: "使用五模态真实预设" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "使用五模态真实预设" }));
+  fireEvent.click(screen.getByRole("button", { name: "提交数据请求" }));
+
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (!(url.endsWith("/api/datasets/requests") && init?.method === "POST")) {
+          return false;
+        }
+        const body = JSON.parse(String(init.body)) as {
+          sources?: Array<{
+            data_domain: string;
+            source_vendor: string;
+            frequency: string;
+            identifier?: string | null;
+          }>;
+        };
+        const sources = body.sources ?? [];
+        return (
+          sources.length === 5 &&
+          sources.some(
+            (source) =>
+              source.data_domain === "market" &&
+              source.source_vendor === "binance" &&
+              source.frequency === "1h",
+          ) &&
+          sources.some(
+            (source) =>
+              source.data_domain === "macro" &&
+              source.source_vendor === "fred" &&
+              source.frequency === "1d" &&
+              source.identifier === "DFF",
+          ) &&
+          sources.some(
+            (source) =>
+              source.data_domain === "on_chain" &&
+              source.source_vendor === "defillama" &&
+              source.frequency === "1d" &&
+              source.identifier === "ethereum",
+          ) &&
+          sources.some(
+            (source) =>
+              source.data_domain === "derivatives" &&
+              source.source_vendor === "binance_futures" &&
+              source.frequency === "1h" &&
+              source.identifier === "BTCUSDT",
+          ) &&
+          sources.some(
+            (source) =>
+              source.data_domain === "sentiment_events" &&
+              source.source_vendor === "reddit_archive" &&
+              source.frequency === "1h" &&
+              source.identifier === "btc_news",
+          )
+        );
+      }),
+    ).toBe(true),
+  );
+});
+
+test("uses current timestamp instead of end-of-day when request end date is today", async () => {
+  fetchMock.mockClear();
+  fetchMock.mockImplementation(defaultFetchMock);
+  const today = new Date().toISOString().slice(0, 10);
+
+  renderWithProviders(<DatasetRequestDrawer />);
+
+  fireEvent.click(screen.getByRole("button", { name: "申请新数据集" }));
+  await waitFor(() => screen.getByRole("button", { name: "提交数据请求" }));
+  fireEvent.click(screen.getByRole("button", { name: "提交数据请求" }));
+
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (!(url.endsWith("/api/datasets/requests") && init?.method === "POST")) {
+          return false;
+        }
+        const body = JSON.parse(String(init.body)) as {
+          time_window?: { start_time?: string; end_time?: string };
+        };
+        return (
+          body.time_window?.start_time?.endsWith("T00:00:00Z") === true &&
+          body.time_window?.end_time?.startsWith(`${today}T`) === true &&
+          body.time_window?.end_time !== `${today}T23:59:59Z`
+        );
+      }),
+    ).toBe(true),
+  );
 });
 
 test("submits sentiment-only request without forcing a market anchor", async () => {

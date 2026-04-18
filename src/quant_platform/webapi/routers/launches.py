@@ -8,6 +8,7 @@ from quant_platform.webapi.schemas.launch import (
     BacktestLaunchOptionsView,
     LaunchBacktestRequest,
     LaunchBacktestPreflightRequest,
+    LaunchDatasetMultimodalTrainRequest,
     LaunchJobResponse,
     LaunchModelCompositionRequest,
     LaunchTrainRequest,
@@ -41,6 +42,14 @@ def launch_train(
     request: LaunchTrainRequest,
 ) -> LaunchJobResponse:
     return services.jobs.launch_train(request)
+
+
+@router.post("/dataset-multimodal-train", response_model=LaunchJobResponse)
+def launch_dataset_multimodal_train(
+    services: ServicesDep,
+    request: LaunchDatasetMultimodalTrainRequest,
+) -> LaunchJobResponse:
+    return services.jobs.launch_dataset_multimodal_train(request)
 
 
 @router.post("/backtest", response_model=LaunchJobResponse)

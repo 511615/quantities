@@ -19,6 +19,7 @@ from quant_platform.data.contracts.series import NormalizedSeriesPoint
 
 class FredSeriesConnector(DataConnector):
     BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+    PUBLIC_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
     def __init__(self, api_key_env: str = "FRED_API_KEY") -> None:
         self.api_key_env = api_key_env
@@ -27,29 +28,31 @@ class FredSeriesConnector(DataConnector):
             vendor="fred",
             display_name="FRED time series API",
             capabilities=["series_observations", "incremental_fetch"],
-            requires_credentials=True,
+            requires_credentials=False,
             status="active",
         )
 
     def ingest(self, request: IngestionRequest) -> IngestionResult:
         series_id = self._require_identifier(request)
         api_key = os.getenv(self.api_key_env)
-        if not api_key:
-            raise DataConnectorError(
-                data_domain="macro",
-                vendor="fred",
-                identifier=series_id,
-                message=f"{self.api_key_env} is not configured for FRED ingestion.",
-                retryable=False,
-                code="credentials_missing",
+        frequency = request.frequency or "1d"
+        transport = "fred_api"
+        if api_key:
+            points = self._fetch_observations(
+                series_id=series_id,
+                start_time=request.time_range.start,
+                end_time=request.time_range.end,
+                api_key=api_key,
+                frequency=frequency,
             )
-        points = self._fetch_observations(
-            series_id=series_id,
-            start_time=request.time_range.start,
-            end_time=request.time_range.end,
-            api_key=api_key,
-            frequency=request.frequency or "1d",
-        )
+        else:
+            points = self._fetch_public_csv_observations(
+                series_id=series_id,
+                start_time=request.time_range.start,
+                end_time=request.time_range.end,
+                frequency=frequency,
+            )
+            transport = "fred_public_csv"
         return IngestionResult(
             request_id=request.request_id,
             data_domain=request.data_domain,
@@ -63,7 +66,8 @@ class FredSeriesConnector(DataConnector):
             ),
             metadata={
                 "series_id": series_id,
-                "frequency": request.frequency or "1d",
+                "frequency": frequency,
+                "transport": transport,
                 "rows": [point.model_dump(mode="json") for point in points],
             },
         )
@@ -99,6 +103,56 @@ class FredSeriesConnector(DataConnector):
             value = item.get("value")
             date_value = item.get("date")
             if value in {None, "."} or not isinstance(date_value, str):
+                continue
+            event_time = datetime.fromisoformat(f"{date_value}T00:00:00+00:00")
+            points.append(
+                NormalizedSeriesPoint(
+                    event_time=event_time,
+                    available_time=event_time,
+                    series_key=series_id,
+                    entity_key=series_id,
+                    domain="macro",
+                    vendor="fred",
+                    metric_name="value",
+                    frequency=frequency,
+                    value=float(value),
+                    dimensions={"series_id": series_id},
+                )
+            )
+        points.sort(key=lambda item: item.event_time)
+        return points
+
+    def _fetch_public_csv_observations(
+        self,
+        *,
+        series_id: str,
+        start_time: datetime,
+        end_time: datetime,
+        frequency: str,
+    ) -> list[NormalizedSeriesPoint]:
+        query = urlencode(
+            {
+                "id": series_id,
+                "cosd": start_time.date().isoformat(),
+                "coed": end_time.date().isoformat(),
+            }
+        )
+        with urlopen(f"{self.PUBLIC_CSV_URL}?{query}", timeout=30) as response:
+            payload = response.read().decode("utf-8")
+        lines = [line.strip() for line in payload.splitlines() if line.strip()]
+        if not lines:
+            raise DataConnectorError(
+                data_domain="macro",
+                vendor="fred",
+                identifier=series_id,
+                message="FRED public CSV response was empty.",
+                retryable=True,
+                code="empty_result",
+            )
+        points: list[NormalizedSeriesPoint] = []
+        for raw_line in lines[1:]:
+            date_value, _, value = raw_line.partition(",")
+            if not date_value or value in {"", "."}:
                 continue
             event_time = datetime.fromisoformat(f"{date_value}T00:00:00+00:00")
             points.append(

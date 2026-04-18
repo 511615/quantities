@@ -329,7 +329,11 @@ def _bootstrap_test_artifacts(facade: QuantPlatformFacade, artifact_root: Path) 
             target_run_dir = artifact_root / "models" / run_id
             if source_run_dir.exists() and not target_run_dir.exists():
                 shutil.copytree(source_run_dir, target_run_dir)
-    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("QUANT_PLATFORM_OFFLINE_BENCHMARK"):
+    if (
+        os.getenv(ENV_TEST_ARTIFACT_ROOT)
+        or os.getenv("PYTEST_CURRENT_TEST")
+        or os.getenv("QUANT_PLATFORM_OFFLINE_BENCHMARK")
+    ):
         _bootstrap_pytest_fixture_runs(artifact_root)
     smoke_dataset_path = artifact_root / "datasets" / "smoke_dataset_dataset_ref.json"
     if not smoke_dataset_path.exists():

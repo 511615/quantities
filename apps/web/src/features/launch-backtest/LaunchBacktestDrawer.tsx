@@ -26,6 +26,7 @@ import {
   localizeBacktestRequirement,
   localizeBacktestTemplateName,
 } from "../../shared/lib/protocolI18n";
+import { ModalityQualitySummary } from "../../shared/ui/ModalityQualitySummary";
 import { StatusPill } from "../../shared/ui/StatusPill";
 
 type LaunchBacktestDrawerProps = {
@@ -204,9 +205,13 @@ function resolveRunOfficialEligibility(run?: RunDetailView | null) {
   };
 }
 
-function isNlpModality(value?: string | null) {
+function isAuxiliaryModality(value?: string | null) {
   const modality = normalizeModality(value);
   return Boolean(modality) && modality !== "market";
+}
+
+function isTextModality(value?: string | null) {
+  return normalizeModality(value) === "nlp";
 }
 
 function localizeRequirementItemText(item: string) {
@@ -360,24 +365,22 @@ export function LaunchBacktestDrawer({
         ? [fallbackBoundDatasetId]
         : [];
   const runDatasets = runQuery.data?.datasets ?? [];
-  const marketDatasetId =
+  const explicitMarketDatasetId =
     runDatasets.find((item: DatasetReferenceView) => normalizeModality(item.modality) === "market")
-      ?.dataset_id ??
-    boundDatasetIds[0] ??
+      ?.dataset_id ?? null;
+  const explicitAuxiliaryDatasetId =
+    runDatasets.find((item: DatasetReferenceView) => isAuxiliaryModality(item.modality))?.dataset_id ??
     null;
-  const nlpDatasetId =
-    runDatasets.find((item: DatasetReferenceView) => isNlpModality(item.modality))?.dataset_id ??
+  const marketDatasetId =
+    explicitMarketDatasetId ?? (!explicitAuxiliaryDatasetId ? boundDatasetIds[0] ?? null : null);
+  const auxiliaryDatasetId =
+    explicitAuxiliaryDatasetId ??
     boundDatasetIds.find((item) => item !== marketDatasetId) ??
-    null;
+    (explicitMarketDatasetId ? null : boundDatasetIds[0] ?? null);
   const customDatasetIds = normalizeDatasetIds(datasetIdsText);
-  const marketReadinessQuery = useDatasetReadiness(
-    mode === "official" ? marketDatasetId : null,
-    mode === "official" && Boolean(marketDatasetId),
-  );
-  const nlpReadinessQuery = useDatasetReadiness(
-    mode === "official" ? nlpDatasetId : null,
-    mode === "official" && Boolean(nlpDatasetId) && nlpDatasetId !== marketDatasetId,
-  );
+  const hasBoundAuxiliaryContext =
+    Boolean(auxiliaryDatasetId) ||
+    runDatasets.some((item: DatasetReferenceView) => isAuxiliaryModality(item.modality));
   const officialPreflightQuery = useBacktestPreflight(
     {
       run_id: runId.trim(),
@@ -389,9 +392,27 @@ export function LaunchBacktestDrawer({
       Boolean(runId.trim()) &&
       Boolean(optionsQuery.data?.official_template_id),
   );
+  const officialMarketDatasetId =
+    mode === "official"
+      ? officialPreflightQuery.data?.official_market_dataset_id ?? OFFICIAL_MARKET_DATASET_ID
+      : marketDatasetId;
+  const officialMultimodalDatasetId =
+    mode === "official" &&
+    (officialPreflightQuery.data?.requires_multimodal_benchmark || hasBoundAuxiliaryContext)
+      ? officialPreflightQuery.data?.official_multimodal_dataset_id ?? OFFICIAL_MULTIMODAL_DATASET_ID
+      : null;
+  const marketReadinessQuery = useDatasetReadiness(
+    mode === "official" ? officialMarketDatasetId : null,
+    mode === "official" && Boolean(officialMarketDatasetId),
+  );
+  const multimodalReadinessQuery = useDatasetReadiness(
+    mode === "official" ? officialMultimodalDatasetId : null,
+    mode === "official" && Boolean(officialMultimodalDatasetId),
+  );
   const jobQuery = useJobStatus(jobId);
-  const officialReadiness = nlpReadinessQuery.data ?? marketReadinessQuery.data;
   const officialPreflight = officialPreflightQuery.data;
+  const marketReadiness = marketReadinessQuery.data;
+  const multimodalReadiness = multimodalReadinessQuery.data;
   const officialTemplate = optionsQuery.data?.template_options?.find(
     (item) => item.template_id === optionsQuery.data?.official_template_id,
   );
@@ -399,13 +420,13 @@ export function LaunchBacktestDrawer({
   const officialSchemaVersion =
     optionsQuery.data?.official_multimodal_schema_version ?? "official_multimodal_standard_v1";
   const officialSchemaFeatureNames = optionsQuery.data?.official_multimodal_feature_names ?? [];
-  const officialNlpGateFailed =
-    officialPreflight?.nlp_gate_status === "failed" ||
-    officialReadiness?.official_nlp_gate_status === "failed";
+  const officialNlpGateStatus =
+    officialPreflight?.nlp_gate_status ?? multimodalReadiness?.official_nlp_gate_status ?? null;
+  const officialNlpGateFailed = officialNlpGateStatus === "failed";
   const officialGateReasons =
     officialPreflight?.nlp_gate_reasons?.length
       ? officialPreflight.nlp_gate_reasons
-      : officialReadiness?.official_nlp_gate_reasons ?? [];
+      : multimodalReadiness?.official_nlp_gate_reasons ?? [];
   const officialBlockingReasons = officialPreflight?.blocking_reasons ?? [];
   const officialSchemaMissingFeatures = officialPreflight?.missing_official_feature_names ?? [];
   const officialPreflightPending =
@@ -429,7 +450,7 @@ export function LaunchBacktestDrawer({
       officialBlockingReasons[0] ??
       officialRunBlockingReasons[0] ??
       officialGateReasons[0] ??
-      (officialNlpGateFailed ? "官方 NLP 门禁未通过。" : null);
+      (officialNlpGateFailed ? "官方 NLP 文本门禁未通过。" : null);
   const officialBlockingSummaryText = officialBlockingSummary
     ? localizeBlockingReason(
         officialBlockingSummary,
@@ -446,19 +467,19 @@ export function LaunchBacktestDrawer({
           : "不兼容"
         : "--";
   const actualMarketWindow = formatWindow(
-    officialReadiness?.market_window_start_time,
-    officialReadiness?.market_window_end_time,
+    marketReadiness?.market_window_start_time,
+    marketReadiness?.market_window_end_time,
   );
   const officialTestWindow = formatWindow(
-    officialReadiness?.official_backtest_start_time,
-    officialReadiness?.official_backtest_end_time,
+    marketReadiness?.official_backtest_start_time,
+    marketReadiness?.official_backtest_end_time,
   );
   const actualNlpWindow = formatWindow(
-    officialReadiness?.nlp_actual_start_time,
-    officialReadiness?.nlp_actual_end_time,
+    multimodalReadiness?.nlp_actual_start_time,
+    multimodalReadiness?.nlp_actual_end_time,
   );
   const rollingWindowEnd =
-    officialReadiness?.nlp_actual_end_time ?? officialReadiness?.market_window_end_time ?? null;
+    multimodalReadiness?.nlp_actual_end_time ?? marketReadiness?.market_window_end_time ?? null;
   const rollingWindow = computeOfficialRollingWindow(rollingWindowEnd, officialWindowDays);
   const officialRollingWindow = officialPreflight
     ? formatWindow(
@@ -495,11 +516,38 @@ export function LaunchBacktestDrawer({
           },
         ];
   const hasRunId = Boolean(runId.trim());
+  const hasOfficialAuxiliaryContext =
+    Boolean(officialMultimodalDatasetId) ||
+    Boolean(officialPreflight?.requires_auxiliary_features) ||
+    Boolean(officialPreflight?.requires_multimodal_benchmark) ||
+    Boolean(multimodalReadiness);
   const hasOfficialNlpContext =
-    Boolean(nlpDatasetId) ||
+    runDatasets.some((item: DatasetReferenceView) => isTextModality(item.modality)) ||
     Boolean(officialPreflight?.requires_text_features) ||
-    Boolean(officialReadiness?.nlp_actual_end_time) ||
-    Boolean(officialReadiness?.nlp_actual_start_time);
+    Boolean(multimodalReadiness?.nlp_actual_end_time) ||
+    Boolean(multimodalReadiness?.nlp_actual_start_time) ||
+    Boolean(officialNlpGateStatus);
+  const officialRequiredModalities = officialPreflight?.required_modalities ?? [];
+  const officialDatasetIds =
+    officialPreflight?.official_dataset_ids?.length
+      ? officialPreflight.official_dataset_ids
+      : [officialMarketDatasetId, officialMultimodalDatasetId].filter(
+          (item): item is string => Boolean(item),
+        );
+  const mergedModalityQualitySummary = {
+    ...(marketReadiness?.modality_quality_summary ?? {}),
+    ...(multimodalReadiness?.modality_quality_summary ?? {}),
+    ...(officialPreflight?.modality_quality_summary ?? {}),
+  };
+  const officialModalityQualitySummary =
+    Object.keys(mergedModalityQualitySummary).length > 0 ? mergedModalityQualitySummary : null;
+  const officialQualityBlockingReasons =
+    officialPreflight?.quality_blocking_reasons?.length
+      ? officialPreflight.quality_blocking_reasons
+      : [
+          ...(marketReadiness?.blocking_issues ?? []),
+          ...(multimodalReadiness?.blocking_issues ?? []),
+        ];
   const officialSummaryItems: SummaryItem[] = hasRunId
     ? [
         {
@@ -519,7 +567,10 @@ export function LaunchBacktestDrawer({
           ? [{ label: "官方基准版本", value: officialPreflight.official_benchmark_version }]
           : []),
         ...(officialPreflight?.requires_text_features !== undefined
-          ? [{ label: "需要 NLP", value: boolLabel(officialPreflight.requires_text_features) }]
+          ? [{ label: "需要文本模态", value: boolLabel(officialPreflight.requires_text_features) }]
+          : []),
+        ...(officialPreflight?.requires_auxiliary_features !== undefined
+          ? [{ label: "需要辅助模态", value: boolLabel(officialPreflight.requires_auxiliary_features) }]
           : []),
         ...(officialPreflight?.required_modalities?.length
           ? [
@@ -540,10 +591,10 @@ export function LaunchBacktestDrawer({
     : [];
   const officialWindowItems: SummaryItem[] = [
     { label: "最新官方窗口", value: officialRollingWindow },
-    ...(officialReadiness?.market_window_end_time
+    ...(marketReadiness?.market_window_end_time
       ? [{ label: "实际市场窗口", value: actualMarketWindow }]
       : []),
-    ...(officialReadiness?.official_backtest_end_time
+    ...(marketReadiness?.official_backtest_end_time
       ? [{ label: "官方测试窗口", value: officialTestWindow }]
       : []),
     ...(hasOfficialNlpContext && actualNlpWindow !== "--"
@@ -553,7 +604,7 @@ export function LaunchBacktestDrawer({
   const bindingItems = [
     boundDatasetIds.length > 0 ? `训练参考数据集：${boundDatasetIds.join(", ")}` : null,
     `官方市场数据集 ID：${officialPreflight?.official_market_dataset_id ?? OFFICIAL_MARKET_DATASET_ID}`,
-    officialPreflight?.official_multimodal_dataset_id || hasOfficialNlpContext
+    officialPreflight?.official_multimodal_dataset_id || hasOfficialAuxiliaryContext
       ? `官方多模态数据集 ID：${officialPreflight?.official_multimodal_dataset_id ?? OFFICIAL_MULTIMODAL_DATASET_ID}`
       : null,
     officialTemplate?.scenario_bundle?.length
@@ -764,6 +815,7 @@ export function LaunchBacktestDrawer({
     <div className="drawer-wrap">
       <button
         className="action-button secondary"
+        data-testid="launch-backtest-trigger"
         onClick={() => setOpen(true)}
         type="button"
       >
@@ -803,6 +855,7 @@ export function LaunchBacktestDrawer({
               <div className="segmented-tabs" role="tablist" aria-label="回测模式">
                 <button
                   className={`tab-chip ${mode === "official" ? "active" : ""}`}
+                  data-testid="backtest-mode-official"
                   onClick={() => setMode("official")}
                   type="button"
                 >
@@ -810,6 +863,7 @@ export function LaunchBacktestDrawer({
                 </button>
                 <button
                   className={`tab-chip ${mode === "custom" ? "active" : ""}`}
+                  data-testid="backtest-mode-custom"
                   onClick={() => setMode("custom")}
                   type="button"
                 >
@@ -822,13 +876,18 @@ export function LaunchBacktestDrawer({
                   <div className="backtest-launch-primary-grid">
                     <label className="backtest-launch-field-wide">
                       <span>训练实例 ID</span>
-                      <input onChange={(event) => setRunId(event.target.value)} value={runId} />
+                      <input
+                        data-testid="backtest-run-id"
+                        onChange={(event) => setRunId(event.target.value)}
+                        value={runId}
+                      />
                     </label>
 
                     {mode === "official" ? (
                       <label>
                         <span>官方窗口</span>
                         <select
+                          data-testid="official-window-days-select"
                           onChange={(event) =>
                             setOfficialWindowDays(parseOfficialWindowDays(event.target.value))
                           }
@@ -871,6 +930,7 @@ export function LaunchBacktestDrawer({
                   <div className="backtest-launch-submit">
                     <button
                       className="action-button secondary"
+                      data-testid="submit-backtest-launch"
                       disabled={
                         mutation.isPending ||
                         optionsQuery.isLoading ||
@@ -920,7 +980,7 @@ export function LaunchBacktestDrawer({
                             </strong>
                             <p>
                               {officialPreflightPending
-                                ? "正在校验官方窗口、市场锚点和 NLP 门禁。"
+                                ? "正在校验官方窗口、市场锚点和多模态约束。"
                                 : "首屏只保留发起所需摘要，详细协议默认收起。"}
                             </p>
                           </div>
@@ -960,6 +1020,50 @@ export function LaunchBacktestDrawer({
                         />
                       </details>
 
+                      {(officialDatasetIds.length > 0 || officialModalityQualitySummary) ? (
+                        <details className="backtest-launch-disclosure">
+                          <summary>五模态质量与官方数据绑定</summary>
+                          <div className="backtest-launch-disclosure-body">
+                            <SummaryGrid
+                              items={[
+                                {
+                                  label: "Required Modalities",
+                                  value:
+                                    officialRequiredModalities.length > 0
+                                      ? officialRequiredModalities
+                                          .map((modality) => formatModalityLabel(modality))
+                                          .join(" / ")
+                                      : "--",
+                                },
+                                {
+                                  label: "Official Dataset IDs",
+                                  value:
+                                    officialDatasetIds.length > 0
+                                      ? officialDatasetIds.join(" / ")
+                                      : "--",
+                                },
+                              ]}
+                            />
+                            {officialQualityBlockingReasons.length > 0 ? (
+                              <DisclosureList
+                                emptyText="No quality blocking reasons."
+                                items={officialQualityBlockingReasons}
+                              />
+                            ) : null}
+                            <ModalityQualitySummary
+                              emptyText="No modality quality summary returned for official preflight."
+                              modalities={
+                                officialRequiredModalities.length > 0
+                                  ? officialRequiredModalities
+                                  : undefined
+                              }
+                              summary={officialModalityQualitySummary}
+                              title="Official modality quality summary"
+                            />
+                          </div>
+                        </details>
+                      ) : null}
+
                       {(localizedGateReasons.length > 0 || hasOfficialNlpContext) ? (
                         <details className="backtest-launch-disclosure">
                           <summary>NLP 门禁说明</summary>
@@ -969,14 +1073,13 @@ export function LaunchBacktestDrawer({
                                 {
                                   label: "NLP Gate",
                                   value: gateStatusLabel(
-                                    officialPreflight?.nlp_gate_status ??
-                                      officialReadiness?.official_nlp_gate_status,
+                                    officialNlpGateStatus,
                                   ),
                                   tone: officialNlpGateFailed ? "danger" : "default",
                                 },
                                 {
                                   label: "仅归档型 NLP",
-                                  value: boolLabel(officialReadiness?.archival_nlp_source_only),
+                                  value: boolLabel(multimodalReadiness?.archival_nlp_source_only),
                                 },
                               ]}
                             />

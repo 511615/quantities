@@ -24,6 +24,7 @@ import {
   localizeProtocolValue,
 } from "../shared/lib/protocolI18n";
 import { mapBacktestDetail } from "../shared/view-model/mappers";
+import { ModalityQualitySummary } from "../shared/ui/ModalityQualitySummary";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 import { WorkbenchChart } from "../shared/ui/WorkbenchChart";
@@ -106,22 +107,22 @@ function gateStatusLabel(status: string | null | undefined) {
 
 function protocolLabel(key: string) {
   const labels: Record<string, string> = {
-    train_start_time: "训练开始时间",
-    train_end_time: "训练结束时间",
+    train_dataset_window: "训练数据集窗口",
     lookback_window: "回看窗口",
     label_horizon: "标签跨度",
-    modalities: "模态",
-    fusion_summary: "融合摘要",
+    modalities_and_fusion_summary: "模态 / 融合摘要",
     random_seed: "随机种子",
-    tuning_trials: "调参轮数",
-    external_pretraining: "外部预训练",
-    synthetic_data: "合成数据",
-    actual_market_start_time: "实际市场开始时间",
-    actual_market_end_time: "实际市场结束时间",
-    actual_backtest_start_time: "官方测试开始时间",
-    actual_backtest_end_time: "官方测试结束时间",
-    actual_nlp_start_time: "实际 NLP 覆盖开始时间",
-    actual_nlp_end_time: "实际 NLP 覆盖结束时间",
+    tuning_trial_count: "调参轮数",
+    external_pretraining_flag: "外部预训练",
+    synthetic_data_flag: "合成数据",
+    actual_market_dataset_window: "实际市场窗口",
+    actual_official_backtest_window: "官方测试窗口",
+    actual_nlp_coverage_window: "实际 NLP 覆盖 / 门禁",
+    required_modalities_resolved: "要求模态",
+    official_rolling_benchmark_version: "官方 benchmark 版本",
+    official_rolling_window_size: "官方窗口档位",
+    official_market_benchmark_dataset_id: "官方市场基准数据集",
+    official_multimodal_benchmark_dataset_id: "官方多模态基准数据集",
   };
   return labels[key] ?? localizeBacktestMetadata(key);
 }
@@ -199,29 +200,16 @@ function summarizeWarnings(warnings: string[]) {
   return Array.from(counter.entries()).map(([warning, count]) => ({ warning, count }));
 }
 
-function diagnosticMetric(
-  diagnostics: Record<string, unknown> | null | undefined,
-  group: string,
-  key: string,
-) {
-  if (!diagnostics) {
-    return null;
-  }
-  const bucket = diagnostics[group];
-  if (!bucket || typeof bucket !== "object") {
-    return null;
-  }
-  const value = (bucket as Record<string, unknown>)[key];
-  return typeof value === "number" ? value : null;
-}
-
 function summarizeProtocolFailures(protocol: BacktestReportView["protocol"] | null | undefined) {
-  return (protocol?.gate_results ?? [])
-    .filter((item) => !item.passed)
-    .map(
-      (item) =>
-        `${localizeBacktestGateLabel(item.label, item.label_key)}: ${localizeBacktestGateDetail(item.detail, item.detail_key)}`,
-    );
+  return (protocol?.protocol_gate_failures ?? []).map((item) => ({
+    title: localizeBacktestGateLabel(item.label, item.label_key),
+    reasons:
+      item.reasons.length > 0
+        ? item.reasons.map((reason, index) =>
+            localizeBacktestGateDetail(reason, item.reason_keys?.[index] ?? null),
+          )
+        : [localizeBacktestGateDetail(null, null)],
+  }));
 }
 
 function metricTiles(title: string, metrics: Record<string, number>) {
@@ -398,26 +386,21 @@ export function BacktestReportPage() {
   const simulationMetrics = detail.simulation?.metrics ?? {};
   const protocol = detail.protocol;
   const protocolFailureMessages = summarizeProtocolFailures(protocol);
-  const simulationOrderCount = diagnosticMetric(
-    detail.simulation?.diagnostics ?? null,
-    "execution_metrics",
-    "order_count",
-  );
-  const simulationFillCount = diagnosticMetric(
-    detail.simulation?.diagnostics ?? null,
-    "execution_metrics",
-    "fill_count",
-  );
-  const signalCount =
-    diagnosticMetric(detail.simulation?.diagnostics ?? null, "signal_metrics", "signal_count") ??
-    diagnosticMetric(detail.research?.diagnostics ?? null, "signal_metrics", "signal_count");
+  const executionDiagnostics = detail.execution_diagnostics_summary;
+  const signalCount = executionDiagnostics?.signal_count ?? null;
+  const orderCount = executionDiagnostics?.order_count ?? null;
+  const fillCount = executionDiagnostics?.fill_count ?? null;
   const noTradeOutcome =
-    (simulationOrderCount === 0 || simulationFillCount === 0) &&
-    (signalCount ?? 0) > 0;
+    (signalCount ?? 0) > 0 && ((orderCount ?? 0) === 0 || (fillCount ?? 0) === 0);
+  const protocolFailureText = protocolFailureMessages.flatMap((item) =>
+    item.reasons.map((reason) => `${item.title}: ${reason}`),
+  );
   const surfacedIssues = [
-    ...protocolFailureMessages,
+    ...protocolFailureText,
     ...(noTradeOutcome
-      ? ["这条回测产生了信号，但没有形成订单或成交，因此顶部指标不具备可解释性。"]
+      ? executionDiagnostics?.block_reasons?.length
+        ? executionDiagnostics.block_reasons
+        : ["这条回测产生了信号，但没有形成订单或成交，因此顶部指标不具备可解释性。"]
       : []),
   ];
   const simulationCurve = detail.simulation?.positions ?? [];
@@ -454,6 +437,15 @@ export function BacktestReportPage() {
     protocol?.actual_nlp_end_time,
   );
   const requiredModalities = protocol?.required_modalities ?? [];
+  const modalityQualitySummary = detail.modality_quality_summary ?? protocol?.modality_quality_summary ?? null;
+  const qualityBlockingReasons =
+    detail.quality_blocking_reasons?.length
+      ? detail.quality_blocking_reasons
+      : protocol?.quality_blocking_reasons ?? [];
+  const dataQualityReady =
+    modalityQualitySummary !== null &&
+    Object.values(modalityQualitySummary).every((item) => item.status === "ready") &&
+    qualityBlockingReasons.length === 0;
   const officialBenchmarkDatasetIds =
     protocol?.official_dataset_ids?.length
       ? protocol.official_dataset_ids
@@ -493,7 +485,9 @@ export function BacktestReportPage() {
             </strong>
             <span>
               {isOfficialResultInvalid
-                ? "协议门禁没有通过，这条历史回测记录只能作为排错样本，不能当作有效官方结果使用。"
+                ? dataQualityReady
+                  ? "数据质量已达标，但协议资格没有通过。这条历史回测记录只能作为排错样本，不能当作有效官方结果使用。"
+                  : "这条历史回测记录同时存在协议资格或数据质量问题，不能当作有效官方结果使用。"
                 : "这条回测没有形成实际成交，页面中的收益和风险指标不具备解释价值。"}
             </span>
             {surfacedIssues.length > 0 ? (
@@ -526,6 +520,10 @@ export function BacktestReportPage() {
             <div className="metric-tile">
               <span>{isOfficialTemplate ? "结果有效性" : "一致性检查"}</span>
               <strong>{headlineStatusLabel}</strong>
+            </div>
+            <div className="metric-tile">
+              <span>数据质量</span>
+              <strong>{dataQualityReady ? "合格" : "需复核"}</strong>
             </div>
             <div className="metric-tile">
               <span>{isOfficialTemplate ? "复核项" : "告警数"}</span>
@@ -651,7 +649,28 @@ export function BacktestReportPage() {
                       : "--"}
                   </span>
                 </div>
+                {qualityBlockingReasons.length > 0 ? (
+                  <div className="stack-item align-start">
+                    <strong>质量阻断原因</strong>
+                    <span>{qualityBlockingReasons.join(" / ")}</span>
+                  </div>
+                ) : null}
               </div>
+            </section>
+          ) : null}
+
+          {modalityQualitySummary ? (
+            <section className="panel">
+              <PanelHeader
+                eyebrow="模态质量"
+                title={dataQualityReady ? "官方模态质量摘要（已通过）" : "官方模态质量摘要"}
+                description="这里展示进入官方回测前的五模态质量结论，便于确认哪些模态通过了正式门禁。"
+              />
+              <ModalityQualitySummary
+                modalities={requiredModalities.length > 0 ? requiredModalities : undefined}
+                summary={modalityQualitySummary}
+                title="Backtest modality quality summary"
+              />
             </section>
           ) : null}
 
@@ -756,6 +775,36 @@ export function BacktestReportPage() {
             </section>
 
             <section className="panel">
+              <PanelHeader eyebrow="协议失败" title="协议失败原因" />
+              {protocolFailureMessages.length > 0 ? (
+                <div className="stack-list">
+                  {protocolFailureMessages.map((item) => (
+                    <div className="stack-item align-start" key={item.title}>
+                      <strong>{item.title}</strong>
+                      <span>{item.reasons.join(" / ")}</span>
+                    </div>
+                  ))}
+                  {protocol.missing_required_metadata_labels?.length ? (
+                    <div className="stack-item align-start">
+                      <strong>缺失披露字段</strong>
+                      <span>{protocol.missing_required_metadata_labels.join(" / ")}</span>
+                    </div>
+                  ) : null}
+                  {protocol.missing_stress_scenarios?.length ? (
+                    <div className="stack-item align-start">
+                      <strong>缺失压力场景</strong>
+                      <span>{protocol.missing_stress_scenarios.join(" / ")}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <EmptyState title="协议门禁已通过" body="当前没有协议资格失败项。" />
+              )}
+            </section>
+          </div>
+
+          <div className="detail-grid wide-secondary">
+            <section className="panel">
               <PanelHeader eyebrow="元数据" title="协议元数据" />
               {protocolMetadata.length > 0 ? (
                 <div className="stack-list">
@@ -768,6 +817,45 @@ export function BacktestReportPage() {
                 </div>
               ) : (
                 <EmptyState title="暂无元数据" body="当前没有可展示的协议元数据摘要。" />
+              )}
+            </section>
+            <section className="panel">
+              <PanelHeader eyebrow="执行诊断" title="信号到订单链路" />
+              {executionDiagnostics ? (
+                <div className="stack-list">
+                  <div className="stack-item">
+                    <strong>signal_count</strong>
+                    <span>{formatMetric("signal_count", executionDiagnostics.signal_count)}</span>
+                  </div>
+                  <div className="stack-item">
+                    <strong>eligible_order_count</strong>
+                    <span>{formatMetric("eligible_order_count", executionDiagnostics.eligible_order_count)}</span>
+                  </div>
+                  <div className="stack-item">
+                    <strong>blocked_order_count</strong>
+                    <span>{formatMetric("blocked_order_count", executionDiagnostics.blocked_order_count)}</span>
+                  </div>
+                  <div className="stack-item">
+                    <strong>order_count</strong>
+                    <span>{formatMetric("order_count", executionDiagnostics.order_count)}</span>
+                  </div>
+                  <div className="stack-item">
+                    <strong>fill_count</strong>
+                    <span>{formatMetric("fill_count", executionDiagnostics.fill_count)}</span>
+                  </div>
+                  <div className="stack-item">
+                    <strong>position_open_count</strong>
+                    <span>{formatMetric("position_open_count", executionDiagnostics.position_open_count)}</span>
+                  </div>
+                  {executionDiagnostics.block_reasons.map((reason) => (
+                    <div className="stack-item align-start" key={reason}>
+                      <strong>阻断原因</strong>
+                      <span>{reason}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState title="暂无执行诊断" body="当前没有额外的信号到订单诊断摘要。" />
               )}
             </section>
           </div>

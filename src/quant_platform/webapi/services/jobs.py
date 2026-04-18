@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 import uuid
@@ -22,6 +23,7 @@ from quant_platform.backtest.contracts.backtest import (
     StrategyConfig,
 )
 from quant_platform.backtest.contracts.scenario import ScenarioSpec
+from quant_platform.backtest.strategy.signal_calibration import robust_normalize
 from quant_platform.common.hashing.digest import stable_digest
 from quant_platform.common.types.core import TimeRange
 from quant_platform.common.types.core import SchemaField
@@ -43,6 +45,7 @@ from quant_platform.webapi.schemas.launch import (
     BacktestLaunchOptionsView,
     LaunchBacktestRequest,
     LaunchBacktestPreflightRequest,
+    LaunchDatasetMultimodalTrainRequest,
     LaunchJobResponse,
     LaunchModelCompositionRequest,
     LaunchTrainRequest,
@@ -74,6 +77,8 @@ from quant_platform.webapi.services.backtest_protocol import (
     OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
     OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID,
     OFFICIAL_WINDOW_OPTIONS,
+    _missing_required_metadata,
+    _stress_bundle_missing_scenarios,
     build_custom_backtest_request,
     build_official_backtest_request,
     build_protocol_metadata,
@@ -175,6 +180,18 @@ class JobService:
             lambda context: self._run_train_job(context, request),
         )
 
+    def launch_dataset_multimodal_train(
+        self,
+        request: LaunchDatasetMultimodalTrainRequest,
+    ) -> LaunchJobResponse:
+        return self._create_job(
+            "dataset_multimodal_train",
+            lambda context: self._run_dataset_multimodal_train_job(context, request),
+            initial_result=JobResultView(
+                requested_stages=self._dataset_multimodal_train_requested_stages(request)
+            ),
+        )
+
     def launch_backtest(self, request: LaunchBacktestRequest) -> LaunchJobResponse:
         return self._create_job(
             "backtest",
@@ -256,6 +273,34 @@ class JobService:
                     description="Single-pass deterministic training for the MVP workbench.",
                     recommended=True,
                 )
+            ],
+            feature_scope_modalities=[
+                PresetOptionView(
+                    value="market",
+                    label="Market",
+                    description="Train using market-only features.",
+                    recommended=True,
+                ),
+                PresetOptionView(
+                    value="macro",
+                    label="Macro",
+                    description="Train using macro-only features.",
+                ),
+                PresetOptionView(
+                    value="on_chain",
+                    label="On-chain",
+                    description="Train using on-chain-only features.",
+                ),
+                PresetOptionView(
+                    value="derivatives",
+                    label="Derivatives",
+                    description="Train using derivatives-only features.",
+                ),
+                PresetOptionView(
+                    value="nlp",
+                    label="NLP",
+                    description="Train using archival NLP-only features.",
+                ),
             ],
             default_seed=7,
             constraints={
@@ -495,6 +540,152 @@ class JobService:
             ),
         )
 
+    def _run_dataset_multimodal_train_job(
+        self,
+        context: JobContext,
+        request: LaunchDatasetMultimodalTrainRequest,
+    ) -> JobResultView:
+        requested_stages = self._dataset_multimodal_train_requested_stages(request)
+        context.start_stage("prepare_dataset", f"Loading dataset '{request.dataset_id}'")
+        dataset_ref = self._load_dataset_from_artifacts(request.dataset_id)
+        readiness = self.workbench.get_dataset_readiness(request.dataset_id)
+        if readiness is None:
+            raise JobExecutionError(
+                f"Unable to resolve readiness for dataset '{request.dataset_id}'."
+            )
+        available_modalities = self._dataset_available_modalities(request.dataset_id)
+        selected_modalities = [
+            self._normalize_modality(modality)
+            for modality in request.selected_modalities
+            if self._normalize_modality(modality) != "unknown"
+        ]
+        selected_modalities = list(
+            dict.fromkeys(
+                sorted(selected_modalities, key=self._modality_sort_key)
+            )
+        )
+        if len(selected_modalities) < 2:
+            raise JobExecutionError("At least two quality-ready modalities must be selected.")
+        invalid_modalities = [modality for modality in selected_modalities if modality not in available_modalities]
+        if invalid_modalities:
+            raise JobExecutionError(
+                "Selected modalities are not present in this dataset: " + ", ".join(invalid_modalities)
+            )
+        missing_templates = [
+            modality
+            for modality in selected_modalities
+            if not self._str(request.template_by_modality.get(modality))
+        ]
+        if missing_templates:
+            raise JobExecutionError(
+                "A template must be selected for each modality: " + ", ".join(missing_templates)
+            )
+        blocked_modalities: list[str] = []
+        for modality in selected_modalities:
+            modality_quality = readiness.modality_quality_summary.get(modality)
+            if modality_quality is None or modality_quality.status != "ready":
+                blocked_modalities.append(
+                    f"{modality}: "
+                    + "; ".join(
+                        list(modality_quality.blocking_reasons)
+                        if modality_quality is not None and modality_quality.blocking_reasons
+                        else [f"{modality}_quality_not_ready"]
+                    )
+                )
+        if blocked_modalities:
+            raise JobExecutionError(
+                "Only quality-ready modalities can be selected: " + " / ".join(blocked_modalities)
+            )
+        context.finish_stage(
+            "prepare_dataset",
+            f"Loaded dataset '{request.dataset_id}' with modalities {', '.join(selected_modalities)}",
+        )
+
+        source_run_ids: list[str] = []
+        fit_result_uris: list[str] = []
+        for modality in selected_modalities:
+            train_request = LaunchTrainRequest(
+                dataset_id=request.dataset_id,
+                dataset_preset=None,
+                template_id=request.template_by_modality[modality],
+                trainer_preset=request.trainer_preset,
+                feature_scope_modality=modality,
+                seed=request.seed,
+                experiment_name=f"{request.experiment_name_prefix}-{modality}",
+                run_id_prefix=f"{request.experiment_name_prefix}-{modality}",
+            )
+            run_ids, train_fit_result_uris, _ = self._execute_train_stage(
+                context,
+                dataset_ref=dataset_ref,
+                request=train_request,
+                stage_name=f"train_{modality}",
+            )
+            source_run_ids.extend(run_ids)
+            fit_result_uris.extend(train_fit_result_uris)
+
+        composition_result = self._run_model_composition_job(
+            context,
+            LaunchModelCompositionRequest(
+                source_run_ids=source_run_ids,
+                composition_name=request.composition_name or f"{request.experiment_name_prefix}-fusion",
+                fusion_strategy=request.fusion_strategy,
+                dataset_ids=[request.dataset_id],
+            ),
+        )
+        composed_run_ids = composition_result.run_ids
+        result = JobResultView(
+            dataset_id=composition_result.dataset_id,
+            dataset_ids=composition_result.dataset_ids,
+            run_ids=[*composed_run_ids, *source_run_ids],
+            fit_result_uris=fit_result_uris,
+            requested_stages=requested_stages,
+            summary=StableSummaryView(
+                status="success",
+                headline=f"Multimodal training launched for {request.dataset_id}",
+                detail=(
+                    f"Source runs: {', '.join(source_run_ids)} / "
+                    f"Composed run: {', '.join(composed_run_ids)}"
+                ),
+            ),
+        )
+        self._update_status(context.job_id, result=result)
+        if not request.auto_launch_official_backtest:
+            return result
+        if not composed_run_ids:
+            raise JobExecutionError("Multimodal composition did not produce a composed run for official backtest.")
+        backtest_result = self._run_backtest_job(
+            context,
+            LaunchBacktestRequest(
+                run_id=composed_run_ids[0],
+                mode="official",
+                official_window_days=request.official_window_days or OFFICIAL_DEFAULT_WINDOW_DAYS,
+            ),
+        )
+        merged_dataset_ids = list(dict.fromkeys([*result.dataset_ids, *backtest_result.dataset_ids]))
+        backtest_ids = list(backtest_result.backtest_ids)
+        return result.model_copy(
+            update={
+                "dataset_ids": merged_dataset_ids,
+                "backtest_ids": backtest_ids,
+                "prediction_scope": backtest_result.prediction_scope,
+                "template_id": backtest_result.template_id,
+                "template_name": backtest_result.template_name,
+                "official": backtest_result.official,
+                "protocol_version": backtest_result.protocol_version,
+                "research_backend": backtest_result.research_backend,
+                "portfolio_method": backtest_result.portfolio_method,
+                "summary": StableSummaryView(
+                    status="success",
+                    headline=f"Multimodal training and official backtest completed for {request.dataset_id}",
+                    detail=(
+                        f"Source runs: {', '.join(source_run_ids)} / "
+                        f"Composed run: {', '.join(composed_run_ids)} / "
+                        f"Official backtest: {', '.join(backtest_ids)}"
+                    ),
+                ),
+            }
+        )
+
     def _run_backtest_job(
         self,
         context: JobContext,
@@ -593,9 +784,34 @@ class JobService:
                     dataset_feature_names = list(dataset_samples[0].features.keys())
                 else:
                     dataset_feature_names = [field.name for field in dataset_ref.feature_view_ref.feature_schema]
-                if dataset_feature_names != [str(item) for item in model_feature_names]:
-                    raise JobExecutionError(
-                        f"Dataset '{selected_dataset_id}' feature order does not match training run '{request.run_id}'."
+                expected_feature_names = [str(item) for item in model_feature_names]
+                if dataset_feature_names != expected_feature_names:
+                    if not set(expected_feature_names).issubset(set(dataset_feature_names)):
+                        raise JobExecutionError(
+                            f"Dataset '{selected_dataset_id}' feature order does not match training run '{request.run_id}'."
+                        )
+                    schema_by_name = {
+                        field.name: field for field in dataset_ref.feature_view_ref.feature_schema
+                    }
+                    scoped_feature_schema = [
+                        schema_by_name[name]
+                        for name in expected_feature_names
+                        if name in schema_by_name
+                    ]
+                    dataset_ref, _ = self._build_scoped_training_dataset_ref(
+                        dataset_ref=dataset_ref,
+                        source_dataset_id=selected_dataset_id,
+                        scoped_feature_schema=scoped_feature_schema,
+                        modality=(
+                            self._normalize_modality(
+                                self._str(run_metadata.get("feature_scope_modality"))
+                            )
+                            if self._normalize_modality(
+                                self._str(run_metadata.get("feature_scope_modality"))
+                            )
+                            != "unknown"
+                            else "market"
+                        ),
                     )
             market_bars = self.workbench.load_market_bars_for_dataset(selected_dataset_id)
             if not market_bars:
@@ -964,13 +1180,16 @@ class JobService:
             f"multimodal-compose-{datetime.now(UTC):%Y%m%d%H%M%S}-{uuid.uuid4().hex[:6]}"
         )
         display_name = request.composition_name.strip() if request.composition_name else "multimodal_fusion"
-        primary_source = next(item for item in source_specs if item["modality"] == "market")
+        primary_source = next(
+            (item for item in source_specs if item["modality"] == "market"),
+            source_specs[0],
+        )
         primary_dataset_id = primary_source["dataset_ids"][0]
         primary_detail = self.workbench.get_dataset_detail(primary_dataset_id)
         primary_payload = self.workbench.get_dataset_payload(primary_dataset_id) or {}
         primary_readiness = self.workbench.get_dataset_readiness(primary_dataset_id)
         if primary_detail is None:
-            raise JobExecutionError(f"Primary market dataset '{primary_dataset_id}' was not found.")
+            raise JobExecutionError(f"Primary composition dataset '{primary_dataset_id}' was not found.")
         context.start_stage("compose", f"Materializing composed run '{display_name}'")
 
         source_dataset_ids = list(
@@ -980,9 +1199,19 @@ class JobService:
                 for dataset_id in source["dataset_ids"]
             )
         )
+        source_disclosures = [
+            disclosure
+            for item in source_specs
+            if isinstance((disclosure := item.get("disclosure_metadata")), dict)
+        ]
         official_contract = self._official_composition_contract_summary(source_specs)
         model_dir = self.artifact_root / "models" / run_id
         model_dir.mkdir(parents=True, exist_ok=True)
+        disclosure_metadata = self._aggregate_composition_disclosure_metadata(
+            source_disclosures=source_disclosures,
+            required_modalities=[str(item["modality"]) for item in source_specs],
+            fusion_strategy=request.fusion_strategy,
+        )
         train_manifest = {
             "run_id": run_id,
             "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -1002,6 +1231,7 @@ class JobService:
             "dataset_readiness_warnings": list(primary_readiness.warnings) if primary_readiness else [],
             "source_dataset_ids": source_dataset_ids,
             "fusion_domains": [str(item["modality"]) for item in source_specs],
+            "disclosure_metadata": disclosure_metadata,
             "composition": {
                 "fusion_strategy": request.fusion_strategy,
                 "official_template_eligible": True,
@@ -1013,7 +1243,11 @@ class JobService:
                         "model_name": item["model_name"],
                         "modality": item["modality"],
                         "weight": item["weight"],
+                        "weight_source": item.get("weight_source"),
+                        "combination_quality": item.get("combination_quality"),
                         "dataset_ids": list(item["dataset_ids"]),
+                        "source_dataset_quality_status": item.get("source_dataset_quality_status"),
+                        "disclosure_metadata": item.get("disclosure_metadata"),
                     }
                     for item in source_specs
                 ],
@@ -1055,6 +1289,9 @@ class JobService:
                     "fusion_strategy": request.fusion_strategy,
                     "source_run_ids": [item["run_id"] for item in source_specs],
                     "weights": {item["run_id"]: item["weight"] for item in source_specs},
+                    "weight_sources": {
+                        item["run_id"]: item.get("weight_source") for item in source_specs
+                    },
                 },
             },
             "registration": {
@@ -1080,12 +1317,16 @@ class JobService:
             "best_epoch": None,
             "trained_steps": None,
             "checkpoint_tag": "composed",
+            "repro_context": {
+                "seed": disclosure_metadata.get("random_seed"),
+            },
             "input_metadata": {
                 "source_run_ids": [item["run_id"] for item in source_specs],
                 "source_dataset_ids": source_dataset_ids,
                 "official_template_eligible": True,
                 "official_blocking_reasons": [],
                 "official_contract": official_contract,
+                "disclosure_metadata": disclosure_metadata,
             },
             "prediction_metadata": {
                 "fusion_strategy": request.fusion_strategy,
@@ -1094,6 +1335,11 @@ class JobService:
                 "dataset_ids": source_dataset_ids,
                 "official_template_eligible": True,
                 "official_contract": official_contract,
+                "required_modalities": disclosure_metadata.get("required_modalities_resolved"),
+                "disclosure_metadata": disclosure_metadata,
+                "weight_sources": {
+                    item["run_id"]: item.get("weight_source") for item in source_specs
+                },
             },
             "source_dataset_ids": source_dataset_ids,
         }
@@ -1177,44 +1423,111 @@ class JobService:
         signature: dict[str, str | int | None] | None = None
         signature_run_id: str | None = None
         seen_modalities: set[str] = set()
+        explicit_weights_supplied = any(run_id in weights for run_id in ordered_run_ids)
         for run_id in ordered_run_ids:
-            detail = self.workbench.get_run_detail(run_id)
-            if detail is None:
-                raise JobExecutionError(f"Source run '{run_id}' was not found.")
             manifest = self.workbench.get_run_manifest(run_id)
+            source_metadata = self.workbench.get_run_model_metadata(run_id)
+            if not manifest and not source_metadata:
+                raise JobExecutionError(f"Source run '{run_id}' was not found.")
             if isinstance(manifest.get("composition"), dict):
                 raise JobExecutionError(
                     f"Source run '{run_id}' is already a multimodal composition and cannot be nested."
                 )
-            source_dataset_ids = list(detail.dataset_ids or ([detail.dataset_id] if detail.dataset_id else []))
+            source_dataset_ids = list(
+                dict.fromkeys(
+                    [
+                        dataset_id
+                        for dataset_id in [
+                            self._str(manifest.get("dataset_id")),
+                            *[
+                                self._str(item)
+                                for item in (manifest.get("dataset_ids") or [])
+                                if self._str(item)
+                            ],
+                            *[
+                                self._str(item)
+                                for item in (manifest.get("source_dataset_ids") or [])
+                                if self._str(item)
+                            ],
+                            *[
+                                self._str(item)
+                                for item in (source_metadata.get("source_dataset_ids") or [])
+                                if self._str(item)
+                            ],
+                        ]
+                        if dataset_id
+                    ]
+                )
+            )
             if not source_dataset_ids:
                 raise JobExecutionError(f"Source run '{run_id}' does not expose any dataset ids.")
             primary_dataset_id = source_dataset_ids[0]
             source_dataset_detail = self.workbench.get_dataset_detail(primary_dataset_id)
-            source_metadata = self.workbench.get_run_model_metadata(run_id)
             try:
                 source_dataset_ref = self._load_dataset_from_artifacts(primary_dataset_id)
             except JobExecutionError:
                 source_dataset_ref = None
             source_feature_names = self._feature_names_for_run(source_metadata, source_dataset_ref)
+            declared_modalities = (
+                [
+                    self._normalize_modality(modality)
+                    for modality in source_dataset_detail.dataset.data_domains
+                ]
+                if source_dataset_detail is not None
+                else []
+            )
             data_domain = (
                 source_dataset_detail.dataset.data_domain
                 if source_dataset_detail is not None
-                else self._str((detail.dataset_summary or {}).get("data_domain"))
+                else self._str(manifest.get("data_domain"))
             )
             modality = self._infer_composition_source_modality(
                 run_id=run_id,
                 data_domain=data_domain,
                 feature_names=source_feature_names,
+                declared_modalities=declared_modalities,
             )
+            explicit_scope_modality = self._normalize_modality(
+                self._str(source_metadata.get("feature_scope_modality"))
+                or self._str(manifest.get("feature_scope_modality"))
+            )
+            if explicit_scope_modality != "unknown" and explicit_scope_modality != modality:
+                raise JobExecutionError(
+                    f"Source run '{run_id}' declares single-modality scope '{explicit_scope_modality}' but resolves to '{modality}'."
+                )
+            if explicit_scope_modality == "unknown":
+                raise JobExecutionError(
+                    f"Source run '{run_id}' is missing single-modality training metadata and cannot be used for composition."
+                )
+            source_readiness = self.workbench.get_dataset_readiness(primary_dataset_id)
+            modality_quality = (
+                source_readiness.modality_quality_summary.get(modality)
+                if source_readiness is not None
+                else None
+            )
+            if modality_quality is None or modality_quality.status != "ready":
+                reasons = (
+                    list(modality_quality.blocking_reasons)
+                    if modality_quality is not None and modality_quality.blocking_reasons
+                    else [f"{modality}_quality_not_ready"]
+                )
+                raise JobExecutionError(
+                    f"Source run '{run_id}' cannot join composition because modality '{modality}' is not quality-ready: "
+                    + "; ".join(reasons)
+                )
             if modality in seen_modalities:
                 raise JobExecutionError(
                     f"Source runs must have distinct modalities, but '{run_id}' duplicates modality '{modality}'."
                 )
             seen_modalities.add(modality)
+            task_type = self._str((source_metadata.get("model_spec") or {}).get("task_type")) or "regression"
             candidate_signature = {
-                "task_type": detail.task_type,
-                "entity_scope": self._str((detail.dataset_summary or {}).get("entity_scope")),
+                "task_type": task_type,
+                "entity_scope": (
+                    source_dataset_detail.dataset.entity_scope
+                    if source_dataset_detail is not None
+                    else self._str(manifest.get("entity_scope"))
+                ),
                 "frequency": (
                     source_dataset_detail.dataset.frequency if source_dataset_detail is not None else None
                 ),
@@ -1240,17 +1553,26 @@ class JobService:
             specs.append(
                 {
                     "run_id": run_id,
-                    "model_name": detail.model_name,
+                    "model_name": self._str(source_metadata.get("model_name")) or run_id,
                     "modality": modality,
                     "weight": float(weight),
                     "dataset_ids": source_dataset_ids,
-                    "task_type": detail.task_type,
+                    "task_type": task_type,
                     "label_horizon": candidate_signature["label_horizon"],
                     "feature_names": source_feature_names,
+                    "source_dataset_quality_status": modality_quality.status,
+                    "disclosure_metadata": self._run_disclosure_metadata(
+                        run_id=run_id,
+                        run_manifest=manifest,
+                        run_metadata=source_metadata,
+                        dataset_detail=source_dataset_detail,
+                    ),
+                    "combination_quality": self._source_run_combination_quality(run_id),
+                    "weight_source": "manual" if run_id in weights else "auto",
                 }
             )
-        if "market" not in seen_modalities:
-            raise JobExecutionError("At least one market source run is required for multimodal composition.")
+        if not explicit_weights_supplied:
+            specs = self._apply_dynamic_composition_weights(specs)
         return self._normalize_source_weights(specs)
 
     def _resolve_composed_dataset_assignments(
@@ -1389,15 +1711,44 @@ class JobService:
                 f"{len(ordered_keys)} aligned predictions; at least {OFFICIAL_MIN_ALIGNED_MULTIMODAL_ROWS} are required."
             )
         normalized_sources = self._normalize_source_weights(source_prediction_frames)
+        normalized_prediction_maps: list[dict[tuple[str, tuple[tuple[str, str], ...]], float]] = []
+        normalization_notes: list[str] = []
+        for source, row_map in zip(normalized_sources, keyed_rows, strict=True):
+            ordered_source_values = [row_map[key].prediction for key in ordered_keys]
+            normalized_values, calibration_summary = robust_normalize(ordered_source_values)
+            normalized_prediction_maps.append(
+                {
+                    key: normalized_values[index]
+                    for index, key in enumerate(ordered_keys)
+                }
+            )
+            normalization_notes.append(
+                f"{source['run_id']} ({source['modality']}) normalized with "
+                f"{calibration_summary['method']} center={float(calibration_summary['center']):.6f}, "
+                f"scale={float(calibration_summary['scale']):.6f}, clip_z={float(calibration_summary['clip_z']):.2f}."
+            )
+        dynamic_weight_maps, dynamic_weight_notes = self._rolling_dynamic_weight_maps(
+            ordered_keys=ordered_keys,
+            normalized_sources=normalized_sources,
+            normalized_prediction_maps=normalized_prediction_maps,
+            source_prediction_frames=source_prediction_frames,
+        )
         merged_rows: list[PredictionRow] = []
         for key in ordered_keys:
             aligned_rows = [row_map[key] for row_map in keyed_rows]
             blended_prediction = 0.0
             blended_confidence = 0.0
-            for source, row in zip(normalized_sources, aligned_rows, strict=True):
-                weight = float(source["weight"])
-                blended_prediction += weight * row.prediction
+            directional_votes: list[float] = []
+            for source, row, normalized_map in zip(normalized_sources, aligned_rows, normalized_prediction_maps, strict=True):
+                weight = float(dynamic_weight_maps[key].get(str(source["run_id"]), float(source["weight"])))
+                normalized_prediction = normalized_map[key]
+                blended_prediction += weight * normalized_prediction
                 blended_confidence += weight * row.confidence
+                directional_votes.append(normalized_prediction)
+            agreement = 1.0
+            if directional_votes:
+                vote_dispersion = max(directional_votes) - min(directional_votes)
+                agreement = max(0.0, 1.0 - min(vote_dispersion / 2.0, 1.0))
             anchor_row = aligned_rows[0]
             feature_available_time = max(
                 [(row.feature_available_time or row.timestamp) for row in aligned_rows]
@@ -1407,7 +1758,7 @@ class JobService:
                     entity_keys=dict(anchor_row.entity_keys),
                     timestamp=anchor_row.timestamp,
                     prediction=blended_prediction,
-                    confidence=max(0.0, min(blended_confidence, 1.0)),
+                    confidence=max(0.0, min(blended_confidence * agreement, 1.0)),
                     model_run_id=run_id,
                     feature_available_time=feature_available_time,
                 )
@@ -1423,6 +1774,8 @@ class JobService:
         market_metadata = market_frame.metadata if isinstance(market_frame, PredictionFrame) else None
         notes = [
             f"Strict alignment kept {len(ordered_keys)} shared rows across {len(source_prediction_frames)} modalities.",
+            *normalization_notes,
+            *dynamic_weight_notes,
         ]
         for source, row_map in zip(normalized_sources, keyed_rows, strict=True):
             dataset_id = self._str(source.get("selected_dataset_id")) or self._str(source.get("dataset_id")) or "--"
@@ -1450,6 +1803,225 @@ class JobService:
         for item in specs:
             normalized.append({**item, "weight": float(item.get("weight", 0.0) or 0.0) / total_weight})
         return normalized
+
+    def _source_run_combination_quality(self, run_id: str) -> dict[str, float]:
+        evaluation_summary = (
+            self.workbench.repository.read_json_if_exists(f"models/{run_id}/evaluation_summary.json") or {}
+        )
+        regression_metrics = (
+            evaluation_summary.get("regression_metrics")
+            if isinstance(evaluation_summary.get("regression_metrics"), dict)
+            else {}
+        )
+        valid_mae = regression_metrics.get("valid_mae", regression_metrics.get("mae", 1.0))
+        sign_hit_rate = regression_metrics.get("sign_hit_rate", 0.5)
+        try:
+            mae_value = max(float(valid_mae), 1e-6)
+        except (TypeError, ValueError):
+            mae_value = 1.0
+        try:
+            hit_rate_value = float(sign_hit_rate)
+        except (TypeError, ValueError):
+            hit_rate_value = 0.5
+        return {
+            "valid_mae": mae_value,
+            "sign_hit_rate": hit_rate_value,
+        }
+
+    def _apply_dynamic_composition_weights(self, specs: list[dict[str, object]]) -> list[dict[str, object]]:
+        if not specs:
+            return specs
+        equal_weight = 1.0 / len(specs)
+        raw_scores: list[float] = []
+        for item in specs:
+            quality = item.get("combination_quality") if isinstance(item.get("combination_quality"), dict) else {}
+            valid_mae = float(quality.get("valid_mae", 1.0) or 1.0)
+            sign_hit_rate = float(quality.get("sign_hit_rate", 0.5) or 0.5)
+            precision = 1.0 / max(valid_mae, 1e-6)
+            directional_quality = max(0.5, sign_hit_rate)
+            raw_scores.append(precision * directional_quality)
+        score_total = sum(raw_scores)
+        if score_total <= 0:
+            return [{**item, "weight": equal_weight, "weight_source": "equal_fallback"} for item in specs]
+        normalized_scores = [score / score_total for score in raw_scores]
+        mean_score = sum(normalized_scores) / len(normalized_scores)
+        variance = sum((score - mean_score) ** 2 for score in normalized_scores) / len(normalized_scores)
+        dispersion = (variance ** 0.5) / max(mean_score, 1e-6)
+        performance_share = min(0.7, max(0.2, dispersion / (dispersion + 1.0)))
+        equal_share = 1.0 - performance_share
+        adjusted_specs: list[dict[str, object]] = []
+        for item, normalized_score in zip(specs, normalized_scores, strict=True):
+            dynamic_weight = equal_share * equal_weight + performance_share * normalized_score
+            adjusted_specs.append(
+                {
+                    **item,
+                    "weight": dynamic_weight,
+                    "weight_source": "dynamic_valid_mae_shrinkage",
+                }
+            )
+        return adjusted_specs
+
+    def _rolling_dynamic_weight_maps(
+        self,
+        *,
+        ordered_keys: list[tuple[str, tuple[tuple[str, str], ...]]],
+        normalized_sources: list[dict[str, object]],
+        normalized_prediction_maps: list[dict[tuple[str, tuple[tuple[str, str], ...]], float]],
+        source_prediction_frames: list[dict[str, object]],
+    ) -> tuple[dict[tuple[str, tuple[tuple[str, str], ...]], dict[str, float]], list[str]]:
+        prior_weights = {
+            str(item["run_id"]): float(item["weight"])
+            for item in normalized_sources
+        }
+        target_by_key = self._aligned_target_by_key(
+            ordered_keys=ordered_keys,
+            source_prediction_frames=source_prediction_frames,
+        )
+        if len(target_by_key) < 24:
+            return (
+                {key: dict(prior_weights) for key in ordered_keys},
+                ["Dynamic rolling weights unavailable because aligned targets are insufficient; using composition priors."],
+            )
+        lookback_bars = min(168, max(48, len(ordered_keys) // 6))
+        max_weight_turnover = 0.15
+        last_weights = dict(prior_weights)
+        weight_maps: dict[tuple[str, tuple[tuple[str, str], ...]], dict[str, float]] = {}
+        for index, key in enumerate(ordered_keys):
+            history_keys = [
+                candidate
+                for candidate in ordered_keys[max(0, index - lookback_bars) : index]
+                if candidate in target_by_key
+            ]
+            if len(history_keys) < 24:
+                weight_maps[key] = dict(last_weights)
+                continue
+            target_window = [target_by_key[candidate] for candidate in history_keys]
+            normalized_targets, _ = robust_normalize(target_window)
+            performance_scores: list[float] = []
+            for source, normalized_map in zip(normalized_sources, normalized_prediction_maps, strict=True):
+                prediction_window = [normalized_map[candidate] for candidate in history_keys]
+                mae = sum(
+                    abs(prediction - target)
+                    for prediction, target in zip(prediction_window, normalized_targets, strict=True)
+                ) / max(1, len(prediction_window))
+                hit_rate = sum(
+                    1.0
+                    for prediction, target in zip(prediction_window, normalized_targets, strict=True)
+                    if prediction == 0.0 or target == 0.0 or prediction * target > 0.0
+                ) / max(1, len(prediction_window))
+                prediction_mean = sum(prediction_window) / max(1, len(prediction_window))
+                variance = sum((value - prediction_mean) ** 2 for value in prediction_window) / max(1, len(prediction_window))
+                stability = 1.0 / (1.0 + math.sqrt(max(variance, 0.0)))
+                churn_terms = [
+                    abs(prediction_window[position] - prediction_window[position - 1])
+                    for position in range(1, len(prediction_window))
+                ]
+                churn = sum(churn_terms) / max(1, len(churn_terms))
+                performance_scores.append(
+                    (1.0 / max(mae, 1e-6))
+                    * max(hit_rate, 0.5)
+                    * stability
+                    / (1.0 + churn)
+                )
+            score_total = sum(performance_scores)
+            if score_total <= 0:
+                proposed_weights = dict(last_weights)
+            else:
+                performance_weights = {
+                    str(source["run_id"]): score / score_total
+                    for source, score in zip(normalized_sources, performance_scores, strict=True)
+                }
+                mean_score = sum(performance_weights.values()) / max(1, len(performance_weights))
+                variance = sum((value - mean_score) ** 2 for value in performance_weights.values()) / max(1, len(performance_weights))
+                dispersion = math.sqrt(max(variance, 0.0)) / max(mean_score, 1e-6)
+                performance_share = min(0.7, max(0.2, dispersion / (dispersion + 1.0)))
+                proposed_weights = {
+                    run_id: (1.0 - performance_share) * prior_weights[run_id] + performance_share * performance_weights[run_id]
+                    for run_id in prior_weights
+                }
+            proposed_weights = self._normalize_weight_map(proposed_weights)
+            adjusted_weights = self._shrink_weight_turnover(
+                previous_weights=last_weights,
+                proposed_weights=proposed_weights,
+                max_weight_turnover=max_weight_turnover,
+            )
+            weight_maps[key] = adjusted_weights
+            last_weights = adjusted_weights
+        average_weights = {
+            run_id: sum(weight_map[run_id] for weight_map in weight_maps.values()) / max(1, len(weight_maps))
+            for run_id in prior_weights
+        }
+        notes = [
+            f"Rolling dynamic weights use a trailing {lookback_bars} bar window with inverse normalized MAE, directional hit-rate, stability, and churn penalty.",
+            "Rolling weights are updated using history only, then shrunk toward the composition prior and capped by a per-step weight-turnover budget.",
+            "Average rolling weights: "
+            + ", ".join(f"{run_id}={average_weights[run_id]:.3f}" for run_id in sorted(average_weights)),
+        ]
+        return weight_maps, notes
+
+    def _aligned_target_by_key(
+        self,
+        *,
+        ordered_keys: list[tuple[str, tuple[tuple[str, str], ...]]],
+        source_prediction_frames: list[dict[str, object]],
+    ) -> dict[tuple[str, tuple[tuple[str, str], ...]], float]:
+        sample_maps: dict[str, dict[tuple[str, str], float]] = {}
+        for source in source_prediction_frames:
+            dataset_id = self._str(source.get("selected_dataset_id")) or self._str(source.get("dataset_id"))
+            if not dataset_id:
+                continue
+            if dataset_id not in self.facade.dataset_store:
+                try:
+                    self._load_dataset_from_artifacts(dataset_id)
+                except JobExecutionError:
+                    continue
+            sample_maps[dataset_id] = {
+                (
+                    sample.timestamp.astimezone(UTC).isoformat(),
+                    str(sample.entity_key),
+                ): float(sample.target)
+                for sample in self.facade.dataset_store.get(dataset_id, [])
+            }
+        target_by_key: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+        for key in ordered_keys:
+            timestamp_key, entity_keys = key
+            instrument = next((value for field, value in entity_keys if field in {"instrument", "symbol"}), None)
+            if instrument is None:
+                continue
+            for sample_map in sample_maps.values():
+                target = sample_map.get((timestamp_key, instrument))
+                if target is not None:
+                    target_by_key[key] = target
+                    break
+        return target_by_key
+
+    @staticmethod
+    def _normalize_weight_map(weights: dict[str, float]) -> dict[str, float]:
+        total = sum(max(value, 0.0) for value in weights.values())
+        if total <= 0:
+            equal = 1.0 / max(1, len(weights))
+            return {key: equal for key in weights}
+        return {key: max(value, 0.0) / total for key, value in weights.items()}
+
+    def _shrink_weight_turnover(
+        self,
+        *,
+        previous_weights: dict[str, float],
+        proposed_weights: dict[str, float],
+        max_weight_turnover: float,
+    ) -> dict[str, float]:
+        turnover = sum(
+            abs(proposed_weights.get(key, 0.0) - previous_weights.get(key, 0.0))
+            for key in proposed_weights
+        )
+        if turnover <= max_weight_turnover or turnover <= 1e-9:
+            return dict(proposed_weights)
+        shrink = max_weight_turnover / turnover
+        adjusted = {
+            key: previous_weights.get(key, 0.0) + (proposed_weights.get(key, 0.0) - previous_weights.get(key, 0.0)) * shrink
+            for key in proposed_weights
+        }
+        return self._normalize_weight_map(adjusted)
 
     @staticmethod
     def _modality_sort_key(modality: str) -> int:
@@ -1487,8 +2059,14 @@ class JobService:
         run_id: str,
         data_domain: str | None,
         feature_names: list[str],
+        declared_modalities: list[str] | None = None,
     ) -> str:
         normalized = self._normalize_modality(data_domain)
+        declared = [
+            self._normalize_modality(item)
+            for item in (declared_modalities or [])
+            if self._normalize_modality(item) != "unknown"
+        ]
         feature_modalities = self._feature_modalities(feature_names)
         if len(feature_modalities) > 1:
             raise JobExecutionError(
@@ -1496,6 +2074,10 @@ class JobService:
             )
         detected = feature_modalities[0] if feature_modalities else "market"
         if normalized in {"unknown", detected}:
+            return detected
+        if detected in declared:
+            return detected
+        if len(set(declared)) > 1:
             return detected
         if normalized == "market" and detected == "market":
             return "market"
@@ -1843,13 +2425,6 @@ class JobService:
         context.start_stage(stage_name, "Starting training workflow")
         template = self._resolve_template_for_request(request)
         self._validate_train_selection(request=request, template=template)
-        model_specs = self._resolve_model_specs_for_request(
-            request=request,
-            feature_schema=dataset_ref.feature_view_ref.feature_schema,
-            template=template,
-        )
-        if not model_specs:
-            raise JobExecutionError("No supported models selected for training.")
         readiness = self.workbench.get_dataset_readiness(dataset_ref.dataset_id)
         if readiness is None:
             raise JobExecutionError(
@@ -1868,10 +2443,49 @@ class JobService:
             raise JobExecutionError(
                 f"Dataset '{dataset_ref.dataset_id}' has unsupported entity_scope '{dataset_ref.entity_scope}'."
             )
+        source_dataset_id = dataset_ref.dataset_id
+        effective_dataset_ref = dataset_ref
+        feature_scope_modality = self._normalize_modality(request.feature_scope_modality)
+        feature_scope_feature_names: list[str] = []
+        source_dataset_quality_status = readiness.readiness_status
+        if feature_scope_modality != "unknown":
+            modality_quality = readiness.modality_quality_summary.get(feature_scope_modality)
+            if modality_quality is None or modality_quality.status != "ready":
+                reasons = (
+                    list(modality_quality.blocking_reasons)
+                    if modality_quality is not None and modality_quality.blocking_reasons
+                    else [f"{feature_scope_modality}_quality_not_ready"]
+                )
+                raise JobExecutionError(
+                    f"Dataset '{source_dataset_id}' modality '{feature_scope_modality}' is not ready for training: "
+                    + "; ".join(reasons)
+                )
+            source_dataset_quality_status = modality_quality.status
+            scoped_feature_schema = self._feature_schema_for_modality(
+                dataset_ref.feature_view_ref.feature_schema,
+                feature_scope_modality,
+            )
+            if not scoped_feature_schema:
+                raise JobExecutionError(
+                    f"Dataset '{source_dataset_id}' does not expose any '{feature_scope_modality}' features for training."
+                )
+            effective_dataset_ref, feature_scope_feature_names = self._build_scoped_training_dataset_ref(
+                dataset_ref=dataset_ref,
+                source_dataset_id=source_dataset_id,
+                scoped_feature_schema=scoped_feature_schema,
+                modality=feature_scope_modality,
+            )
+        model_specs = self._resolve_model_specs_for_request(
+            request=request,
+            feature_schema=effective_dataset_ref.feature_view_ref.feature_schema,
+            template=template,
+        )
+        if not model_specs:
+            raise JobExecutionError("No supported models selected for training.")
         run_id_prefix = request.run_id_prefix or f"workbench-train-{datetime.now(UTC):%Y%m%d%H%M%S}"
         train_result = self.facade.train_workflow.train(
             TrainWorkflowRequest(
-                dataset_ref=dataset_ref,
+                dataset_ref=effective_dataset_ref,
                 model_specs=model_specs,
                 trainer_config=self._trainer_config(
                     request.trainer_preset or (template.trainer_preset if template else "fast")
@@ -1887,8 +2501,117 @@ class JobService:
         )
         run_ids = [item.fit_result.run_id for item in train_result.items]
         fit_result_uris = [item.fit_result_uri for item in train_result.items]
+        for run_id in run_ids:
+            self._persist_training_scope_metadata(
+                run_id=run_id,
+                source_dataset_id=source_dataset_id,
+                source_dataset_ref=dataset_ref,
+                feature_scope_modality=(
+                    feature_scope_modality if feature_scope_modality != "unknown" else None
+                ),
+                feature_scope_feature_names=feature_scope_feature_names,
+                source_dataset_quality_status=source_dataset_quality_status,
+            )
         context.finish_stage(stage_name, f"Completed {len(run_ids)} training run(s)")
         return run_ids, fit_result_uris, readiness
+
+    def _feature_schema_for_modality(
+        self,
+        feature_schema: list[SchemaField],
+        modality: str,
+    ) -> list[SchemaField]:
+        normalized_modality = self._normalize_modality(modality)
+        return [
+            field
+            for field in feature_schema
+            if self._feature_modalities([field.name])[0] == normalized_modality
+        ]
+
+    def _build_scoped_training_dataset_ref(
+        self,
+        *,
+        dataset_ref: DatasetRef,
+        source_dataset_id: str,
+        scoped_feature_schema: list[SchemaField],
+        modality: str,
+    ) -> tuple[DatasetRef, list[str]]:
+        feature_names = [field.name for field in scoped_feature_schema]
+        if source_dataset_id not in self.facade.dataset_store:
+            self._load_dataset_from_artifacts(source_dataset_id)
+        source_samples = self.facade.dataset_store.get(source_dataset_id, [])
+        if not source_samples:
+            raise JobExecutionError(f"Dataset '{source_dataset_id}' has no materialized samples for training.")
+        scoped_dataset_id = f"{source_dataset_id}__{modality}__scope"
+        self.facade.dataset_store[scoped_dataset_id] = [
+            sample.model_copy(
+                update={
+                    "features": {
+                        feature_name: float(sample.features.get(feature_name, 0.0))
+                        for feature_name in feature_names
+                    }
+                }
+            )
+            for sample in source_samples
+        ]
+        scoped_dataset_ref = dataset_ref.model_copy(
+            update={
+                "dataset_id": scoped_dataset_id,
+                "feature_schema_hash": stable_digest(feature_names),
+                "feature_view_ref": dataset_ref.feature_view_ref.model_copy(
+                    update={"feature_schema": scoped_feature_schema}
+                ),
+            }
+        )
+        return scoped_dataset_ref, feature_names
+
+    def _persist_training_scope_metadata(
+        self,
+        *,
+        run_id: str,
+        source_dataset_id: str,
+        source_dataset_ref: DatasetRef,
+        feature_scope_modality: str | None,
+        feature_scope_feature_names: list[str],
+        source_dataset_quality_status: str | None,
+    ) -> None:
+        manifest = self.workbench.get_run_manifest(run_id)
+        metadata = self.workbench.get_run_model_metadata(run_id)
+        tracking = self.workbench.repository.read_json_if_exists(f"tracking/{run_id}.json") or {}
+        if manifest:
+            manifest["dataset_ref_uri"] = f"dataset://{source_dataset_id}"
+            manifest["dataset_id"] = source_dataset_id
+            manifest["dataset_manifest_uri"] = source_dataset_ref.dataset_manifest_uri
+            manifest["feature_schema_hash"] = source_dataset_ref.feature_schema_hash
+            manifest["feature_scope_modality"] = feature_scope_modality
+            manifest["feature_scope_feature_names"] = list(feature_scope_feature_names)
+            manifest["source_dataset_quality_status"] = source_dataset_quality_status
+            self.facade.store.write_json(f"models/{run_id}/train_manifest.json", manifest)
+        if metadata:
+            metadata["feature_scope_modality"] = feature_scope_modality
+            metadata["feature_scope_feature_names"] = list(feature_scope_feature_names)
+            metadata["source_dataset_quality_status"] = source_dataset_quality_status
+            if feature_scope_feature_names:
+                metadata["feature_names"] = list(feature_scope_feature_names)
+                model_spec = metadata.get("model_spec")
+                if isinstance(model_spec, dict):
+                    input_schema = model_spec.get("input_schema")
+                    if isinstance(input_schema, list):
+                        model_spec["input_schema"] = [
+                            item
+                            for item in input_schema
+                            if isinstance(item, dict) and str(item.get("name")) in feature_scope_feature_names
+                        ]
+                    metadata["model_spec"] = model_spec
+            self.facade.store.write_json(f"models/{run_id}/metadata.json", metadata)
+        if tracking:
+            params = tracking.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            params["dataset_id"] = source_dataset_id
+            if feature_scope_modality:
+                params["feature_scope_modality"] = feature_scope_modality
+            tracking["params"] = params
+            self.facade.store.write_json(f"tracking/{run_id}.json", tracking)
 
     def _prepare_request_for_dataset(self, dataset_preset: str):
         if dataset_preset == "real_benchmark":
@@ -1927,16 +2650,16 @@ class JobService:
             raise JobExecutionError(
                 "Multi-domain trainable requests require exactly one market source."
             )
-        unique_frequencies = {source.frequency for source in sources}
-        if len(unique_frequencies) != 1:
-            raise JobExecutionError(
-                "Multi-domain trainable requests require the same frequency across all sources."
-            )
         merge_policy_name = request.merge_policy_name or "available_time_safe_asof"
         if merge_policy_name not in {"strict_timestamp_inner", "available_time_safe_asof"}:
             raise JobExecutionError(
                 f"Unsupported merge policy '{merge_policy_name}'. "
                 "Only strict_timestamp_inner and available_time_safe_asof are allowed."
+            )
+        unique_frequencies = {source.frequency for source in sources}
+        if merge_policy_name == "strict_timestamp_inner" and len(unique_frequencies) != 1:
+            raise JobExecutionError(
+                "Strict timestamp alignment requires the same frequency across all sources."
             )
 
         market_source = market_sources[0]
@@ -2047,6 +2770,28 @@ class JobService:
             fusion_enabled=request.fusion.enabled,
             training_enabled=request.training.enabled,
         )
+
+    def _dataset_multimodal_train_requested_stages(
+        self,
+        request: LaunchDatasetMultimodalTrainRequest,
+    ) -> list[str]:
+        selected_modalities = [
+            self._normalize_modality(modality)
+            for modality in request.selected_modalities
+            if self._normalize_modality(modality) != "unknown"
+        ]
+        ordered_modalities = list(
+            dict.fromkeys(sorted(selected_modalities, key=self._modality_sort_key))
+        )
+        requested_stages = [
+            "prepare_dataset",
+            *[f"train_{modality}" for modality in ordered_modalities],
+            "inspect",
+            "compose",
+        ]
+        if request.auto_launch_official_backtest:
+            requested_stages.extend(["prepare", "predict", "backtest"])
+        return requested_stages
 
     def _build_fusion_request_from_pipeline(
         self,
@@ -2280,11 +3025,16 @@ class JobService:
         market_dataset_id = OFFICIAL_MARKET_BENCHMARK_DATASET_ID
         multimodal_dataset_id = OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
         market_detail = self.workbench.get_dataset_detail(market_dataset_id)
+        market_readiness = self.workbench.get_dataset_readiness(market_dataset_id)
         multimodal_detail = self.workbench.get_dataset_detail(multimodal_dataset_id)
         multimodal_readiness = self.workbench.get_dataset_readiness(multimodal_dataset_id)
         if market_detail is None:
             raise JobExecutionError(
                 f"Official market benchmark dataset '{market_dataset_id}' is not available."
+            )
+        if market_readiness is None:
+            raise JobExecutionError(
+                f"Official market benchmark dataset '{market_dataset_id}' has no readiness record."
             )
         if multimodal_detail is None and requires_multimodal_benchmark:
             raise JobExecutionError(
@@ -2333,6 +3083,7 @@ class JobService:
             "window_days": window_days,
             "window_start": window_start,
             "window_end": window_end,
+            "market_readiness": market_readiness,
             "multimodal_readiness": multimodal_readiness,
         }
 
@@ -2572,6 +3323,118 @@ class JobService:
             source_specs=source_specs,
         )
 
+    def _official_source_quality_reasons(
+        self,
+        *,
+        request_run_id: str,
+        run_manifest: dict[str, object],
+        run_metadata: dict[str, object],
+        required_modalities: list[str],
+    ) -> list[str]:
+        composition = run_manifest.get("composition")
+        source_specs: list[dict[str, object]] = []
+        if isinstance(composition, dict):
+            source_runs = composition.get("source_runs")
+            if not isinstance(source_runs, list) or not source_runs:
+                raise JobExecutionError("Composed run is missing source run metadata required for official preflight.")
+            for item in source_runs:
+                if not isinstance(item, dict):
+                    continue
+                source_run_id = self._str(item.get("run_id"))
+                modality = self._normalize_modality(self._str(item.get("modality")))
+                if not source_run_id or not modality:
+                    raise JobExecutionError("Composed run contains a source without run_id/modality metadata.")
+                source_manifest = self.workbench.get_run_manifest(source_run_id)
+                source_metadata = self.workbench.get_run_model_metadata(source_run_id)
+                dataset_id = self._source_dataset_id_for_modality(item, modality) or self._str(
+                    source_manifest.get("dataset_id")
+                )
+                source_specs.append(
+                    {
+                        "run_id": source_run_id,
+                        "modality": modality,
+                        "dataset_id": dataset_id,
+                        "source_dataset_quality_status": self._str(item.get("source_dataset_quality_status"))
+                        or self._str(source_metadata.get("source_dataset_quality_status"))
+                        or self._str(source_manifest.get("source_dataset_quality_status")),
+                    }
+                )
+        else:
+            dataset_id = self._str(run_manifest.get("dataset_id"))
+            dataset_ids = run_manifest.get("dataset_ids")
+            if not dataset_id and isinstance(dataset_ids, list):
+                for candidate in dataset_ids:
+                    resolved = self._str(candidate)
+                    if resolved:
+                        dataset_id = resolved
+                        break
+            if not dataset_id:
+                raise JobExecutionError(
+                    f"Run '{request_run_id}' is missing dataset metadata required for official preflight."
+                )
+            feature_scope_modality = self._normalize_modality(
+                self._str(run_metadata.get("feature_scope_modality"))
+                or self._str(run_manifest.get("feature_scope_modality"))
+            )
+            resolved_modalities = [
+                self._normalize_modality(modality)
+                for modality in required_modalities
+                if self._normalize_modality(modality) != "unknown"
+            ]
+            if feature_scope_modality != "unknown":
+                resolved_modalities = [feature_scope_modality]
+            if not resolved_modalities:
+                inferred = self._normalize_modality(self._dataset_modality(dataset_id))
+                resolved_modalities = [inferred if inferred != "unknown" else "market"]
+            source_quality_status = self._str(run_metadata.get("source_dataset_quality_status")) or self._str(
+                run_manifest.get("source_dataset_quality_status")
+            )
+            for modality in dict.fromkeys(resolved_modalities):
+                source_specs.append(
+                    {
+                        "run_id": request_run_id,
+                        "modality": modality,
+                        "dataset_id": dataset_id,
+                        "source_dataset_quality_status": source_quality_status,
+                    }
+                )
+        return self._official_source_quality_reasons_for_specs(
+            request_run_id=request_run_id,
+            source_specs=source_specs,
+        )
+
+    def _official_source_quality_reasons_for_specs(
+        self,
+        *,
+        request_run_id: str,
+        source_specs: list[dict[str, object]],
+    ) -> list[str]:
+        reasons: list[str] = []
+        for spec in source_specs:
+            source_run_id = self._str(spec.get("run_id")) or request_run_id
+            modality = self._normalize_modality(self._str(spec.get("modality")))
+            quality_status = (self._str(spec.get("source_dataset_quality_status")) or "").strip().lower()
+            if quality_status in {"", "unknown", "ready"}:
+                continue
+            dataset_id = self._str(spec.get("dataset_id"))
+            quality_reasons: list[str] = []
+            if dataset_id:
+                readiness = self.workbench.get_dataset_readiness(dataset_id)
+                if readiness is not None:
+                    modality_quality = readiness.modality_quality_summary.get(modality)
+                    if modality_quality is not None:
+                        quality_reasons.extend(list(modality_quality.blocking_reasons))
+                        if not quality_reasons and modality_quality.status != "ready":
+                            quality_reasons.append(
+                                f"Source run '{source_run_id}' uses {modality} modality data with quality status '{modality_quality.status}'."
+                            )
+            if not quality_reasons:
+                quality_reasons.append(
+                    f"Source run '{source_run_id}' declares source dataset quality status '{quality_status}' for modality '{modality or '--'}'."
+                )
+            reasons.extend(quality_reasons)
+        return list(dict.fromkeys(reasons))
+
     def _official_source_contract_reasons_for_specs(
         self,
         *,
@@ -2621,7 +3484,7 @@ class JobService:
                     {
                         token
                         for item in ((selector or {}).get("symbols") or [])
-                        if (token := self._contract_token(item))
+                        if (token := self._market_contract_symbol_token(item))
                     }
                     or self._market_symbol_set(detail)
                 )
@@ -2868,6 +3731,37 @@ class JobService:
             requires_multimodal_benchmark,
         )
 
+    def _official_modality_quality_summary(
+        self,
+        *,
+        required_modalities: list[str],
+        market_readiness,
+        multimodal_readiness,
+        requires_multimodal_benchmark: bool,
+    ) -> tuple[dict[str, object], list[str]]:
+        summary: dict[str, object] = {}
+        quality_blocking_reasons: list[str] = []
+        if market_readiness is not None:
+            market_quality = market_readiness.modality_quality_summary.get("market")
+            if market_quality is not None:
+                summary["market"] = market_quality
+                if market_quality.status != "ready":
+                    quality_blocking_reasons.extend(list(market_quality.blocking_reasons))
+        if requires_multimodal_benchmark and multimodal_readiness is not None:
+            for modality in required_modalities:
+                if modality == "market":
+                    continue
+                quality = multimodal_readiness.modality_quality_summary.get(modality)
+                if quality is None:
+                    continue
+                summary[modality] = quality
+                if quality.status != "ready":
+                    quality_blocking_reasons.extend(list(quality.blocking_reasons))
+            aligned_quality = multimodal_readiness.aligned_multimodal_quality
+            if aligned_quality is not None and aligned_quality.status == "failed":
+                quality_blocking_reasons.extend(list(aligned_quality.blocking_reasons))
+        return summary, list(dict.fromkeys(quality_blocking_reasons))
+
     def _evaluate_official_backtest_preflight(
         self,
         *,
@@ -2903,6 +3797,11 @@ class JobService:
         official_window_end_time: datetime | None = None
         official_benchmark_version: str | None = None
         missing_feature_names: list[str] = []
+        modality_quality_summary: dict[str, object] = {}
+        quality_blocking_reasons: list[str] = []
+        missing_required_metadata_keys: list[str] = []
+        missing_required_metadata_labels: list[str] = []
+        preflight_metadata_summary: dict[str, str | None] = {}
 
         try:
             target_dataset_ref = self._read_dataset_ref(target_dataset_id)
@@ -2930,6 +3829,14 @@ class JobService:
                 required_modalities=required_modalities,
             )
         )
+        quality_blocking_reasons.extend(
+            self._official_source_quality_reasons(
+                request_run_id=request.run_id,
+                run_manifest=run_manifest,
+                run_metadata=run_metadata,
+                required_modalities=required_modalities,
+            )
+        )
 
         try:
             official_context = self._resolve_official_benchmark_context(
@@ -2939,19 +3846,77 @@ class JobService:
             official_window_start_time = official_context["window_start"]
             official_window_end_time = official_context["window_end"]
             official_benchmark_version = self._stringify(official_context["benchmark_version"])
+            official_modality_summary, official_quality_blocking_reasons = self._official_modality_quality_summary(
+                required_modalities=required_modalities,
+                market_readiness=official_context.get("market_readiness"),
+                multimodal_readiness=official_context.get("multimodal_readiness"),
+                requires_multimodal_benchmark=requires_multimodal_benchmark,
+            )
+            modality_quality_summary = official_modality_summary
+            quality_blocking_reasons.extend(official_quality_blocking_reasons)
             if requires_text_features:
                 multimodal_readiness = official_context["multimodal_readiness"]
                 if multimodal_readiness is not None:
                     nlp_gate_status = multimodal_readiness.official_nlp_gate_status or "unknown"
                     nlp_gate_reasons = list(multimodal_readiness.official_nlp_gate_reasons or [])
+            preflight_metadata_summary = self._build_backtest_metadata_summary(
+                run_manifest=run_manifest,
+                run_metadata=run_metadata,
+                dataset_id=target_dataset_id,
+                readiness=(
+                    official_context.get("multimodal_readiness")
+                    if requires_multimodal_benchmark
+                    else official_context.get("market_readiness")
+                ),
+            )
         except JobExecutionError as exc:
             blocking_reasons.append(str(exc))
+
+        if not blocking_reasons and (official_window_start_time or official_window_end_time):
+            preflight_protocol_metadata = build_protocol_metadata(
+                template=official_backtest_template(),
+                launch_mode=request.mode,
+                prediction_scope="test",
+                dataset_id=target_dataset_id,
+                dataset_frequency=self._dataset_frequency(target_dataset_id),
+                target_name=self._label_target_name(target_dataset_id),
+                label_horizon=self._dataset_label_horizon(target_dataset_id),
+                lookback_bucket=self._dataset_lookback_bucket(target_dataset_id),
+                metadata_summary=preflight_metadata_summary,
+                required_modalities=required_modalities,
+                official_benchmark_version=official_benchmark_version,
+                official_window_days=window_days,
+                official_window_start_time=official_window_start_time.isoformat() if official_window_start_time else None,
+                official_window_end_time=official_window_end_time.isoformat() if official_window_end_time else None,
+                official_market_dataset_id=OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
+                official_multimodal_dataset_id=(
+                    OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID
+                    if requires_multimodal_benchmark
+                    else None
+                ),
+                official_dataset_ids=official_dataset_ids,
+            )
+            (
+                missing_required_metadata_keys,
+                missing_required_metadata_labels,
+            ) = _missing_required_metadata(
+                template=official_backtest_template(),
+                protocol_metadata=preflight_protocol_metadata,
+                metadata_summary=dict(preflight_protocol_metadata.get("metadata_summary") or {}),
+            )
+            if missing_required_metadata_labels:
+                blocking_reasons.append(
+                    "Official comparison is missing disclosure metadata: "
+                    + ", ".join(missing_required_metadata_labels)
+                )
 
         if requires_text_features and nlp_gate_status == "failed":
             blocking_reasons.append(
                 "Official backtest template is blocked by the NLP quality gate: "
                 + "; ".join(nlp_gate_reasons or ["official_nlp_gate_failed"])
             )
+        quality_blocking_reasons = list(dict.fromkeys(quality_blocking_reasons))
+        blocking_reasons.extend(quality_blocking_reasons)
         blocking_reasons = list(dict.fromkeys(blocking_reasons))
         blocking_reason_codes = [
             code for item in blocking_reasons if (code := self._preflight_reason_code(item)) is not None
@@ -2981,6 +3946,11 @@ class JobService:
             missing_official_feature_names=missing_feature_names,
             blocking_reasons=blocking_reasons,
             blocking_reason_codes=blocking_reason_codes,
+            modality_quality_summary=modality_quality_summary,
+            quality_blocking_reasons=quality_blocking_reasons,
+            missing_required_metadata_keys=missing_required_metadata_keys,
+            missing_required_metadata_labels=missing_required_metadata_labels,
+            missing_stress_scenarios=[],
             nlp_gate_status=nlp_gate_status,
             nlp_gate_reasons=nlp_gate_reasons,
             nlp_gate_reason_codes=nlp_gate_reason_codes,
@@ -3216,6 +4186,11 @@ class JobService:
                 else None,
                 "nlp_gate_status": base_readiness.official_nlp_gate_status,
                 "nlp_gate_reasons": list(base_readiness.official_nlp_gate_reasons),
+                "modality_quality_summary": {
+                    key: value.model_dump(mode="json")
+                    for key, value in (preflight.modality_quality_summary or {}).items()
+                },
+                "quality_blocking_reasons": list(preflight.quality_blocking_reasons),
                 "primary_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
                 "dataset_ids": official_dataset_ids,
                 "dataset_roles": {
@@ -3478,6 +4453,11 @@ class JobService:
                 else None,
                 "nlp_gate_status": multimodal_readiness.official_nlp_gate_status,
                 "nlp_gate_reasons": list(multimodal_readiness.official_nlp_gate_reasons),
+                "modality_quality_summary": {
+                    key: value.model_dump(mode="json")
+                    for key, value in (preflight.modality_quality_summary or {}).items()
+                },
+                "quality_blocking_reasons": list(preflight.quality_blocking_reasons),
                 "fusion_strategy": self._str(composition.get("fusion_strategy")) or "late_score_blend",
                 "primary_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
                 "dataset_ids": projected_dataset_ids,
@@ -3551,18 +4531,78 @@ class JobService:
         dataset_id: str | None,
         readiness,
     ) -> dict[str, str | None]:
-        detail = self.workbench.get_dataset_detail(dataset_id) if dataset_id else None
+        training_dataset_id = self._str(run_manifest.get("dataset_id")) or dataset_id
+        detail = self.workbench.get_dataset_detail(training_dataset_id) if training_dataset_id else None
         dataset_start = detail.dataset.freshness.data_start_time if detail is not None else None
         dataset_end = detail.dataset.freshness.data_end_time if detail is not None else None
         model_spec = run_metadata.get("model_spec") if isinstance(run_metadata.get("model_spec"), dict) else {}
         hyperparams = model_spec.get("hyperparams") if isinstance(model_spec, dict) else {}
         if not isinstance(hyperparams, dict):
             hyperparams = {}
-        tracking_seed = self._str((run_manifest.get("repro_context") or {}).get("seed")) if isinstance(run_manifest.get("repro_context"), dict) else None
+        disclosure_metadata = (
+            run_manifest.get("disclosure_metadata")
+            if isinstance(run_manifest.get("disclosure_metadata"), dict)
+            else {}
+        )
+        composition = run_manifest.get("composition") if isinstance(run_manifest.get("composition"), dict) else None
+        if not disclosure_metadata and composition is not None and isinstance(composition.get("source_runs"), list):
+            source_disclosures: list[dict[str, object]] = []
+            required_modalities_from_sources: list[str] = []
+            for item in composition.get("source_runs", []):
+                if not isinstance(item, dict):
+                    continue
+                source_run_id = self._str(item.get("run_id"))
+                modality = self._normalize_modality(self._str(item.get("modality")))
+                if not source_run_id or modality == "unknown":
+                    continue
+                source_manifest = self.workbench.get_run_manifest(source_run_id)
+                source_metadata = self.workbench.get_run_model_metadata(source_run_id)
+                source_dataset_id = self._str(source_manifest.get("dataset_id"))
+                source_dataset_detail = self.workbench.get_dataset_detail(source_dataset_id) if source_dataset_id else None
+                source_disclosures.append(
+                    self._run_disclosure_metadata(
+                        run_id=source_run_id,
+                        run_manifest=source_manifest,
+                        run_metadata=source_metadata,
+                        dataset_detail=source_dataset_detail,
+                    )
+                )
+                required_modalities_from_sources.append(modality)
+            disclosure_metadata = self._aggregate_composition_disclosure_metadata(
+                source_disclosures=source_disclosures,
+                required_modalities=required_modalities_from_sources,
+                fusion_strategy=self._str(composition.get("fusion_strategy")) or "late_score_blend",
+            )
+        repro_context = (
+            run_manifest.get("repro_context")
+            if isinstance(run_manifest.get("repro_context"), dict)
+            else {}
+        )
+        tracking_seed = (
+            self._str(repro_context.get("seed"))
+            or self._stringify(hyperparams.get("random_state"))
+            or self._stringify(hyperparams.get("seed"))
+            or self._str(disclosure_metadata.get("random_seed"))
+        )
         data_domains = detail.dataset.data_domains if detail is not None else []
         prediction_metadata = (
             run_metadata.get("prediction_metadata")
             if isinstance(run_metadata.get("prediction_metadata"), dict)
+            else {}
+        )
+        input_metadata = (
+            run_metadata.get("input_metadata")
+            if isinstance(run_metadata.get("input_metadata"), dict)
+            else {}
+        )
+        disclosure_from_prediction = (
+            prediction_metadata.get("disclosure_metadata")
+            if isinstance(prediction_metadata.get("disclosure_metadata"), dict)
+            else {}
+        )
+        disclosure_from_input = (
+            input_metadata.get("disclosure_metadata")
+            if isinstance(input_metadata.get("disclosure_metadata"), dict)
             else {}
         )
         actual_market_start = (
@@ -3595,42 +4635,207 @@ class JobService:
             if readiness is not None and readiness.nlp_actual_end_time is not None
             else None
         )
+        required_modalities = (
+            [
+                self._normalize_modality(self._str(item.get("modality")))
+                for item in composition.get("source_runs", [])
+                if isinstance(item, dict) and self._normalize_modality(self._str(item.get("modality"))) != "unknown"
+            ]
+            if composition is not None and isinstance(composition.get("source_runs"), list)
+            else []
+        )
+        if not required_modalities:
+            feature_scope_modality = self._normalize_modality(
+                self._str(run_metadata.get("feature_scope_modality")) or self._str(run_manifest.get("feature_scope_modality"))
+            )
+            if feature_scope_modality != "unknown":
+                required_modalities = [feature_scope_modality]
+        lookback_window = (
+            self._stringify(hyperparams.get("lookback"))
+            or self._stringify(model_spec.get("lookback"))
+            or self._str(disclosure_metadata.get("lookback_window"))
+            or "not_applicable"
+        )
+        tuning_trial_count = (
+            self._stringify((run_manifest.get("tracking") or {}).get("trial_count"))
+            if isinstance(run_manifest.get("tracking"), dict)
+            else None
+        ) or self._str(disclosure_metadata.get("tuning_trial_count")) or "0"
+        external_pretraining_flag = (
+            self._stringify(run_metadata.get("pretrained"))
+            or self._str(disclosure_from_prediction.get("external_pretraining_flag"))
+            or self._str(disclosure_from_input.get("external_pretraining_flag"))
+            or self._str(disclosure_metadata.get("external_pretraining_flag"))
+            or "false"
+        )
+        synthetic_data_flag = (
+            self._stringify(run_manifest.get("synthetic_reference"))
+            or self._str(disclosure_from_prediction.get("synthetic_data_flag"))
+            or self._str(disclosure_from_input.get("synthetic_data_flag"))
+            or self._str(disclosure_metadata.get("synthetic_data_flag"))
+            or "false"
+        )
         return {
-            "train_start_time": dataset_start.isoformat() if dataset_start is not None else None,
-            "train_end_time": dataset_end.isoformat() if dataset_end is not None else None,
-            "lookback_window": self._stringify(hyperparams.get("lookback")),
+            "train_dataset_window": (
+                f"{dataset_start.isoformat()} -> {dataset_end.isoformat()}"
+                if dataset_start is not None and dataset_end is not None
+                else None
+            ),
+            "lookback_window": lookback_window,
             "label_horizon": self._stringify(
                 detail.dataset.label_horizon if detail is not None else run_manifest.get("label_horizon")
             ),
-            "modalities": ", ".join(data_domains) if data_domains else None,
-            "fusion_summary": (
-                self._str(prediction_metadata.get("fusion_strategy"))
-                or (
-                    "late_score_blend"
-                    if self._str(run_metadata.get("advanced_kind")) == "multimodal"
-                    else None
-                )
-                or (self._str(detail.acquisition_profile.get("merge_policy_name")) if detail is not None else None)
+            "modalities_and_fusion_summary": " | ".join(
+                part
+                for part in [
+                    ", ".join(required_modalities) if required_modalities else (", ".join(data_domains) if data_domains else None),
+                    (
+                        self._str(prediction_metadata.get("fusion_strategy"))
+                        or (
+                            "late_score_blend"
+                            if self._str(run_metadata.get("advanced_kind")) == "multimodal"
+                            else None
+                        )
+                        or (self._str(detail.acquisition_profile.get("merge_policy_name")) if detail is not None else None)
+                    ),
+                ]
+                if part
             ),
             "random_seed": tracking_seed,
-            "tuning_trials": self._stringify((run_manifest.get("tracking") or {}).get("trial_count")) if isinstance(run_manifest.get("tracking"), dict) else None,
-            "external_pretraining": self._stringify(run_metadata.get("pretrained")),
-            "synthetic_data": self._stringify(run_manifest.get("synthetic_reference")),
-            "actual_market_start_time": actual_market_start,
-            "actual_market_end_time": actual_market_end,
-            "actual_backtest_start_time": actual_backtest_start,
-            "actual_backtest_end_time": actual_backtest_end,
-            "actual_nlp_start_time": actual_nlp_start,
-            "actual_nlp_end_time": actual_nlp_end,
-            "nlp_gate_status": (
-                readiness.official_nlp_gate_status if readiness is not None else None
+            "tuning_trial_count": tuning_trial_count,
+            "external_pretraining_flag": external_pretraining_flag,
+            "synthetic_data_flag": synthetic_data_flag,
+            "actual_market_dataset_window": (
+                f"{actual_market_start} -> {actual_market_end}"
+                if actual_market_start is not None and actual_market_end is not None
+                else None
             ),
+            "actual_official_backtest_window": (
+                f"{actual_backtest_start} -> {actual_backtest_end}"
+                if actual_backtest_start is not None and actual_backtest_end is not None
+                else None
+            ),
+            "actual_nlp_coverage_window": (
+                " | ".join(
+                    part
+                    for part in [
+                        (
+                            f"{actual_nlp_start} -> {actual_nlp_end}"
+                            if actual_nlp_start is not None and actual_nlp_end is not None
+                            else None
+                        ),
+                        readiness.official_nlp_gate_status if readiness is not None else None,
+                    ]
+                    if part
+                )
+                if actual_nlp_start is not None or actual_nlp_end is not None or (readiness is not None and readiness.official_nlp_gate_status is not None)
+                else None
+            ),
+            "required_modalities_resolved": ", ".join(required_modalities) if required_modalities else None,
+        }
+
+    def _run_disclosure_metadata(
+        self,
+        *,
+        run_id: str,
+        run_manifest: dict[str, object],
+        run_metadata: dict[str, object],
+        dataset_detail,
+    ) -> dict[str, str | None]:
+        model_spec = run_metadata.get("model_spec") if isinstance(run_metadata.get("model_spec"), dict) else {}
+        hyperparams = model_spec.get("hyperparams") if isinstance(model_spec, dict) else {}
+        if not isinstance(hyperparams, dict):
+            hyperparams = {}
+        repro_context = run_manifest.get("repro_context") if isinstance(run_manifest.get("repro_context"), dict) else {}
+        feature_scope_modality = self._normalize_modality(
+            self._str(run_metadata.get("feature_scope_modality")) or self._str(run_manifest.get("feature_scope_modality"))
+        )
+        dataset_frequency = dataset_detail.dataset.frequency if dataset_detail is not None else None
+        label_horizon = dataset_detail.dataset.label_horizon if dataset_detail is not None else run_manifest.get("label_horizon")
+        data_domains = dataset_detail.dataset.data_domains if dataset_detail is not None else []
+        return {
+            "run_id": run_id,
+            "lookback_window": self._stringify(hyperparams.get("lookback")) or self._stringify(model_spec.get("lookback")) or "not_applicable",
+            "random_seed": self._stringify(repro_context.get("seed")) or self._stringify(hyperparams.get("random_state")) or self._stringify(hyperparams.get("seed")),
+            "tuning_trial_count": (
+                self._stringify((run_manifest.get("tracking") or {}).get("trial_count"))
+                if isinstance(run_manifest.get("tracking"), dict)
+                else None
+            ) or "0",
+            "external_pretraining_flag": self._stringify(run_metadata.get("pretrained")) or "false",
+            "synthetic_data_flag": self._stringify(run_manifest.get("synthetic_reference")) or "false",
+            "label_horizon": self._stringify(label_horizon),
+            "required_modalities_resolved": feature_scope_modality if feature_scope_modality != "unknown" else None,
+            "modalities_and_fusion_summary": " | ".join(
+                part
+                for part in [
+                    feature_scope_modality if feature_scope_modality != "unknown" else (", ".join(data_domains) if data_domains else None),
+                    dataset_frequency,
+                ]
+                if part
+            ),
+        }
+
+    def _aggregate_composition_disclosure_metadata(
+        self,
+        *,
+        source_disclosures: list[dict[str, object]],
+        required_modalities: list[str],
+        fusion_strategy: str,
+    ) -> dict[str, str | None]:
+        def resolve_single(key: str, fallback: str | None = None) -> str | None:
+            values = {
+                self._str(item.get(key)) or self._stringify(item.get(key))
+                for item in source_disclosures
+                if (self._str(item.get(key)) or self._stringify(item.get(key))) not in {None, ""}
+            }
+            cleaned = {value for value in values if value is not None}
+            if len(cleaned) == 1:
+                return next(iter(cleaned))
+            if len(cleaned) > 1:
+                return "mixed"
+            return fallback
+
+        return {
+            "lookback_window": resolve_single("lookback_window", "not_applicable"),
+            "random_seed": resolve_single("random_seed"),
+            "tuning_trial_count": resolve_single("tuning_trial_count", "0"),
+            "external_pretraining_flag": resolve_single("external_pretraining_flag", "false"),
+            "synthetic_data_flag": resolve_single("synthetic_data_flag", "false"),
+            "label_horizon": resolve_single("label_horizon"),
+            "required_modalities_resolved": ", ".join(
+                dict.fromkeys(self._normalize_modality(modality) for modality in required_modalities if self._normalize_modality(modality) != "unknown")
+            ),
+            "modalities_and_fusion_summary": ", ".join(
+                dict.fromkeys(self._normalize_modality(modality) for modality in required_modalities if self._normalize_modality(modality) != "unknown")
+            )
+            + (f" | {fusion_strategy}" if fusion_strategy else ""),
         }
 
     def _dataset_detail(self, dataset_id: str | None):
         if not dataset_id:
             return None
         return self.workbench.get_dataset_detail(dataset_id)
+
+    def _dataset_available_modalities(self, dataset_id: str) -> list[str]:
+        detail = self.workbench.get_dataset_detail(dataset_id)
+        if detail is None:
+            return []
+        domains = [
+            self._normalize_modality(domain)
+            for domain in detail.dataset.data_domains
+            if self._normalize_modality(domain) != "unknown"
+        ]
+        if not domains:
+            domains = [self._normalize_modality(detail.dataset.data_domain)]
+        return list(
+            dict.fromkeys(
+                sorted(
+                    [domain for domain in domains if domain != "unknown"],
+                    key=self._modality_sort_key,
+                )
+            )
+        )
 
     def _dataset_frequency(self, dataset_id: str | None) -> str | None:
         detail = self._dataset_detail(dataset_id)
@@ -3887,6 +5092,14 @@ class JobService:
             "build_fusion",
             "readiness_fusion",
             "acquire",
+            "prepare_dataset",
+            "train_market",
+            "train_macro",
+            "train_on_chain",
+            "train_derivatives",
+            "train_nlp",
+            "inspect",
+            "compose",
             "prepare",
             "train",
             "predict",
@@ -3954,6 +5167,8 @@ class JobService:
                 "readiness_fusion",
                 "train",
             ]
+        if job_type == "dataset_multimodal_train":
+            return ["prepare_dataset", "inspect", "compose"]
         if job_type == "train":
             return ["prepare", "train"]
         return []
@@ -3980,6 +5195,33 @@ class JobService:
                     if result_links
                     else []
                 ),
+            )
+        if job.job_type == "dataset_multimodal_train":
+            source_runs = job.result.run_ids[1:] if len(job.result.run_ids) > 1 else []
+            composed_run = job.result.run_ids[0] if job.result.run_ids else None
+            highlights = []
+            if source_runs:
+                highlights.append(f"Source runs: {', '.join(source_runs)}")
+            if composed_run:
+                highlights.append(f"Composed run: {composed_run}")
+            if job.result.backtest_ids:
+                highlights.append(f"Official backtests: {', '.join(job.result.backtest_ids)}")
+            return StableSummaryView(
+                status=job.status,
+                headline=(
+                    "Dataset multimodal training and official backtest completed"
+                    if job.result.backtest_ids
+                    else "Dataset multimodal training completed"
+                ),
+                detail=(f"Dataset: {job.result.dataset_id}" if job.result.dataset_id else None),
+                highlights=highlights,
+                recommended_actions=(
+                    ["Open the latest official backtest report."]
+                    if job.result.backtest_ids
+                    else ["Open the composed run detail and launch a backtest."]
+                )
+                if result_links
+                else []
             )
         if job.job_type == "backtest":
             backtest_count = len(job.result.backtest_ids)

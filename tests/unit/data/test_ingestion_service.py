@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 
 import pytest
 
 from quant_platform.common.types.core import TimeRange
+from quant_platform.data.connectors.derivatives import BinanceFuturesMetricsConnector
 from quant_platform.data.connectors.macro import FredSeriesConnector
 from quant_platform.data.connectors.market import BinanceSpotKlinesConnector
 from quant_platform.data.connectors.on_chain import DefiLlamaConnector
@@ -40,6 +43,8 @@ class _FakeResponse:
         return None
 
     def read(self) -> bytes:
+        if isinstance(self.payload, str):
+            return self.payload.encode("utf-8")
         return json.dumps(self.payload).encode("utf-8")
 
 
@@ -123,26 +128,82 @@ def test_binance_connector_parses_klines_payload(monkeypatch: pytest.MonkeyPatch
     assert result.metadata["rows"][0]["close"] == 101.5
 
 
-def test_fred_connector_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fred_connector_falls_back_to_public_csv_without_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     connector = FredSeriesConnector()
     monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "quant_platform.data.connectors.macro.urlopen",
+        lambda *args, **kwargs: _FakeResponse(
+            "observation_date,DFF\n2024-01-01,5.33\n2024-01-02,5.33\n"
+        ),
+    )
 
-    with pytest.raises(DataConnectorError) as exc_info:
-        connector.ingest(
-            IngestionRequest(
-                data_domain="macro",
-                vendor="fred",
-                request_id="fred-test",
-                time_range=TimeRange(
-                    start=datetime(2024, 1, 1, tzinfo=UTC),
-                    end=datetime(2024, 1, 31, tzinfo=UTC),
-                ),
-                identifiers=["DFF"],
-                frequency="1d",
-            )
+    result = connector.ingest(
+        IngestionRequest(
+            data_domain="macro",
+            vendor="fred",
+            request_id="fred-test",
+            time_range=TimeRange(
+                start=datetime(2024, 1, 1, tzinfo=UTC),
+                end=datetime(2024, 1, 31, tzinfo=UTC),
+            ),
+            identifiers=["DFF"],
+            frequency="1d",
         )
-    assert exc_info.value.code == "credentials_missing"
-    assert exc_info.value.vendor == "fred"
+    )
+
+    assert result.coverage.complete is True
+    assert result.metadata["transport"] == "fred_public_csv"
+    assert result.metadata["rows"][0]["value"] == 5.33
+
+
+def test_binance_futures_connector_paginates_metric_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = BinanceFuturesMetricsConnector()
+    payloads = [
+        [
+            {"fundingTime": 1704067200000, "fundingRate": "0.001"},
+            {"fundingTime": 1704070800000, "fundingRate": "0.002"},
+        ],
+        [
+            {"fundingTime": 1704074400000, "fundingRate": "0.003"},
+        ],
+    ]
+
+    def _fake_urlopen(*args, **kwargs):
+        _ = (args, kwargs)
+        return _FakeResponse(payloads.pop(0))
+
+    monkeypatch.setattr(
+        "quant_platform.data.connectors.derivatives.urlopen",
+        _fake_urlopen,
+    )
+
+    result = connector.ingest(
+        IngestionRequest(
+            data_domain="derivatives",
+            vendor="binance_futures",
+            request_id="derivatives-test",
+            time_range=TimeRange(
+                start=datetime(2024, 1, 1, 0, 0, tzinfo=UTC),
+                end=datetime(2024, 1, 1, 2, 0, tzinfo=UTC),
+            ),
+            identifiers=["BTCUSDT"],
+            frequency="1h",
+            options={"metrics": ["funding_rate"]},
+        )
+    )
+
+    rows = result.metadata["rows"]
+    assert [row["value"] for row in rows] == [0.001, 0.002, 0.003]
+    assert [row["event_time"] for row in rows] == [
+        "2024-01-01T00:00:00Z",
+        "2024-01-01T01:00:00Z",
+        "2024-01-01T02:00:00Z",
+    ]
 
 
 def test_defillama_connector_parses_points(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -555,3 +616,65 @@ def test_reddit_archive_connector_backfills_when_csv_window_has_zero_rows(
     event_count_rows = [row for row in rows if row["metric_name"] == "event_count"]
     assert [row["value"] for row in event_count_rows] == [1.0]
     assert event_count_rows[0]["series_key"] == "BTC:reddit_archive:event_count"
+
+
+def test_reddit_archive_connector_retries_timeout_http_422(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connector = RedditArchiveSentimentConnector(
+        tmp_path / "artifacts",
+        csv_path=tmp_path / "missing.csv",
+    )
+
+    attempts = {"count": 0}
+
+    def _fake_request_url(url: str, *, headers: dict[str, str] | None = None) -> _FakeResponse:
+        _ = (url, headers)
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise HTTPError(
+                url=url,
+                code=422,
+                msg="Unprocessable Entity",
+                hdrs=None,
+                fp=BytesIO(b'{"data":null,"error":"Timeout. Maybe slow down a bit"}'),
+            )
+        return _FakeResponse(
+            {
+                "data": [
+                    {
+                        "id": "retry-post",
+                        "created_utc": 1704067279,
+                        "title": "Bitcoin opens 2024 strong",
+                        "selftext": "Fresh inflows arrive.",
+                        "subreddit": "bitcoin",
+                        "score": 12,
+                        "num_comments": 6,
+                        "permalink": "/r/Bitcoin/comments/retry/test/",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("quant_platform.data.connectors.sentiment._request_url", _fake_request_url)
+    monkeypatch.setattr("quant_platform.data.connectors.sentiment.time.sleep", lambda *_args, **_kwargs: None)
+
+    result = connector.ingest(
+        IngestionRequest(
+            data_domain="sentiment_events",
+            vendor="reddit_archive",
+            request_id="reddit-archive-retry-test",
+            time_range=TimeRange(
+                start=datetime(2024, 1, 1, 0, 0, tzinfo=UTC),
+                end=datetime(2024, 1, 1, 1, 0, tzinfo=UTC),
+            ),
+            identifiers=["btc_news"],
+            frequency="1h",
+            options={"subreddits": ["bitcoin"]},
+        )
+    )
+
+    event_count_rows = [row for row in result.metadata["rows"] if row["metric_name"] == "event_count"]
+    assert attempts["count"] == 3
+    assert [row["value"] for row in event_count_rows] == [1.0]

@@ -295,6 +295,22 @@ export function useDeleteModelTemplateMutation() {
   });
 }
 
+export function useDeleteTrainedModelMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => api.deleteTrainedModel(runId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+        queryClient.invalidateQueries({ queryKey: ["experiments"] }),
+        queryClient.invalidateQueries({ queryKey: ["run"] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["workbench-overview"] }),
+      ]);
+    },
+  });
+}
+
 export function useBacktestOptions() {
   return useQuery({
     queryKey: ["launch-options", "backtest"],

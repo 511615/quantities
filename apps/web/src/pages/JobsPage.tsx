@@ -133,7 +133,7 @@ export function JobsPage() {
   }
 
   return (
-    <div className="page-stack">
+    <div className="page-stack jobs-page">
       <section className="panel">
         <PanelHeader eyebrow={I18N.nav.jobs} title={COPY.pageTitle()} description={COPY.pageDescription()} />
       </section>
@@ -147,10 +147,9 @@ export function JobsPage() {
               description={translateText("统一复用模板驱动训练入口，避免任务中心与模型页出现不同的训练参数语义。")}
             />
             <LaunchTrainDrawer
-              defaultOpen
-              showTrigger={false}
               title={COPY.trainTitle()}
               description={I18N.model.templateSection}
+              triggerLabel={COPY.trainTitle()}
               onJobCreated={setTrackedJobId}
             />
           </section>

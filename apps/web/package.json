@@ -10,7 +10,9 @@
     "bundle:check": "node scripts/check-bundle.mjs",
     "preview": "vite preview",
     "test": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.0",
@@ -22,6 +24,7 @@
     "react-router-dom": "^7.14.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.0.1",
     "@types/react": "^19.2.14",

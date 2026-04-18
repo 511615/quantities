@@ -54,7 +54,7 @@ export function ComparisonPage() {
   const rows = query.data.rows;
 
   return (
-    <div className="page-stack">
+    <div className="page-stack comparison-page">
       <section className="panel">
         <PanelHeader
           eyebrow={I18N.nav.comparison}

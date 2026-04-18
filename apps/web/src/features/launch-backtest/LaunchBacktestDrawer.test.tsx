@@ -458,18 +458,17 @@ test("renders official protocol as default mode", async () => {
   expect(screen.getByText("兼容性结论")).toBeInTheDocument();
   expect(screen.getByText("阻断摘要")).toBeInTheDocument();
   expect(screen.getByText("最新官方窗口")).toBeInTheDocument();
-  expect(screen.getByText("实际市场窗口")).toBeInTheDocument();
-  expect(screen.getByText("官方测试窗口")).toBeInTheDocument();
   expect(screen.getByText("基准与数据绑定")).toBeInTheDocument();
   expect(screen.getByText("模板规则")).toBeInTheDocument();
   expect(screen.getByText("高级选项")).toBeInTheDocument();
+  expect(screen.getByText("五模态质量与官方数据绑定")).toBeInTheDocument();
   const templateRulesDetails = screen.getByText("模板规则").closest("details");
   expect(templateRulesDetails).not.toHaveAttribute("open");
   await waitFor(() => expect(screen.getAllByText("兼容").length).toBeGreaterThan(0));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: I18N.action.submit })).toBeEnabled(),
   );
-  expect(screen.getByText("实际 NLP 窗口")).toBeInTheDocument();
+  expect(screen.getByText("NLP 门禁说明")).toBeInTheDocument();
   expect(screen.getByText("特征契约")).toBeInTheDocument();
   expect(screen.getByText("当前可发起官方回测。")).toBeInTheDocument();
 });
@@ -540,12 +539,14 @@ test("blocks official submit in the drawer when preflight reports schema incompa
 test("shows explicit progress while official compatibility preflight is still running", async () => {
   renderWithProviders(<LaunchBacktestDrawer initialRunId="slow-official-run" />);
 
-  expect(await screen.findByText("正在校验官方窗口、市场锚点和 NLP 门禁。")).toBeInTheDocument();
+  expect(await screen.findByText("正在校验官方窗口、市场锚点和多模态约束。")).toBeInTheDocument();
   expect(
     screen.getByText("兼容性结论"),
   ).toBeInTheDocument();
   expect(screen.getAllByText("检查中").length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: "兼容性检查中..." })).toBeDisabled();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "兼容性检查中..." })).toBeDisabled(),
+  );
 
   await waitFor(() =>
     expect(screen.getByRole("button", { name: I18N.action.submit })).toBeEnabled(),

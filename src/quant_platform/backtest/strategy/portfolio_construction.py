@@ -10,12 +10,16 @@ from quant_platform.backtest.contracts.backtest import PortfolioConfig, Strategy
 from quant_platform.backtest.contracts.order import TargetInstruction
 from quant_platform.backtest.contracts.portfolio import RiskConstraintSet
 from quant_platform.backtest.contracts.signal import SignalFrame, SignalRecord
+from quant_platform.backtest.strategy.signal_calibration import robust_normalize
 from quant_platform.backtest.strategy.signal_router import normalize_signal_value
 from quant_platform.backtest.strategy.sizers import scale_signal_by_confidence
 from quant_platform.data.contracts.market import NormalizedMarketBar
 
 _MIN_SKFOLIO_SAMPLES = 8
 _SKFOLIO_LOOKBACK_BARS = 48
+_SIGNAL_DEADZONE = 0.10
+_TARGET_WEIGHT_DEADZONE = 0.02
+_REBALANCE_DELTA_DEADZONE = 0.05
 
 
 def build_target_instructions(
@@ -32,12 +36,17 @@ def build_target_instructions(
     previous_weights: dict[str, float] = {}
     for timestamp in sorted(grouped):
         rows = grouped[timestamp]
-        strengths = {
-            row.signal_id: scale_signal_by_confidence(
+        raw_strengths = [
+            scale_signal_by_confidence(
                 normalize_signal_value(row),
                 row.confidence,
             )
             for row in rows
+        ]
+        normalized_strengths, _ = robust_normalize(raw_strengths)
+        strengths = {
+            row.signal_id: _apply_signal_deadzone(normalized_strengths[index] if index < len(normalized_strengths) else 0.0)
+            for index, row in enumerate(rows)
         }
         if strategy_config.portfolio_method == "skfolio_mean_risk":
             target_values = _build_skfolio_target_values(
@@ -57,6 +66,7 @@ def build_target_instructions(
                 portfolio_config=portfolio_config,
                 risk_constraints=risk_constraints,
                 strategy_config=strategy_config,
+                previous_weights=previous_weights,
             )
         for row in rows:
             target_value = target_values[row.signal_id]
@@ -83,31 +93,45 @@ def _build_proportional_target_values(
     portfolio_config: PortfolioConfig,
     risk_constraints: RiskConstraintSet,
     strategy_config: StrategyConfig,
+    previous_weights: dict[str, float],
 ) -> dict[str, float]:
     if strategy_config.direction_mode == "long_only":
-        denom = sum(max(0.0, value) for value in strengths.values()) or 1.0
-        return {
+        denom = max(1.0, sum(max(0.0, value) for value in strengths.values()))
+        provisional = {
             row.signal_id: min(
                 risk_constraints.max_position_weight,
                 max(0.0, strengths[row.signal_id]) / denom,
             )
             for row in rows
         }
+        return _apply_turnover_budget(
+            rows=rows,
+            target_values=provisional,
+            previous_weights=previous_weights,
+            max_turnover_per_rebalance=risk_constraints.max_turnover_per_rebalance,
+        )
     gross = sum(abs(value) for value in strengths.values()) or 1.0
     scale = min(
         portfolio_config.max_gross_leverage,
         risk_constraints.max_gross_leverage,
     )
-    return {
+    denom = max(1.0, gross)
+    provisional = {
         row.signal_id: max(
             -risk_constraints.max_position_weight,
             min(
                 risk_constraints.max_position_weight,
-                (strengths[row.signal_id] / gross) * scale,
+                (strengths[row.signal_id] / denom) * scale,
             ),
         )
         for row in rows
     }
+    return _apply_turnover_budget(
+        rows=rows,
+        target_values=provisional,
+        previous_weights=previous_weights,
+        max_turnover_per_rebalance=risk_constraints.max_turnover_per_rebalance,
+    )
 
 
 def _build_skfolio_target_values(
@@ -235,3 +259,42 @@ def _solve_skfolio_weights(
     if weights.shape[0] != len(symbols):
         raise ValueError("skfolio_mean_risk returned an unexpected weight vector")
     return np.clip(weights, min_weights, max_weights)
+
+
+def _apply_signal_deadzone(value: float) -> float:
+    return 0.0 if abs(value) < _SIGNAL_DEADZONE else value
+
+
+def _apply_target_deadzone(value: float) -> float:
+    return 0.0 if abs(value) < _TARGET_WEIGHT_DEADZONE else value
+
+
+def _apply_turnover_budget(
+    *,
+    rows: list[SignalRecord],
+    target_values: dict[str, float],
+    previous_weights: dict[str, float],
+    max_turnover_per_rebalance: float,
+) -> dict[str, float]:
+    previous_by_signal = {
+        row.signal_id: float(previous_weights.get(row.instrument, 0.0))
+        for row in rows
+    }
+    deltas = {
+        signal_id: target_values[signal_id] - previous_by_signal[signal_id]
+        for signal_id in target_values
+    }
+    realized_turnover = sum(abs(delta) for delta in deltas.values())
+    if realized_turnover <= max_turnover_per_rebalance or realized_turnover <= 1e-9:
+        return {
+            signal_id: _apply_target_deadzone(target_value)
+            for signal_id, target_value in target_values.items()
+        }
+    shrink = max_turnover_per_rebalance / realized_turnover
+    adjusted: dict[str, float] = {}
+    for signal_id in target_values:
+        next_value = previous_by_signal[signal_id] + deltas[signal_id] * shrink
+        if abs(next_value - previous_by_signal[signal_id]) < _REBALANCE_DELTA_DEADZONE:
+            next_value = previous_by_signal[signal_id]
+        adjusted[signal_id] = _apply_target_deadzone(next_value)
+    return adjusted

@@ -46,6 +46,20 @@ class WarningSummaryView(ApiModel):
     items: list[str] = Field(default_factory=list)
 
 
+class ModalityQualityView(ApiModel):
+    modality: str
+    status: str = "unknown"
+    blocking_reasons: list[str] = Field(default_factory=list)
+    usable_count: int | None = None
+    coverage_ratio: float | None = None
+    duplicate_ratio: float | None = None
+    max_gap_bars: int | None = None
+    freshness_lag_days: float | None = None
+    non_null_coverage_ratio: float | None = None
+    required_feature_names: list[str] = Field(default_factory=list)
+    observed_feature_names: list[str] = Field(default_factory=list)
+
+
 class PredictionArtifactView(ApiModel):
     scope: str
     sample_count: int
@@ -208,6 +222,9 @@ class ExperimentListItem(ApiModel):
     prediction_scopes: list[str] = Field(default_factory=list)
     official_template_eligible: bool | None = None
     official_blocking_reasons: list[str] = Field(default_factory=list)
+    feature_scope_modality: str | None = None
+    feature_scope_feature_names: list[str] = Field(default_factory=list)
+    source_dataset_quality_status: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
 
 
@@ -252,6 +269,9 @@ class RunDetailView(ApiModel):
     notes: list[str] = Field(default_factory=list)
     official_template_eligible: bool | None = None
     official_blocking_reasons: list[str] = Field(default_factory=list)
+    feature_scope_modality: str | None = None
+    feature_scope_feature_names: list[str] = Field(default_factory=list)
+    source_dataset_quality_status: str | None = None
     summary: StableSummaryView | None = None
     pipeline_summary: PipelineSummaryView | None = None
     review_summary: ReviewSummaryView | None = None
@@ -309,15 +329,38 @@ class RankComponentView(ApiModel):
     detail: str | None = None
 
 
+class ProtocolGateFailureView(ApiModel):
+    key: str
+    label: str
+    label_key: str | None = None
+    severity: str = "info"
+    reasons: list[str] = Field(default_factory=list)
+    reason_keys: list[str] = Field(default_factory=list)
+
+
+class BacktestExecutionDiagnosticsSummaryView(ApiModel):
+    signal_count: float | None = None
+    order_count: float | None = None
+    eligible_order_count: float | None = None
+    blocked_order_count: float | None = None
+    fill_count: float | None = None
+    position_open_count: float | None = None
+    block_reasons: list[str] = Field(default_factory=list)
+
+
 class BacktestProtocolResultView(ApiModel):
     template: BacktestTemplateView | None = None
     gate_status: str | None = None
     gate_results: list[GateResultView] = Field(default_factory=list)
+    protocol_gate_failures: list[ProtocolGateFailureView] = Field(default_factory=list)
     rank_components: list[RankComponentView] = Field(default_factory=list)
     slice_id: str | None = None
     slice_coverage: list[str] = Field(default_factory=list)
     lookback_bucket: str | None = None
     metadata_summary: dict[str, str | None] = Field(default_factory=dict)
+    missing_required_metadata_keys: list[str] = Field(default_factory=list)
+    missing_required_metadata_labels: list[str] = Field(default_factory=list)
+    missing_stress_scenarios: list[str] = Field(default_factory=list)
     required_modalities: list[str] = Field(default_factory=list)
     official_dataset_ids: list[str] = Field(default_factory=list)
     actual_market_start_time: datetime | None = None
@@ -329,6 +372,8 @@ class BacktestProtocolResultView(ApiModel):
     nlp_gate_status: str | None = None
     nlp_gate_reasons: list[str] = Field(default_factory=list)
     nlp_gate_reason_keys: list[str] = Field(default_factory=list)
+    modality_quality_summary: dict[str, ModalityQualityView] = Field(default_factory=dict)
+    quality_blocking_reasons: list[str] = Field(default_factory=list)
     official_benchmark_version: str | None = None
     official_window_days: int | None = None
     official_window_start_time: datetime | None = None
@@ -433,12 +478,15 @@ class BacktestReportView(ApiModel):
     research_backend: str | None = None
     portfolio_method: str | None = None
     protocol: BacktestProtocolResultView | None = None
+    modality_quality_summary: dict[str, ModalityQualityView] = Field(default_factory=dict)
+    quality_blocking_reasons: list[str] = Field(default_factory=list)
     passed_consistency_checks: bool | None = None
     comparison_warnings: list[str] = Field(default_factory=list)
     divergence_metrics: dict[str, float] = Field(default_factory=dict)
     scenario_metrics: dict[str, float] = Field(default_factory=dict)
     research: BacktestEngineView | None = None
     simulation: BacktestEngineView | None = None
+    execution_diagnostics_summary: BacktestExecutionDiagnosticsSummaryView | None = None
     artifacts: list[ArtifactView] = Field(default_factory=list)
     summary: StableSummaryView | None = None
     pipeline_summary: PipelineSummaryView | None = None
@@ -974,6 +1022,8 @@ class DatasetReadinessSummaryView(ApiModel):
     official_template_eligible: bool | None = None
     official_nlp_gate_status: str | None = None
     official_nlp_gate_reasons: list[str] = Field(default_factory=list)
+    modality_quality_summary: dict[str, ModalityQualityView] = Field(default_factory=dict)
+    aligned_multimodal_quality: ModalityQualityView | None = None
     archival_nlp_source_only: bool | None = None
     nlp_requested_start_time: datetime | None = None
     nlp_requested_end_time: datetime | None = None

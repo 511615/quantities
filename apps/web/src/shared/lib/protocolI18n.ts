@@ -252,6 +252,13 @@ export function localizeBacktestGateDetail(value?: string | null, key?: string |
   if (!value && !key) {
     return "--";
   }
+  if (
+    value &&
+    (value.startsWith("Missing required disclosure fields:")
+      || value.startsWith("Missing official scenario deltas:"))
+  ) {
+    return value;
+  }
   if (key && GATE_DETAIL_KEY_MAP[key]) {
     return pick(GATE_DETAIL_KEY_MAP[key]);
   }

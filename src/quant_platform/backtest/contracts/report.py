@@ -12,6 +12,7 @@ class BacktestDiagnostics(FrozenModel):
     execution_metrics: dict[str, float] = Field(default_factory=dict)
     risk_metrics: dict[str, float] = Field(default_factory=dict)
     signal_metrics: dict[str, float] = Field(default_factory=dict)
+    block_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

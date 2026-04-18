@@ -72,6 +72,9 @@ test("renders run detail and previews artifacts", async () => {
     "href",
     "/datasets/macro_liquidity_snapshot",
   );
+  expect(screen.getAllByText("市场").length).toBeGreaterThan(0);
+  expect(screen.getByText(/lag_return_1, lag_return_2, volume_zscore/)).toBeInTheDocument();
+  expect(screen.getAllByText("可训练").length).toBeGreaterThan(0);
 
   fireEvent.click(
     screen.getByRole("button", {
