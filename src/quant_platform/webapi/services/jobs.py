@@ -1076,14 +1076,31 @@ class JobService:
         )
 
         context.start_stage("predict", f"Generating multimodal predictions for scope '{effective_prediction_scope}'")
-        merged_prediction_frame, alignment_notes = self._blend_prediction_frames(
+        fusion_strategy = self._str(composition.get("fusion_strategy")) or "attention_late_fusion"
+        merged_prediction_frame, alignment_notes, explainability_payload = self._blend_prediction_frames(
             run_id=request.run_id,
             source_prediction_frames=source_prediction_frames,
+            fusion_strategy=fusion_strategy,
         )
         prediction_artifact = self.facade.store.write_model(
             f"predictions/{request.run_id}/{effective_prediction_scope}.json",
             merged_prediction_frame,
         )
+        if explainability_payload is not None:
+            self.facade.store.write_json(
+                f"predictions/{request.run_id}/{effective_prediction_scope}_explainability.json",
+                explainability_payload,
+            )
+            self._update_composed_run_prediction_metadata(
+                run_id=request.run_id,
+                fusion_strategy=fusion_strategy,
+                effective_prediction_scope=effective_prediction_scope,
+                attention_summary=(
+                    explainability_payload.get("attention_summary")
+                    if isinstance(explainability_payload, dict)
+                    else None
+                ),
+            )
         context.finish_stage("predict", "Multimodal prediction artifact written")
 
         protocol_metadata.update(
@@ -1108,13 +1125,18 @@ class JobService:
                 else None,
                 "nlp_gate_status": market_readiness.official_nlp_gate_status,
                 "nlp_gate_reasons": list(market_readiness.official_nlp_gate_reasons),
-                "fusion_strategy": self._str(composition.get("fusion_strategy")) or "late_score_blend",
+                "fusion_strategy": fusion_strategy,
                 "primary_dataset_id": market_dataset_ref.dataset_id,
                 "dataset_ids": [str(item["selected_dataset_id"]) for item in selected_sources],
                 "dataset_roles": dataset_roles,
                 "dataset_modalities": dataset_modalities,
                 "alignment_status": "strict_intersection",
                 "alignment_notes": alignment_notes,
+                "attention_summary": (
+                    explainability_payload.get("attention_summary")
+                    if isinstance(explainability_payload, dict)
+                    else None
+                ),
             }
         )
 
@@ -1287,6 +1309,8 @@ class JobService:
                 "prediction_type": "return",
                 "hyperparams": {
                     "fusion_strategy": request.fusion_strategy,
+                    "requested_fusion_strategy": request.fusion_strategy,
+                    "effective_fusion_strategy": request.fusion_strategy,
                     "source_run_ids": [item["run_id"] for item in source_specs],
                     "weights": {item["run_id"]: item["weight"] for item in source_specs},
                     "weight_sources": {
@@ -1298,18 +1322,23 @@ class JobService:
                 "model_name": "multimodal_reference",
                 "family": "multimodal",
                 "advanced_kind": "multimodal",
+                "entrypoint": "quant_platform.models.advanced.multimodal_fusion.MultimodalFusionModel",
                 "input_adapter_key": "composed_multimodal",
                 "prediction_adapter_key": "standard_prediction",
                 "artifact_adapter_key": "json_manifest",
-                "capabilities": ["composed_from_existing_runs", "late_score_blend"],
+                "capabilities": [
+                    "composed_from_existing_runs",
+                    "late_score_blend",
+                    "attention_late_fusion",
+                ],
                 "benchmark_eligible": True,
                 "default_eligible": False,
                 "enabled": False,
             },
             "artifact_uri": str((model_dir / "metadata.json").resolve()),
             "artifact_dir": str(model_dir.resolve()),
-            "state_uri": None,
-            "backend": "late_score_blend",
+            "state_uri": str((model_dir / "state.pkl").resolve()),
+            "backend": request.fusion_strategy,
             "training_sample_count": 0,
             "feature_names": [],
             "training_config": {},
@@ -1333,6 +1362,8 @@ class JobService:
                 "source_run_ids": [item["run_id"] for item in source_specs],
                 "source_dataset_ids": source_dataset_ids,
                 "dataset_ids": source_dataset_ids,
+                "requested_fusion_strategy": request.fusion_strategy,
+                "effective_fusion_strategy": request.fusion_strategy,
                 "official_template_eligible": True,
                 "official_contract": official_contract,
                 "required_modalities": disclosure_metadata.get("required_modalities_resolved"),
@@ -1340,6 +1371,8 @@ class JobService:
                 "weight_sources": {
                     item["run_id"]: item.get("weight_source") for item in source_specs
                 },
+                "attention_summary": None,
+                "explainability_uri": str((self.artifact_root / "predictions" / run_id / "test_explainability.json").resolve()),
             },
             "source_dataset_ids": source_dataset_ids,
         }
@@ -1378,6 +1411,9 @@ class JobService:
         self.facade.store.write_json(f"models/{run_id}/train_manifest.json", train_manifest)
         self.facade.store.write_json(f"models/{run_id}/metadata.json", metadata)
         self.facade.store.write_json(f"models/{run_id}/evaluation_summary.json", evaluation_summary)
+        state_path = self.artifact_root / "models" / run_id / "state.pkl"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_bytes(b"{}")
         self.facade.store.write_model(
             f"predictions/{run_id}/full.json",
             PredictionFrame(
@@ -1685,7 +1721,8 @@ class JobService:
         *,
         run_id: str,
         source_prediction_frames: list[dict[str, object]],
-    ) -> tuple[PredictionFrame, list[str]]:
+        fusion_strategy: str = "attention_late_fusion",
+    ) -> tuple[PredictionFrame, list[str], dict[str, object] | None]:
         if not source_prediction_frames:
             raise JobExecutionError("No source predictions were produced for multimodal fusion.")
         keyed_rows: list[dict[tuple[str, tuple[tuple[str, str], ...]], PredictionRow]] = []
@@ -1726,6 +1763,16 @@ class JobService:
                 f"{source['run_id']} ({source['modality']}) normalized with "
                 f"{calibration_summary['method']} center={float(calibration_summary['center']):.6f}, "
                 f"scale={float(calibration_summary['scale']):.6f}, clip_z={float(calibration_summary['clip_z']):.2f}."
+            )
+        if fusion_strategy == "attention_late_fusion":
+            return self._blend_prediction_frames_with_attention(
+                run_id=run_id,
+                source_prediction_frames=source_prediction_frames,
+                normalized_sources=normalized_sources,
+                keyed_rows=keyed_rows,
+                ordered_keys=ordered_keys,
+                normalized_prediction_maps=normalized_prediction_maps,
+                normalization_notes=normalization_notes,
             )
         dynamic_weight_maps, dynamic_weight_notes = self._rolling_dynamic_weight_maps(
             ordered_keys=ordered_keys,
@@ -1793,6 +1840,105 @@ class JobService:
                 ),
             ),
             notes,
+            None,
+        )
+
+    def _blend_prediction_frames_with_attention(
+        self,
+        *,
+        run_id: str,
+        source_prediction_frames: list[dict[str, object]],
+        normalized_sources: list[dict[str, object]],
+        keyed_rows: list[dict[tuple[str, tuple[tuple[str, str], ...]], PredictionRow]],
+        ordered_keys: list[tuple[str, tuple[tuple[str, str], ...]]],
+        normalized_prediction_maps: list[dict[tuple[str, tuple[tuple[str, str], ...]], float]],
+        normalization_notes: list[str],
+    ) -> tuple[PredictionFrame, list[str], dict[str, object]]:
+        attention_weight_maps, attention_notes, attention_summary = self._attention_weight_maps(
+            ordered_keys=ordered_keys,
+            normalized_sources=normalized_sources,
+            normalized_prediction_maps=normalized_prediction_maps,
+            source_prediction_frames=source_prediction_frames,
+        )
+        merged_rows: list[PredictionRow] = []
+        explainability_rows: list[dict[str, object]] = []
+        for key in ordered_keys:
+            aligned_rows = [row_map[key] for row_map in keyed_rows]
+            directional_votes: list[float] = []
+            blended_prediction = 0.0
+            blended_confidence = 0.0
+            weight_map = attention_weight_maps[key]
+            for source, row, normalized_map in zip(normalized_sources, aligned_rows, normalized_prediction_maps, strict=True):
+                source_run_id = str(source["run_id"])
+                normalized_prediction = float(normalized_map[key])
+                weight = float(weight_map.get(source_run_id, float(source["weight"])))
+                blended_prediction += weight * normalized_prediction
+                blended_confidence += weight * row.confidence
+                directional_votes.append(normalized_prediction)
+            agreement = 1.0
+            if directional_votes:
+                vote_dispersion = max(directional_votes) - min(directional_votes)
+                agreement = max(0.0, 1.0 - min(vote_dispersion / 2.0, 1.0))
+            anchor_row = aligned_rows[0]
+            feature_available_time = max(
+                [(row.feature_available_time or row.timestamp) for row in aligned_rows]
+            )
+            merged_rows.append(
+                PredictionRow(
+                    entity_keys=dict(anchor_row.entity_keys),
+                    timestamp=anchor_row.timestamp,
+                    prediction=blended_prediction,
+                    confidence=max(0.0, min(blended_confidence * agreement, 1.0)),
+                    model_run_id=run_id,
+                    feature_available_time=feature_available_time,
+                )
+            )
+            explainability_rows.append(
+                {
+                    "timestamp": anchor_row.timestamp.astimezone(UTC).isoformat(),
+                    "entity_keys": dict(anchor_row.entity_keys),
+                    "prediction": blended_prediction,
+                    "confidence": max(0.0, min(blended_confidence * agreement, 1.0)),
+                    "agreement": agreement,
+                    "attention_weights": dict(weight_map),
+                }
+            )
+        market_frame = next(
+            (
+                item["frame"]
+                for item in normalized_sources
+                if item.get("modality") == "market" and isinstance(item.get("frame"), PredictionFrame)
+            ),
+            None,
+        )
+        market_metadata = market_frame.metadata if isinstance(market_frame, PredictionFrame) else None
+        notes = [
+            f"Strict alignment kept {len(ordered_keys)} shared rows across {len(source_prediction_frames)} modalities.",
+            *normalization_notes,
+            *attention_notes,
+        ]
+        for source, row_map in zip(normalized_sources, keyed_rows, strict=True):
+            dataset_id = self._str(source.get("selected_dataset_id")) or self._str(source.get("dataset_id")) or "--"
+            notes.append(
+                f"{source['run_id']} ({source['modality']}, dataset {dataset_id}) contributed {len(ordered_keys)}/{len(row_map)} aligned rows."
+            )
+        explainability_payload = {
+            "fusion_strategy": "attention_late_fusion",
+            "attention_summary": attention_summary,
+            "rows": explainability_rows,
+        }
+        return (
+            PredictionFrame(
+                rows=merged_rows,
+                metadata=PredictionMetadata(
+                    feature_view_ref=market_metadata.feature_view_ref if market_metadata is not None else None,
+                    prediction_time=datetime.now(UTC),
+                    inference_latency_ms=0,
+                    target_horizon=market_metadata.target_horizon if market_metadata is not None else None,
+                ),
+            ),
+            notes,
+            explainability_payload,
         )
 
     def _normalize_source_weights(self, specs: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -1959,6 +2105,155 @@ class JobService:
         ]
         return weight_maps, notes
 
+    def _attention_weight_maps(
+        self,
+        *,
+        ordered_keys: list[tuple[str, tuple[tuple[str, str], ...]]],
+        normalized_sources: list[dict[str, object]],
+        normalized_prediction_maps: list[dict[tuple[str, tuple[tuple[str, str], ...]], float]],
+        source_prediction_frames: list[dict[str, object]],
+    ) -> tuple[dict[tuple[str, tuple[tuple[str, str], ...]], dict[str, float]], list[str], dict[str, object]]:
+        prior_weights = {
+            str(item["run_id"]): float(item["weight"])
+            for item in normalized_sources
+        }
+        target_by_key = self._aligned_target_by_key(
+            ordered_keys=ordered_keys,
+            source_prediction_frames=source_prediction_frames,
+        )
+        lookback_bars = min(168, max(24, len(ordered_keys) // 6))
+        market_run_id = next(
+            (str(item["run_id"]) for item in normalized_sources if item.get("modality") == "market"),
+            str(normalized_sources[0]["run_id"]),
+        )
+        coefficient_defaults = {
+            "confidence": 1.2,
+            "inverse_local_error": 1.5,
+            "inverse_valid_mae": 1.0,
+            "sign_hit_rate": 0.8,
+            "prior_weight": 0.7,
+            "delta_penalty": 1.1,
+            "market_anchor_bonus": 0.2,
+        }
+        weight_maps: dict[tuple[str, tuple[tuple[str, str], ...]], dict[str, float]] = {}
+        average_weights = {str(item["run_id"]): 0.0 for item in normalized_sources}
+        average_entropy = 0.0
+        average_observed = 0.0
+        explained_rows = 0
+
+        for index, key in enumerate(ordered_keys):
+            history_keys = ordered_keys[max(0, index - lookback_bars) : index]
+            local_error_by_run: dict[str, float] = {}
+            for source, normalized_map in zip(normalized_sources, normalized_prediction_maps, strict=True):
+                source_run_id = str(source["run_id"])
+                if history_keys and history_keys[0] in target_by_key:
+                    comparable_keys = [candidate for candidate in history_keys if candidate in target_by_key]
+                else:
+                    comparable_keys = []
+                if comparable_keys:
+                    local_error = sum(
+                        abs(float(normalized_map[candidate]) - float(target_by_key[candidate]))
+                        for candidate in comparable_keys
+                    ) / max(1, len(comparable_keys))
+                else:
+                    valid_mae = float(
+                        (
+                            source.get("combination_quality")
+                            if isinstance(source.get("combination_quality"), dict)
+                            else {}
+                        ).get("valid_mae", 1.0)
+                        or 1.0
+                    )
+                    local_error = valid_mae
+                local_error_by_run[source_run_id] = local_error
+
+            logits: dict[str, float] = {}
+            for source, normalized_map, frame_payload in zip(
+                normalized_sources,
+                normalized_prediction_maps,
+                source_prediction_frames,
+                strict=True,
+            ):
+                source_run_id = str(source["run_id"])
+                frame = frame_payload.get("frame")
+                if not isinstance(frame, PredictionFrame):
+                    continue
+                row_lookup = {
+                    self._prediction_row_key(row): row
+                    for row in frame.rows
+                }
+                row = row_lookup[key]
+                quality = source.get("combination_quality") if isinstance(source.get("combination_quality"), dict) else {}
+                valid_mae = float(quality.get("valid_mae", 1.0) or 1.0)
+                sign_hit_rate = float(quality.get("sign_hit_rate", 0.5) or 0.5)
+                prior_weight = prior_weights[source_run_id]
+                normalized_prediction = float(normalized_map[key])
+                anchor_prediction = float(normalized_prediction_maps[0][key])
+                for anchor_source, anchor_map in zip(normalized_sources, normalized_prediction_maps, strict=True):
+                    if str(anchor_source["run_id"]) == market_run_id:
+                        anchor_prediction = float(anchor_map[key])
+                        break
+                delta_to_market = abs(normalized_prediction - anchor_prediction)
+                inverse_local_error = 1.0 / max(local_error_by_run[source_run_id], 1e-6)
+                inverse_valid_mae = 1.0 / max(valid_mae, 1e-6)
+                market_bonus = 1.0 if source_run_id == market_run_id else 0.0
+                logits[source_run_id] = (
+                    coefficient_defaults["confidence"] * float(row.confidence)
+                    + coefficient_defaults["inverse_local_error"] * inverse_local_error
+                    + coefficient_defaults["inverse_valid_mae"] * inverse_valid_mae
+                    + coefficient_defaults["sign_hit_rate"] * sign_hit_rate
+                    + coefficient_defaults["prior_weight"] * prior_weight
+                    - coefficient_defaults["delta_penalty"] * delta_to_market
+                    + coefficient_defaults["market_anchor_bonus"] * market_bonus
+                )
+            max_logit = max(logits.values()) if logits else 0.0
+            exp_logits = {
+                run_id: math.exp(value - max_logit)
+                for run_id, value in logits.items()
+            }
+            total = sum(exp_logits.values())
+            if total <= 0:
+                normalized_weight_map = dict(prior_weights)
+            else:
+                normalized_weight_map = {
+                    run_id: value / total
+                    for run_id, value in exp_logits.items()
+                }
+            normalized_weight_map = self._normalize_weight_map(normalized_weight_map)
+            weight_maps[key] = normalized_weight_map
+            entropy = -sum(
+                value * math.log(max(value, 1e-9))
+                for value in normalized_weight_map.values()
+            )
+            average_entropy += entropy
+            average_observed += float(len(normalized_weight_map))
+            explained_rows += 1
+            for run_id, value in normalized_weight_map.items():
+                average_weights[run_id] += value
+
+        if explained_rows > 0:
+            average_weights = {
+                run_id: value / explained_rows for run_id, value in average_weights.items()
+            }
+            average_entropy /= explained_rows
+            average_observed /= explained_rows
+
+        notes = [
+            f"Attention late fusion used a trailing {lookback_bars} bar context for local error features.",
+            "Attention logits combine confidence, inverse local error, inverse validation MAE, sign hit-rate, prior weight, and anchor divergence penalty.",
+            "Average attention weights: "
+            + ", ".join(f"{run_id}={average_weights[run_id]:.3f}" for run_id in sorted(average_weights)),
+        ]
+        summary = {
+            "anchor_run_id": market_run_id,
+            "average_attention": average_weights,
+            "average_entropy": average_entropy,
+            "average_observed_modality_count": average_observed,
+            "coefficient_defaults": coefficient_defaults,
+            "sample_count": explained_rows,
+        }
+        return weight_maps, notes, summary
+
     def _aligned_target_by_key(
         self,
         *,
@@ -1994,6 +2289,55 @@ class JobService:
                     target_by_key[key] = target
                     break
         return target_by_key
+
+    def _update_composed_run_prediction_metadata(
+        self,
+        *,
+        run_id: str,
+        fusion_strategy: str,
+        effective_prediction_scope: str,
+        attention_summary: dict[str, object] | None,
+    ) -> None:
+        metadata_path = self.artifact_root / "models" / run_id / "metadata.json"
+        if not metadata_path.exists():
+            return
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        prediction_metadata = (
+            payload.get("prediction_metadata")
+            if isinstance(payload.get("prediction_metadata"), dict)
+            else {}
+        )
+        prediction_metadata["fusion_strategy"] = fusion_strategy
+        prediction_metadata["requested_fusion_strategy"] = (
+            prediction_metadata.get("requested_fusion_strategy") or fusion_strategy
+        )
+        prediction_metadata["effective_fusion_strategy"] = fusion_strategy
+        prediction_metadata["attention_summary"] = attention_summary or {}
+        prediction_metadata["explainability_uri"] = str(
+            (self.artifact_root / "predictions" / run_id / f"{effective_prediction_scope}_explainability.json").resolve()
+        )
+        payload["prediction_metadata"] = prediction_metadata
+        payload["backend"] = fusion_strategy
+        metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        train_manifest_path = self.artifact_root / "models" / run_id / "train_manifest.json"
+        if not train_manifest_path.exists():
+            return
+        manifest_payload = json.loads(train_manifest_path.read_text(encoding="utf-8"))
+        composition = (
+            manifest_payload.get("composition")
+            if isinstance(manifest_payload.get("composition"), dict)
+            else {}
+        )
+        composition["fusion_strategy"] = fusion_strategy
+        composition["requested_fusion_strategy"] = (
+            composition.get("requested_fusion_strategy") or fusion_strategy
+        )
+        composition["effective_fusion_strategy"] = fusion_strategy
+        composition["attention_summary"] = attention_summary or {}
+        composition["explainability_uri"] = prediction_metadata["explainability_uri"]
+        manifest_payload["composition"] = composition
+        train_manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
 
     @staticmethod
     def _normalize_weight_map(weights: dict[str, float]) -> dict[str, float]:
@@ -4458,7 +4802,7 @@ class JobService:
                     for key, value in (preflight.modality_quality_summary or {}).items()
                 },
                 "quality_blocking_reasons": list(preflight.quality_blocking_reasons),
-                "fusion_strategy": self._str(composition.get("fusion_strategy")) or "late_score_blend",
+                "fusion_strategy": self._str(composition.get("fusion_strategy")) or "attention_late_fusion",
                 "primary_dataset_id": OFFICIAL_MARKET_BENCHMARK_DATASET_ID,
                 "dataset_ids": projected_dataset_ids,
                 "dataset_roles": projected_dataset_roles,
@@ -4470,15 +4814,37 @@ class JobService:
             "predict",
             f"Generating multimodal official predictions for the latest {window_days}d window",
         )
-        merged_prediction_frame, alignment_notes = self._blend_prediction_frames(
+        fusion_strategy = self._str(composition.get("fusion_strategy")) or "attention_late_fusion"
+        merged_prediction_frame, alignment_notes, explainability_payload = self._blend_prediction_frames(
             run_id=request.run_id,
             source_prediction_frames=source_prediction_frames,
+            fusion_strategy=fusion_strategy,
         )
         protocol_metadata["alignment_notes"] = alignment_notes
+        protocol_metadata["attention_summary"] = (
+            explainability_payload.get("attention_summary")
+            if isinstance(explainability_payload, dict)
+            else None
+        )
         prediction_artifact = self.facade.store.write_model(
             f"predictions/{request.run_id}/{effective_prediction_scope}.json",
             merged_prediction_frame,
         )
+        if explainability_payload is not None:
+            self.facade.store.write_json(
+                f"predictions/{request.run_id}/{effective_prediction_scope}_explainability.json",
+                explainability_payload,
+            )
+            self._update_composed_run_prediction_metadata(
+                run_id=request.run_id,
+                fusion_strategy=fusion_strategy,
+                effective_prediction_scope=effective_prediction_scope,
+                attention_summary=(
+                    explainability_payload.get("attention_summary")
+                    if isinstance(explainability_payload, dict)
+                    else None
+                ),
+            )
         context.finish_stage("predict", "Official multimodal prediction artifact written")
         context.start_stage("backtest", "Running official multimodal rolling-window backtest")
         backtest_result = self.facade.backtest_workflow.backtest(
@@ -4571,7 +4937,7 @@ class JobService:
             disclosure_metadata = self._aggregate_composition_disclosure_metadata(
                 source_disclosures=source_disclosures,
                 required_modalities=required_modalities_from_sources,
-                fusion_strategy=self._str(composition.get("fusion_strategy")) or "late_score_blend",
+                fusion_strategy=self._str(composition.get("fusion_strategy")) or "attention_late_fusion",
             )
         repro_context = (
             run_manifest.get("repro_context")
@@ -4692,7 +5058,7 @@ class JobService:
                     (
                         self._str(prediction_metadata.get("fusion_strategy"))
                         or (
-                            "late_score_blend"
+                            "attention_late_fusion"
                             if self._str(run_metadata.get("advanced_kind")) == "multimodal"
                             else None
                         )

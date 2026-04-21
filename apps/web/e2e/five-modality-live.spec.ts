@@ -64,6 +64,31 @@ type BacktestReportView = {
   }>;
 };
 
+type RunDetailView = {
+  run_id: string;
+  backend?: string | null;
+  composition?: {
+    fusion_strategy?: string | null;
+    source_runs?: Array<{
+      run_id: string;
+      modality?: string | null;
+    }>;
+  } | null;
+  tracking_params?: Record<string, string>;
+  artifacts: Array<{
+    kind: string;
+    uri: string;
+    exists: boolean;
+  }>;
+};
+
+type ArtifactPreviewResponse = {
+  uri: string;
+  kind: string;
+  is_json: boolean;
+  content: Record<string, unknown>;
+};
+
 const suiteState: {
   datasetId: string | null;
   runIds: Partial<Record<Modality, string>>;
@@ -157,8 +182,9 @@ async function assertCanonicalDatasetQuality(page: Page, datasetId: string) {
 
   await page.goto(`/datasets/${encodeURIComponent(datasetId)}`);
   await switchToEnglish(page);
-  await expect(page.getByText("Modality Quality Summary")).toBeVisible();
-  await expect(page.getByText("aligned_multimodal")).toBeVisible();
+  await expect(page.getByTestId("launch-train-trigger")).toBeVisible();
+  await expect(page.getByTestId("launch-dataset-multimodal-train-trigger")).toBeVisible();
+  await expect(page.getByText("aligned_multimodal", { exact: false })).toBeVisible();
 }
 
 async function trainSingleModalityRun(page: Page, datasetId: string, modality: Modality) {
@@ -300,6 +326,17 @@ async function fetchBacktest(backtestId: string) {
   return fetchJson<BacktestReportView>(api, `/api/backtests/${encodeURIComponent(backtestId)}`);
 }
 
+async function fetchRunDetail(runId: string) {
+  return fetchJson<RunDetailView>(api, `/api/runs/${encodeURIComponent(runId)}`);
+}
+
+async function fetchArtifactPreview(uri: string) {
+  return fetchJson<ArtifactPreviewResponse>(
+    api,
+    `/api/artifacts/preview?uri=${encodeURIComponent(uri)}`,
+  );
+}
+
 test("dataset detail one-click flow reaches official backtest", async ({ page }) => {
   const datasetId = await ensureCanonicalDataset(page);
   await assertCanonicalDatasetQuality(page, datasetId);
@@ -307,6 +344,18 @@ test("dataset detail one-click flow reaches official backtest", async ({ page })
   const { composedRunId, backtestId } = await launchDatasetDetailLoop(page, datasetId, [...MODALITIES]);
   suiteState.compositionRunIds.oneClickAll5 = composedRunId;
   suiteState.backtestIds.oneClickAll5 = backtestId;
+
+  const runDetail = await fetchRunDetail(composedRunId);
+  expect(runDetail.backend).toBe("attention_late_fusion");
+  expect(runDetail.composition?.fusion_strategy).toBe("attention_late_fusion");
+  const modelMetadataArtifact = runDetail.artifacts.find((artifact) => artifact.kind === "model_metadata");
+  expect(modelMetadataArtifact?.exists).toBe(true);
+  const metadataPreview = await fetchArtifactPreview(String(modelMetadataArtifact?.uri));
+  const predictionMetadata = (metadataPreview.content?.prediction_metadata ?? {}) as Record<string, unknown>;
+  expect(predictionMetadata.fusion_strategy).toBe("attention_late_fusion");
+  expect(predictionMetadata.requested_fusion_strategy).toBe("attention_late_fusion");
+  expect(predictionMetadata.effective_fusion_strategy).toBe("attention_late_fusion");
+  expect(typeof predictionMetadata.explainability_uri).toBe("string");
 
   const backtest = await fetchBacktest(backtestId);
   expect(backtest.protocol.required_modalities).toEqual(MODALITIES);
@@ -336,8 +385,28 @@ test("main five-modality user path works end-to-end", async ({ page }) => {
   );
   suiteState.compositionRunIds.all5 = compositionRunId;
 
+  const runDetail = await fetchRunDetail(compositionRunId);
+  expect(runDetail.backend).toBe("attention_late_fusion");
+  expect(runDetail.composition?.fusion_strategy).toBe("attention_late_fusion");
+  const modelMetadataArtifact = runDetail.artifacts.find((artifact) => artifact.kind === "model_metadata");
+  expect(modelMetadataArtifact?.exists).toBe(true);
+  const metadataPreview = await fetchArtifactPreview(String(modelMetadataArtifact?.uri));
+  const predictionMetadata = (metadataPreview.content?.prediction_metadata ?? {}) as Record<string, unknown>;
+  expect(predictionMetadata.fusion_strategy).toBe("attention_late_fusion");
+
   const backtestId = await launchOfficialBacktest(page, compositionRunId);
   suiteState.backtestIds.all5 = backtestId;
+
+  const runDetailAfterBacktest = await fetchRunDetail(compositionRunId);
+  expect(runDetailAfterBacktest.composition?.fusion_strategy).toBe("attention_late_fusion");
+  const explainabilityArtifactUri = `C:\\Users\\1\\Desktop\\AI\\quantities_economy\\artifacts\\predictions\\${compositionRunId}\\test_explainability.json`;
+  const explainabilityPreview = await fetchArtifactPreview(explainabilityArtifactUri);
+  const explainabilityRows = (explainabilityPreview.content?.rows ?? []) as Array<Record<string, unknown>>;
+  expect(explainabilityRows.length).toBeGreaterThan(0);
+  const firstAttentionWeights = (explainabilityRows[0]?.attention_weights ?? {}) as Record<string, number>;
+  expect(Object.keys(firstAttentionWeights).length).toBe(MODALITIES.length);
+  const weightSum = Object.values(firstAttentionWeights).reduce((sum, value) => sum + Number(value), 0);
+  expect(weightSum).toBeCloseTo(1.0, 5);
 
   const backtest = await fetchBacktest(backtestId);
   expect(backtest.protocol.required_modalities).toEqual(MODALITIES);

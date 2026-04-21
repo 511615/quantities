@@ -170,7 +170,7 @@ test("submits a modality-scoped train launch and shows the run deeplink button",
   fireEvent.click(screen.getByText("发起训练"));
   await waitFor(() => expect(screen.getByRole("option", { name: "Market" })).toBeInTheDocument());
 
-  fireEvent.change(screen.getByLabelText("Feature Modality"), {
+  fireEvent.change(screen.getByLabelText("特征模态"), {
     target: { value: "market" },
   });
   fireEvent.click(screen.getByText("提交"));
@@ -233,9 +233,9 @@ test("renders dataset-aware launch with a modality selector and quality summary"
 
   await waitFor(() => expect(drawerQueries.getByRole("option", { name: "Market" })).toBeInTheDocument());
   expect(drawerQueries.queryByText("数据集预置")).not.toBeInTheDocument();
-  expect(drawerQueries.getByLabelText("Feature Modality")).toBeInTheDocument();
+  expect(drawerQueries.getByLabelText("特征模态")).toBeInTheDocument();
   expect(drawerQueries.getByText("当前训练数据集")).toBeInTheDocument();
-  expect(drawerQueries.getByText("Dataset modality quality")).toBeInTheDocument();
+  expect(drawerQueries.getByText("数据集模态质量")).toBeInTheDocument();
   expect(drawerQueries.getByText("Market")).toBeInTheDocument();
   expect(drawerQueries.getByText("Macro")).toBeInTheDocument();
 });
@@ -253,7 +253,7 @@ test("blocks dataset-aware train launch when selected modality quality is not re
   fireEvent.click(screen.getByText("Train from dataset"));
   await waitFor(() => expect(screen.getByRole("option", { name: "Macro" })).toBeInTheDocument());
 
-  fireEvent.change(screen.getByLabelText("Feature Modality"), {
+  fireEvent.change(screen.getByLabelText("特征模态"), {
     target: { value: "macro" },
   });
   fireEvent.click(screen.getByText("提交"));
@@ -287,13 +287,13 @@ test("blocks dataset-aware train launch when dataset readiness is not ready", as
   fireEvent.click(screen.getByText("Train from blocked dataset"));
   await waitFor(() => expect(screen.getByRole("option", { name: "Market" })).toBeInTheDocument());
 
-  fireEvent.change(screen.getByLabelText("Feature Modality"), {
+  fireEvent.change(screen.getByLabelText("特征模态"), {
     target: { value: "market" },
   });
   fireEvent.click(screen.getByText("提交"));
 
   await waitFor(() =>
-    expect(screen.getByText("This dataset is not trainable yet because readiness checks are still failing.")).toBeInTheDocument(),
+    expect(screen.getByText("当前数据集还不能训练，因为 readiness 检查尚未通过。")).toBeInTheDocument(),
   );
   expect(
     fetchMock.mock.calls.some(([input, init]) => {

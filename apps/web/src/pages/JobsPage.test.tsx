@@ -55,15 +55,16 @@ test("renders jobs page with launch controls and recent jobs", async () => {
     expect(screen.getByRole("heading", { name: "\u4efb\u52a1\u4e2d\u5fc3" })).toBeInTheDocument(),
   );
   expect(screen.getAllByRole("heading", { name: "\u53d1\u8d77\u8bad\u7ec3" }).length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: "\u63d0\u4ea4" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "\u53d1\u8d77\u8bad\u7ec3" })).toBeInTheDocument();
   expect(screen.getAllByText("job-train-1").length).toBeGreaterThan(0);
 });
 
 test("submits train job and renders result deeplink area", async () => {
   renderWithProviders(<JobsPage />, "/jobs");
 
-  await waitFor(() => expect(screen.getByLabelText("Feature Modality")).toBeInTheDocument());
-  fireEvent.change(screen.getByLabelText("Feature Modality"), {
+  fireEvent.click(screen.getByRole("button", { name: "\u53d1\u8d77\u8bad\u7ec3" }));
+  await waitFor(() => expect(screen.getByLabelText("特征模态")).toBeInTheDocument());
+  fireEvent.change(screen.getByLabelText("特征模态"), {
     target: { value: "market" },
   });
   fireEvent.click(screen.getByRole("button", { name: "\u63d0\u4ea4" }));

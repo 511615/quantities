@@ -52,7 +52,7 @@ class LaunchBacktestPreflightRequest(LaunchApiModel):
 class LaunchModelCompositionRequest(LaunchApiModel):
     source_run_ids: list[str] = Field(default_factory=list, min_length=2)
     composition_name: str | None = None
-    fusion_strategy: Literal["late_score_blend"] = "late_score_blend"
+    fusion_strategy: Literal["attention_late_fusion", "late_score_blend"] = "attention_late_fusion"
     dataset_ids: list[str] = Field(default_factory=list)
     weights: dict[str, float] = Field(default_factory=dict)
 
@@ -67,7 +67,7 @@ class LaunchDatasetMultimodalTrainRequest(LaunchApiModel):
     trainer_preset: Literal["fast"] = "fast"
     experiment_name_prefix: str = "workbench-multimodal"
     seed: int = 7
-    fusion_strategy: Literal["late_score_blend"] = "late_score_blend"
+    fusion_strategy: Literal["attention_late_fusion", "late_score_blend"] = "attention_late_fusion"
     composition_name: str | None = None
     auto_launch_official_backtest: bool = False
     official_window_days: Literal[30, 90, 180, 365] | None = 30

@@ -75,6 +75,13 @@ test("renders run detail and previews artifacts", async () => {
   expect(screen.getAllByText("市场").length).toBeGreaterThan(0);
   expect(screen.getByText(/lag_return_1, lag_return_2, volume_zscore/)).toBeInTheDocument();
   expect(screen.getAllByText("可训练").length).toBeGreaterThan(0);
+  expect(screen.getByText(/"lookback":6/)).toBeInTheDocument();
+  expect(screen.getByText(/"forecast_horizon":1/)).toBeInTheDocument();
+  expect(screen.getByText(/"subsequence_length":3/)).toBeInTheDocument();
+  expect(screen.getByText(/"train_size":48/)).toBeInTheDocument();
+  expect(screen.getByText("滚动样本外评估")).toBeInTheDocument();
+  expect(screen.getByText("window_000")).toBeInTheDocument();
+  expect(screen.getByText("window_001")).toBeInTheDocument();
 
   fireEvent.click(
     screen.getByRole("button", {

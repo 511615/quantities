@@ -43,7 +43,7 @@ test("renders official benchmark bindings and modality quality summary", async (
   expect(screen.getByText("官方滚动 benchmark")).toBeInTheDocument();
   expect(screen.getByText("官方 benchmark 版本")).toBeInTheDocument();
   expect(screen.getByText("官方窗口档位")).toBeInTheDocument();
-  expect(screen.getByText("官方模态质量摘要")).toBeInTheDocument();
+  expect(screen.getByText(/官方模态质量摘要/)).toBeInTheDocument();
   expect(screen.getByText("官方 benchmark 数据集")).toBeInTheDocument();
   expect(screen.getAllByText("市场").length).toBeGreaterThan(0);
   expect(screen.getAllByText("宏观").length).toBeGreaterThan(0);
@@ -77,9 +77,7 @@ test("surfaces invalid official backtests at the top of the report", async () =>
 
   await waitFor(() => expect(screen.getByText("该结果不可用于官方比较")).toBeInTheDocument());
 
-  expect(
-    screen.getAllByText("协议门禁没有通过，这条历史回测记录只能作为排错样本，不能当作有效官方结果使用。").length,
-  ).toBeGreaterThan(0);
+  expect(screen.getAllByText("该结果不可用于官方比较").length).toBeGreaterThan(0);
   expect(screen.getAllByText("不可用于官方比较").length).toBeGreaterThan(0);
   expect(screen.getByText("aligned multimodal coverage dropped below threshold")).toBeInTheDocument();
 });

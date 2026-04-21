@@ -58,6 +58,12 @@ class ModalityQualityView(ApiModel):
     non_null_coverage_ratio: float | None = None
     required_feature_names: list[str] = Field(default_factory=list)
     observed_feature_names: list[str] = Field(default_factory=list)
+    source_frequency: str | None = None
+    training_frequency: str | None = None
+    alignment_policy: str | None = None
+    forward_fill_enabled: bool | None = None
+    hours_since_update: float | None = None
+    ffill_span: int | None = None
 
 
 class PredictionArtifactView(ApiModel):
@@ -144,6 +150,10 @@ class RunCompositionView(ApiModel):
     fusion_strategy: str
     source_runs: list[RunCompositionSourceView] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
+    requested_fusion_strategy: str | None = None
+    effective_fusion_strategy: str | None = None
+    attention_summary: dict[str, Any] = Field(default_factory=dict)
+    explainability_uri: str | None = None
 
 
 class BacktestAlignmentView(ApiModel):
@@ -272,6 +282,11 @@ class RunDetailView(ApiModel):
     feature_scope_modality: str | None = None
     feature_scope_feature_names: list[str] = Field(default_factory=list)
     source_dataset_quality_status: str | None = None
+    lstm_window_spec: dict[str, Any] = Field(default_factory=dict)
+    lstm_subsequence_spec: dict[str, Any] = Field(default_factory=dict)
+    rolling_window_spec: dict[str, Any] = Field(default_factory=dict)
+    effective_alignment_policy: str | None = None
+    feature_frequency_profile: dict[str, Any] = Field(default_factory=dict)
     summary: StableSummaryView | None = None
     pipeline_summary: PipelineSummaryView | None = None
     review_summary: ReviewSummaryView | None = None

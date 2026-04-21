@@ -16,6 +16,7 @@ import { StatusPill } from "../../shared/ui/StatusPill";
 
 type SupportedModality = "market" | "macro" | "on_chain" | "derivatives" | "nlp";
 type OfficialWindowDays = 30 | 90 | 180 | 365;
+type FusionStrategy = "attention_late_fusion" | "late_score_blend";
 
 type LaunchDatasetMultimodalTrainDrawerProps = {
   datasetId: string;
@@ -62,6 +63,7 @@ export function LaunchDatasetMultimodalTrainDrawer({
   const [experimentNamePrefix, setExperimentNamePrefix] = useState("workbench-multimodal");
   const [compositionName, setCompositionName] = useState("Multimodal Composite");
   const [seed, setSeed] = useState("7");
+  const [fusionStrategy, setFusionStrategy] = useState<FusionStrategy>("attention_late_fusion");
   const [autoLaunchOfficialBacktest, setAutoLaunchOfficialBacktest] = useState(true);
   const [officialWindowDays, setOfficialWindowDays] = useState<OfficialWindowDays>(30);
   const [formError, setFormError] = useState<string | null>(null);
@@ -137,7 +139,7 @@ export function LaunchDatasetMultimodalTrainDrawer({
         trainer_preset: "fast",
         experiment_name_prefix: experimentNamePrefix.trim(),
         seed: Number(seed),
-        fusion_strategy: "late_score_blend",
+        fusion_strategy: fusionStrategy,
         composition_name: compositionName.trim(),
         auto_launch_official_backtest: autoLaunchOfficialBacktest,
         official_window_days: autoLaunchOfficialBacktest ? officialWindowDays : null,
@@ -209,8 +211,9 @@ export function LaunchDatasetMultimodalTrainDrawer({
         <div className="drawer-panel">
           <h3>按模态训练并自动编排</h3>
           <p className="drawer-copy">
-            这条流程会先分别训练单模态 run，再按既有 `late_score_blend` 做晚期融合。你也可以直接让系统在融合完成后自动发起 official
-            backtest，形成完整闭环。
+            这条流程会先分别训练单模态 run，再做晚期融合。默认使用带注意力分配的
+            `attention_late_fusion`，也可以手动切回 `late_score_blend` 做对照。你也可以让系统在融合完成后自动发起
+            official backtest，形成完整闭环。
           </p>
 
           <div className="dataset-callout">
@@ -295,6 +298,18 @@ export function LaunchDatasetMultimodalTrainDrawer({
               onChange={(event) => setCompositionName(event.target.value)}
               value={compositionName}
             />
+          </label>
+          <label>
+            <span>融合策略</span>
+            <select
+              className="field"
+              data-testid="dataset-multimodal-fusion-strategy"
+              onChange={(event) => setFusionStrategy(event.target.value as FusionStrategy)}
+              value={fusionStrategy}
+            >
+              <option value="attention_late_fusion">attention_late_fusion (默认)</option>
+              <option value="late_score_blend">late_score_blend</option>
+            </select>
           </label>
           <label>
             <span>Seed</span>

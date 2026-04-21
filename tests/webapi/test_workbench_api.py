@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import pickle
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -493,7 +494,8 @@ def _materialize_stub_run(
             "model_name": model_name,
             "family": "linear",
             "advanced_kind": "baseline",
-            "input_adapter_key": "tabular_default",
+            "entrypoint": "quant_platform.models.baselines.elastic_net.ElasticNetModel",
+            "input_adapter_key": "tabular_passthrough",
             "prediction_adapter_key": "standard_prediction",
             "artifact_adapter_key": "json_manifest",
             "capabilities": [],
@@ -503,7 +505,7 @@ def _materialize_stub_run(
         },
         "artifact_uri": str((model_dir / "metadata.json").resolve()),
         "artifact_dir": str(model_dir.resolve()),
-        "state_uri": None,
+        "state_uri": str((model_dir / "state.pkl").resolve()),
         "backend": "json_manifest",
         "training_sample_count": dataset_detail.dataset.sample_count or 0,
         "feature_names": list(feature_names),
@@ -564,6 +566,13 @@ def _materialize_stub_run(
         encoding="utf-8",
     )
     (prediction_dir / "full.json").write_text(json.dumps(prediction_stub, indent=2), encoding="utf-8")
+    estimator_state = {
+        "estimator": {
+            "weights": [0.0 for _ in feature_names],
+            "bias": 0.0,
+        }
+    }
+    (model_dir / "state.pkl").write_bytes(pickle.dumps(estimator_state))
 
 
 def _materialize_serialized_baseline_run(
@@ -729,7 +738,7 @@ def _launch_official_auxiliary_only_composed_run(app, client: TestClient, *, suf
         json={
             "source_run_ids": source_run_ids,
             "composition_name": f"official_auxiliary_only_{suffix}",
-            "fusion_strategy": "late_score_blend",
+            "fusion_strategy": "attention_late_fusion",
             "weights": weights,
         },
     )
@@ -2335,6 +2344,21 @@ def test_official_multimodal_readiness_uses_materialized_archival_sources() -> N
     assert readiness_payload["official_nlp_gate_status"] == "passed"
 
 
+def test_dataset_readiness_exposes_multifrequency_alignment_fields() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    readiness_response = client.get("/api/datasets/official_reddit_pullpush_multimodal_v2_fusion/readiness")
+    assert readiness_response.status_code == 200
+    readiness_payload = readiness_response.json()
+
+    macro_quality = readiness_payload["modality_quality_summary"]["macro"]
+    assert macro_quality["source_frequency"] == "1d"
+    assert macro_quality["training_frequency"] == "1h"
+    assert macro_quality["alignment_policy"] == "available_time_safe_asof"
+    assert macro_quality["forward_fill_enabled"] is True
+
+
 def test_official_preflight_rematerializes_stale_multimodal_benchmark() -> None:
     app = create_app()
     _mark_official_multimodal_benchmark_stale(app)
@@ -2740,7 +2764,7 @@ def test_dataset_multimodal_train_launch_trains_selected_modalities_and_composes
             "trainer_preset": "fast",
             "experiment_name_prefix": f"dataset-multimodal-{suffix}",
             "seed": 7,
-            "fusion_strategy": "late_score_blend",
+            "fusion_strategy": "attention_late_fusion",
             "composition_name": f"dataset-multimodal-compose-{suffix}",
         },
     )
@@ -2777,7 +2801,7 @@ def test_dataset_multimodal_train_launch_can_auto_backtest_officially() -> None:
             "trainer_preset": "fast",
             "experiment_name_prefix": f"dataset-multimodal-loop-{suffix}",
             "seed": 7,
-            "fusion_strategy": "late_score_blend",
+            "fusion_strategy": "attention_late_fusion",
             "composition_name": f"dataset-multimodal-loop-compose-{suffix}",
             "auto_launch_official_backtest": True,
             "official_window_days": 30,
@@ -2813,7 +2837,7 @@ def test_dataset_multimodal_train_launch_blocks_unavailable_modalities() -> None
             "trainer_preset": "fast",
             "experiment_name_prefix": "blocked-multimodal",
             "seed": 7,
-            "fusion_strategy": "late_score_blend",
+            "fusion_strategy": "attention_late_fusion",
             "composition_name": "blocked-multimodal-compose",
         },
     )
@@ -2978,7 +3002,7 @@ def test_model_composition_allows_platform_compatible_sources() -> None:
         json={
             "source_run_ids": [market_run_id, nlp_run_id],
             "composition_name": "blocked_multimodal_contract",
-            "fusion_strategy": "late_score_blend",
+            "fusion_strategy": "attention_late_fusion",
             "weights": {
                 market_run_id: 0.6,
                 nlp_run_id: 0.4,
@@ -3054,7 +3078,7 @@ def test_model_composition_rejects_source_when_modality_quality_is_not_ready() -
         json={
             "source_run_ids": [market_run_id, nlp_run_id],
             "composition_name": "blocked_multimodal_contract",
-            "fusion_strategy": "late_score_blend",
+            "fusion_strategy": "attention_late_fusion",
             "weights": {
                 market_run_id: 0.6,
                 nlp_run_id: 0.4,
@@ -3116,7 +3140,7 @@ def test_model_composition_marks_official_eligible_runs_for_preflight() -> None:
         json={
             "source_run_ids": [market_run_id, nlp_run_id],
             "composition_name": f"official_multimodal_{suffix}",
-            "fusion_strategy": "late_score_blend",
+            "fusion_strategy": "attention_late_fusion",
             "weights": {
                 market_run_id: 0.6,
                 nlp_run_id: 0.4,
@@ -3151,6 +3175,137 @@ def test_model_composition_marks_official_eligible_runs_for_preflight() -> None:
     preflight_payload = preflight_response.json()
     assert preflight_payload["compatible"] is True
     assert preflight_payload["blocking_reasons"] == []
+
+
+def test_model_composition_attention_strategy_records_explainability_metadata() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+    market_run_id = f"attention-market-compose-{suffix}"
+    nlp_run_id = f"attention-nlp-compose-{suffix}"
+
+    _materialize_stub_run(
+        app,
+        run_id=market_run_id,
+        dataset_id="baseline_real_benchmark_dataset",
+        feature_names=[
+            "lag_return_1",
+            "lag_return_2",
+            "momentum_3",
+            "realized_vol_3",
+        ],
+    )
+    _materialize_stub_run(
+        app,
+        run_id=nlp_run_id,
+        dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
+        feature_names=[
+            "sentiment_score",
+            "news_event_count",
+            "text_reddit_sentiment_mean_1h",
+        ],
+    )
+
+    composition_response = client.post(
+        "/api/launch/model-composition",
+        json={
+            "source_run_ids": [market_run_id, nlp_run_id],
+            "composition_name": f"attention_multimodal_{suffix}",
+            "fusion_strategy": "attention_late_fusion",
+            "weights": {
+                market_run_id: 0.55,
+                nlp_run_id: 0.45,
+            },
+        },
+    )
+    assert composition_response.status_code == 200
+    composition_job = _wait_for_job(client, composition_response.json()["job_id"], timeout_seconds=120.0)
+    assert composition_job["status"] == "success"
+
+    composed_run_id = composition_job["result"]["run_ids"][0]
+    metadata_path = app.state.services.jobs.artifact_root / "models" / composed_run_id / "metadata.json"
+    metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    prediction_metadata = metadata_payload["prediction_metadata"]
+    assert prediction_metadata["fusion_strategy"] == "attention_late_fusion"
+    assert prediction_metadata["requested_fusion_strategy"] == "attention_late_fusion"
+    assert prediction_metadata["effective_fusion_strategy"] == "attention_late_fusion"
+    assert prediction_metadata["explainability_uri"].endswith("full_explainability.json")
+
+
+def test_official_composed_backtest_writes_attention_explainability_sidecar() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+    market_run_id = f"attention-official-market-{suffix}"
+    nlp_run_id = f"attention-official-nlp-{suffix}"
+
+    _materialize_stub_run(
+        app,
+        run_id=market_run_id,
+        dataset_id="baseline_real_benchmark_dataset",
+        feature_names=[
+            "lag_return_1",
+            "lag_return_2",
+            "momentum_3",
+            "realized_vol_3",
+        ],
+    )
+    _materialize_stub_run(
+        app,
+        run_id=nlp_run_id,
+        dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
+        feature_names=[
+            "sentiment_score",
+            "news_event_count",
+            "text_reddit_sentiment_mean_1h",
+        ],
+    )
+
+    composition_response = client.post(
+        "/api/launch/model-composition",
+        json={
+            "source_run_ids": [market_run_id, nlp_run_id],
+            "composition_name": f"attention_official_multimodal_{suffix}",
+            "fusion_strategy": "attention_late_fusion",
+            "weights": {
+                market_run_id: 0.6,
+                nlp_run_id: 0.4,
+            },
+        },
+    )
+    assert composition_response.status_code == 200
+    composition_job = _wait_for_job(client, composition_response.json()["job_id"], timeout_seconds=120.0)
+    assert composition_job["status"] == "success"
+    composed_run_id = composition_job["result"]["run_ids"][0]
+
+    backtest_response = client.post(
+        "/api/launch/backtest",
+        json={
+            "run_id": composed_run_id,
+            "mode": "official",
+            "official_window_days": 30,
+            "strategy_preset": "sign",
+            "portfolio_preset": "research_default",
+            "cost_preset": "standard",
+        },
+    )
+    assert backtest_response.status_code == 200
+    backtest_job = _wait_for_job(client, backtest_response.json()["job_id"], timeout_seconds=180.0)
+    assert backtest_job["status"] == "success", backtest_job.get("error_message")
+
+    explainability_path = (
+        app.state.services.jobs.artifact_root
+        / "predictions"
+        / composed_run_id
+        / "test_explainability.json"
+    )
+    assert explainability_path.exists()
+    payload = json.loads(explainability_path.read_text(encoding="utf-8"))
+    assert payload["fusion_strategy"] == "attention_late_fusion"
+    assert isinstance(payload.get("attention_summary"), dict)
+    rows = payload.get("rows")
+    assert isinstance(rows, list)
+    assert rows
 
 
 def test_model_composition_allows_auxiliary_only_official_multimodal_sources() -> None:
@@ -3711,6 +3866,25 @@ def test_launch_train_supports_fusion_dataset_and_persists_fusion_manifest_metad
     dataset_id = fusion_payload["dataset_id"]
     assert fusion_payload["training_summary"]["dataset_type"] == "fusion_training_panel"
     assert fusion_payload["readiness"]["readiness_status"] in {"ready", "warning"}
+    samples_path = (
+        Path(app.state.services.jobs.artifact_root) / "datasets" / f"{dataset_id}_dataset_samples.json"
+    )
+    manifest_path = (
+        Path(app.state.services.jobs.artifact_root) / "datasets" / f"{dataset_id}_dataset_manifest.json"
+    )
+    samples_payload = json.loads(samples_path.read_text(encoding="utf-8"))
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    first_sample_features = samples_payload["samples"][0]["features"]
+    assert "macro_is_observed" in first_sample_features
+    assert "macro_hours_since_update" in first_sample_features
+    assert "macro_ffill_span" in first_sample_features
+    assert "macro_coverage_ratio" in first_sample_features
+    assert "on_chain_is_observed" in first_sample_features
+    assert "on_chain_hours_since_update" in first_sample_features
+    assert manifest_payload["build_config"]["training_clock_frequency"] == "1h"
+    assert manifest_payload["build_config"]["freshness_features_enabled"] is True
+    assert manifest_payload["acquisition_profile"]["alignment_policy_name"] == "available_time_safe_asof"
+    assert manifest_payload["acquisition_profile"]["forward_fill_policy"]["enabled"] is True
 
     train_response = client.post(
         "/api/launch/train",

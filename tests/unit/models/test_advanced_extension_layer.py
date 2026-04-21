@@ -19,6 +19,7 @@ from quant_platform.datasets.contracts.dataset import (
 from quant_platform.features.contracts.feature_view import FeatureViewRef
 from quant_platform.models.contracts.model_spec import ModelSpec
 from quant_platform.models.contracts.registration import AdvancedModelKind, ModelRegistration
+from quant_platform.models.advanced.multimodal_fusion import torch as multimodal_torch
 from quant_platform.models.registry.default_models import register_default_models
 from quant_platform.models.registry.model_registry import ModelRegistry
 from quant_platform.training.contracts.training import (
@@ -137,6 +138,7 @@ def test_multimodal_model_supports_missing_text_modality(tmp_path) -> None:
         )
     )
     assert metadata_payload["prediction_metadata"]["fusion_strategy"] == "late_score_blend"
+    assert metadata_payload["prediction_metadata"]["requested_fusion_strategy"] == "attention_late_fusion"
     state_payload = (
         tmp_path / "artifacts" / "models" / "multimodal-missing-text" / "state.pkl"
     ).read_bytes()
@@ -266,6 +268,164 @@ def test_multimodal_aligned_text_uses_dataset_schema_when_first_sample_is_sparse
     assert bundle.blocks["text_mask"] == [False, True]
 
 
+def test_multimodal_attention_fusion_emits_attention_metadata_and_explainability(tmp_path) -> None:
+    if multimodal_torch is None:
+        pytest.skip("torch is not installed in the local test environment")
+    registry = ModelRegistry()
+    register_default_models(registry)
+    samples = _build_multimodal_samples()
+    dataset_ref = _build_dataset_ref(
+        as_of_time=datetime(2024, 1, 2, tzinfo=UTC),
+        feature_names=[
+            "lag_return_1",
+            "macro_dff_value",
+            "on_chain_active_addresses",
+            "derivatives_funding_rate",
+            "sentiment_score",
+        ],
+    )
+    runner = LocalTrainingRunner(
+        model_registry=registry,
+        dataset_store={dataset_ref.dataset_id: samples},
+        artifact_root=tmp_path / "artifacts",
+    )
+    model_spec = ModelSpec(
+        model_name="multimodal_reference",
+        family=ModelFamily.DEEP,
+        version="0.1.0",
+        input_schema=[
+            SchemaField(name="lag_return_1", dtype="float"),
+            SchemaField(name="macro_dff_value", dtype="float"),
+            SchemaField(name="on_chain_active_addresses", dtype="float"),
+            SchemaField(name="derivatives_funding_rate", dtype="float"),
+            SchemaField(name="sentiment_score", dtype="float"),
+        ],
+        output_schema=[SchemaField(name="prediction", dtype="float")],
+        hyperparams={
+            "lookback": 3,
+            "fusion_strategy": "attention_late_fusion",
+            "text_feature_prefixes": ["sentiment_"],
+        },
+    )
+    fit_result = runner.fit(
+        FitRequest(
+            run_id="multimodal-attention",
+            dataset_ref=dataset_ref,
+            model_spec=model_spec,
+            trainer_config=TrainerConfig(
+                runner="local", epochs=2, batch_size=4, deterministic=True
+            ),
+            seed=7,
+            tracking_context=TrackingContext(backend="file", experiment_name="advanced-tests"),
+        )
+    )
+    prediction_runner = PredictionRunner(
+        model_registry=registry,
+        dataset_store={dataset_ref.dataset_id: samples},
+        artifact_root=tmp_path / "artifacts",
+    )
+    model, meta = registry.load_from_artifact(fit_result.model_artifact_uri)
+    runtime = registry.resolve_runtime("multimodal_reference")
+    predict_input = runtime.input_adapter.build_predict_input(
+        samples,
+        dataset_ref,
+        meta.model_spec,
+        runtime.registration,
+    )
+    raw_outputs = model.predict(predict_input)
+
+    assert raw_outputs.metadata["fusion_strategy"] == "attention_late_fusion"
+    assert raw_outputs.metadata["attention_summary"]["sample_count"] == len(samples)
+    attention_avg = raw_outputs.metadata["attention_summary"]["average_attention"]
+    assert "market" in attention_avg
+    assert sum(attention_avg.values()) == pytest.approx(1.0, rel=1e-4, abs=1e-4)
+
+    explainability_path = (
+        tmp_path / "artifacts" / "models" / "multimodal-attention" / "attention_explainability.json"
+    )
+    assert explainability_path.exists()
+    explainability = json.loads(explainability_path.read_text(encoding="utf-8"))
+    assert explainability["fusion_strategy"] == "attention_late_fusion"
+    assert len(explainability["rows"]) == len(samples)
+    for row in explainability["rows"]:
+        assert sum(row["attention_weights"].values()) == pytest.approx(1.0, rel=1e-4, abs=1e-4)
+
+    frame = prediction_runner.predict(
+        PredictRequest(
+            model_artifact_uri=fit_result.model_artifact_uri,
+            dataset_ref=dataset_ref,
+            prediction_scope=PredictionScope(
+                scope_name="full", as_of_time=dataset_ref.feature_view_ref.as_of_time
+            ),
+        )
+    )
+    assert frame.sample_count == len(samples)
+
+
+def test_multimodal_attention_fusion_assigns_zero_weight_to_missing_modalities(tmp_path) -> None:
+    if multimodal_torch is None:
+        pytest.skip("torch is not installed in the local test environment")
+    registry = ModelRegistry()
+    register_default_models(registry)
+    samples = _build_multimodal_samples(include_nlp=False)
+    dataset_ref = _build_dataset_ref(
+        as_of_time=datetime(2024, 1, 2, tzinfo=UTC),
+        feature_names=[
+            "lag_return_1",
+            "macro_dff_value",
+            "on_chain_active_addresses",
+            "derivatives_funding_rate",
+            "sentiment_score",
+        ],
+    )
+    runner = LocalTrainingRunner(
+        model_registry=registry,
+        dataset_store={dataset_ref.dataset_id: samples},
+        artifact_root=tmp_path / "artifacts",
+    )
+    model_spec = ModelSpec(
+        model_name="multimodal_reference",
+        family=ModelFamily.DEEP,
+        version="0.1.0",
+        input_schema=[
+            SchemaField(name="lag_return_1", dtype="float"),
+            SchemaField(name="macro_dff_value", dtype="float"),
+            SchemaField(name="on_chain_active_addresses", dtype="float"),
+            SchemaField(name="derivatives_funding_rate", dtype="float"),
+            SchemaField(name="sentiment_score", dtype="float"),
+        ],
+        output_schema=[SchemaField(name="prediction", dtype="float")],
+        hyperparams={
+            "lookback": 3,
+            "fusion_strategy": "attention_late_fusion",
+            "text_feature_prefixes": ["sentiment_"],
+        },
+    )
+    fit_result = runner.fit(
+        FitRequest(
+            run_id="multimodal-attention-missing",
+            dataset_ref=dataset_ref,
+            model_spec=model_spec,
+            trainer_config=TrainerConfig(
+                runner="local", epochs=2, batch_size=4, deterministic=True
+            ),
+            seed=7,
+            tracking_context=TrackingContext(backend="file", experiment_name="advanced-tests"),
+        )
+    )
+    explainability = json.loads(
+        (
+            tmp_path
+            / "artifacts"
+            / "models"
+            / "multimodal-attention-missing"
+            / "attention_explainability.json"
+        ).read_text(encoding="utf-8")
+    )
+    for row in explainability["rows"]:
+        assert row["attention_weights"]["nlp"] == pytest.approx(0.0, abs=1e-6)
+
+
 def _build_dataset_ref(
     as_of_time: datetime | None = None,
     feature_names: list[str] | None = None,
@@ -309,3 +469,27 @@ def _build_dataset_ref(
         sample_policy=SamplePolicy(),
         dataset_hash="advanced-tests",
     )
+
+
+def _build_multimodal_samples(*, include_nlp: bool = True) -> list[DatasetSample]:
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    rows: list[DatasetSample] = []
+    for index in range(6):
+        features: dict[str, float] = {
+            "lag_return_1": 0.01 * (index + 1),
+            "macro_dff_value": 5.0 - 0.1 * index,
+            "on_chain_active_addresses": 1000.0 + 25.0 * index,
+            "derivatives_funding_rate": 0.001 * ((index % 3) - 1),
+        }
+        if include_nlp and index % 2 == 0:
+            features["sentiment_score"] = 0.2 + 0.05 * index
+        rows.append(
+            DatasetSample(
+                entity_key="BTCUSDT",
+                timestamp=base + timedelta(hours=index),
+                available_time=base + timedelta(hours=index),
+                features=features,
+                target=0.005 * (index + 1),
+            )
+        )
+    return rows

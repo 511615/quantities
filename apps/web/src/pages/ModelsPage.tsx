@@ -81,16 +81,16 @@ function applyModelDefaults(current: TemplateDraft, modelName: string): Template
 function localizeTemplateDisplayText(value?: string | null) {
   const normalized = (value ?? "").trim().toLowerCase();
   if (normalized === "elastic net default") {
-    return "Elastic Net Default";
+    return translateText("Elastic Net Default");
   }
   if (normalized === "smoke") {
-    return "Smoke";
+    return translateText("联调样本");
   }
   if (normalized === "real_benchmark") {
-    return "Real Benchmark";
+    return translateText("真实基准");
   }
   if (normalized === "fast") {
-    return "Fast";
+    return translateText("快速");
   }
   return value ?? "--";
 }
@@ -145,10 +145,13 @@ function runSelectionBlockingReason(run: {
 }) {
   const modality = runFeatureScopeModality(run);
   if (!modality) {
-    return "Only explicit single-modality runs can be composed.";
+    return translateText("只有显式单模态训练实例才能参与组合。");
   }
   if ((run.source_dataset_quality_status ?? "").toLowerCase() !== "ready") {
-    return `Source dataset quality is ${formatStatusLabel(run.source_dataset_quality_status ?? "unknown")}.`;
+    return translateText("源数据集质量状态为 {status}。").replace(
+      "{status}",
+      formatStatusLabel(run.source_dataset_quality_status ?? "unknown"),
+    );
   }
   return null;
 }
@@ -403,13 +406,13 @@ export function ModelsPage() {
       : selectedRuns.length < 2
         ? translateText("请至少选择两个单模态训练实例。")
         : selectedRuns.length > 5
-          ? "Composition supports between 2 and 5 distinct modalities."
+          ? translateText("组合仅支持 2 到 5 个不同模态。")
           : !selectedRunsAreEligible
             ? selectedRuns
                 .map((run) => runSelectionBlockingReason(run))
                 .find((item): item is string => Boolean(item)) ?? null
             : hasDuplicateSelectedModality
-              ? "Each selected run must use a different modality."
+              ? translateText("每个已选训练实例都必须使用不同模态。")
               : null;
 
   useEffect(() => {
@@ -439,11 +442,11 @@ export function ModelsPage() {
         Boolean(targetModality) &&
         nextSelected.some((run) => runFeatureScopeModality(run) === targetModality);
       if (hasDuplicateModality) {
-        setCompositionError("Each modality can appear only once in a composition.");
+        setCompositionError(translateText("每个模态在组合中只能出现一次。"));
         return current;
       }
       if (current.length >= 5) {
-        setCompositionError("Composition supports at most 5 modalities.");
+        setCompositionError(translateText("组合最多支持 5 个模态。"));
         return current;
       }
       setCompositionError(null);
@@ -472,19 +475,19 @@ export function ModelsPage() {
       return;
     }
     if (selectedRuns.length > 5) {
-      setCompositionError("Composition supports between 2 and 5 modalities.");
+      setCompositionError(translateText("组合仅支持 2 到 5 个模态。"));
       return;
     }
     if (!selectedRunsAreEligible) {
       setCompositionError(
         selectedRuns
           .map((run) => runSelectionBlockingReason(run))
-          .find((item): item is string => Boolean(item)) ?? "Selected runs are not composition-ready.",
+          .find((item): item is string => Boolean(item)) ?? translateText("当前所选训练实例还不满足组合条件。"),
       );
       return;
     }
     if (hasDuplicateSelectedModality) {
-      setCompositionError("Each selected run must use a different modality.");
+      setCompositionError(translateText("每个已选训练实例都必须使用不同模态。"));
       return;
     }
     if (!compositionName.trim()) {
@@ -859,9 +862,9 @@ export function ModelsPage() {
                         const checkboxHelp =
                           rowBlockingReason ??
                           (duplicateModalityBlocked
-                            ? "Another selected run already uses this modality."
+                            ? translateText("另一个已选训练实例已经占用了这个模态。")
                             : capacityBlocked
-                              ? "A composition can include at most 5 modalities."
+                              ? translateText("一个组合最多只能包含 5 个模态。")
                               : null);
                         return (
                           <tr key={run.run_id}>
@@ -904,7 +907,7 @@ export function ModelsPage() {
                             <td>
                               <div className="table-title-cell">
                                 <strong>{modality ? formatModalityLabel(modality) : "--"}</strong>
-                                <span>{modality ? "Single-modality run" : "Legacy / unsupported run"}</span>
+                                <span>{modality ? translateText("单模态训练实例") : translateText("旧版 / 不支持的训练实例")}</span>
                               </div>
                             </td>
                             <td>
@@ -916,8 +919,8 @@ export function ModelsPage() {
                                 </strong>
                                 <span>
                                   {run.source_dataset_quality_status === "ready"
-                                    ? "Eligible for composition"
-                                    : "Blocked until the source dataset quality becomes ready"}
+                                    ? translateText("可参与组合")
+                                    : translateText("需要等源数据集质量变为可训练后才能组合")}
                                 </span>
                               </div>
                             </td>
@@ -1012,7 +1015,7 @@ export function ModelsPage() {
             <PanelHeader
               eyebrow={translateText("模型组合")}
               title={translateText("组合多模态模型")}
-              description="Select 2 to 5 quality-ready single-modality runs. Each selected run must use a different modality."
+              description={translateText("选择 2 到 5 个质量达标的单模态训练实例。每个已选训练实例都必须使用不同模态。")}
             />
             <div className="form-section-grid">
               <label>

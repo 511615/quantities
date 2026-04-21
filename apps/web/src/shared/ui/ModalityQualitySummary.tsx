@@ -37,6 +37,18 @@ function orderedEntries(
 
 function metricText(item: ModalityQualityView) {
   const parts: string[] = [];
+  if (item.source_frequency) {
+    parts.push(`source ${item.source_frequency}`);
+  }
+  if (item.training_frequency) {
+    parts.push(`train ${item.training_frequency}`);
+  }
+  if (item.alignment_policy) {
+    parts.push(`align ${item.alignment_policy}`);
+  }
+  if (item.forward_fill_enabled !== null && item.forward_fill_enabled !== undefined) {
+    parts.push(`ffill ${item.forward_fill_enabled ? "on" : "off"}`);
+  }
   if (item.usable_count !== null && item.usable_count !== undefined) {
     const usableLabel =
       item.modality === "macro" || item.modality === "on_chain"
@@ -60,6 +72,12 @@ function metricText(item: ModalityQualityView) {
   }
   if (item.freshness_lag_days !== null && item.freshness_lag_days !== undefined) {
     parts.push(`freshness lag ${item.freshness_lag_days}d`);
+  }
+  if (item.hours_since_update !== null && item.hours_since_update !== undefined) {
+    parts.push(`stale ${item.hours_since_update}h`);
+  }
+  if (item.ffill_span !== null && item.ffill_span !== undefined) {
+    parts.push(`ffill span ${item.ffill_span}`);
   }
   return parts.join(" / ");
 }

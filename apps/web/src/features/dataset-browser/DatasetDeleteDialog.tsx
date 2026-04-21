@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { useDatasetDependencies, useDeleteDatasetMutation } from "../../shared/api/hooks";
 import type { DatasetDeleteResponse, DatasetDependencyView } from "../../shared/api/types";
+import { translateText } from "../../shared/lib/i18n";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 
 type DatasetDeleteDialogProps = {
@@ -16,18 +17,18 @@ type DatasetDeleteDialogProps = {
 function dependencyKindLabel(kind: string) {
   const normalized = kind.trim().toLowerCase();
   if (normalized === "run") {
-    return "训练实例";
+    return translateText("训练实例");
   }
   if (normalized === "backtest") {
-    return "回测";
+    return translateText("回测");
   }
   if (normalized === "dataset") {
-    return "派生数据集";
+    return translateText("派生数据集");
   }
   if (normalized === "data_asset") {
-    return "上游资产";
+    return translateText("上游资产");
   }
-  return kind || "依赖项";
+  return kind || translateText("依赖项");
 }
 
 function dependencyText(item: DatasetDependencyView) {
@@ -52,15 +53,15 @@ function deriveDeleteReasons(data?: {
     return explicitReasons;
   }
   if (data.protection_kind === "recommended") {
-    return ["推荐数据集由系统维护，不能直接删除。"];
+    return [translateText("推荐数据集由系统维护，不能直接删除。")];
   }
   if (data.protection_kind === "system") {
-    return ["系统数据集承载基线流程，不允许在前端发起删除。"];
+    return [translateText("系统数据集承载基线流程，不允许在前端发起删除。")];
   }
   if ((data.blocking_items ?? []).length > 0) {
-    return ["当前数据集仍被工作流引用，后端未允许删除。"];
+    return [translateText("当前数据集仍被工作流引用，后端未允许删除。")];
   }
-  return ["当前数据集被后端标记为不可删除，请保留该数据集。"];
+  return [translateText("当前数据集被后端标记为不可删除，请保留该数据集。")];
 }
 
 export function DatasetDeleteDialog({
@@ -107,59 +108,59 @@ export function DatasetDeleteDialog({
 
   const message =
     serverResult?.message ??
-    `这会把 ${datasetLabel} 从注册表和本地工件中永久删除。已有训练实例、回测和下游数据集会保留自己的 id，但之后会显示缺失的数据集引用，而不是阻止删除。`;
+    translateText("这会把 {datasetLabel} 从注册表和本地工件中永久删除。已有训练实例、回测和下游数据集会保留自己的 id，但之后会显示缺失的数据集引用，而不是阻止删除。").replace("{datasetLabel}", datasetLabel);
 
   return (
     <ConfirmDialog
-      cancelLabel="取消"
+      cancelLabel={translateText("取消")}
       confirmDisabled={!datasetId || deleteMutation.isPending || !canDelete}
       confirmLabel={
-        !canDelete ? "当前不可删除" : deleteMutation.isPending ? "删除中..." : "硬删除数据集"
+        !canDelete ? translateText("当前不可删除") : deleteMutation.isPending ? translateText("删除中...") : translateText("硬删除数据集")
       }
       message={message}
       onCancel={onClose}
       onConfirm={handleConfirm}
       open={open}
-      title="删除数据集"
+      title={translateText("删除数据集")}
       tone="danger"
     >
       <div className="dialog-section-list">
         <div className="dialog-section">
-          <strong>删除范围</strong>
+          <strong>{translateText("删除范围")}</strong>
           <p>
-            注册表记录、数据集工件、manifest、样本文件和特征视图侧文件都会被移除。
-            依赖记录只会作为删除前展示的说明性上下文保留在响应中。
+            {translateText("注册表记录、数据集工件、manifest、样本文件和特征视图侧文件都会被移除。")}
+            {translateText("依赖记录只会作为删除前展示的说明性上下文保留在响应中。")}
           </p>
         </div>
 
         {dependenciesQuery.isLoading ? (
           <div className="dialog-section">
-            <strong>正在扫描依赖关系图</strong>
-            <p>正在检查仍然引用此数据集 id 的训练实例、回测和下游数据集。</p>
+            <strong>{translateText("正在扫描依赖关系图")}</strong>
+            <p>{translateText("正在检查仍然引用此数据集 id 的训练实例、回测和下游数据集。")}</p>
           </div>
         ) : null}
 
         {dependenciesQuery.isError ? (
           <div className="dialog-section">
-            <strong>依赖扫描失败</strong>
+            <strong>{translateText("依赖扫描失败")}</strong>
             <p>{(dependenciesQuery.error as Error).message}</p>
           </div>
         ) : null}
 
         <div className="dialog-section">
-          <strong>当前已启用硬删除</strong>
+          <strong>{translateText("当前已启用硬删除")}</strong>
           <p>
             {!canDelete
-              ? "当前数据集已被后端标记为不可删除，需要先处理保护原因。"
+              ? translateText("当前数据集已被后端标记为不可删除，需要先处理保护原因。")
               : blockingItems.length > 0
-              ? `当前仍有 ${blockingItems.length} 个下游引用，但它们已经不会阻止删除。`
-              : "当前没有会阻止或告警本次操作的下游引用。"}
+              ? translateText("当前仍有 {count} 个下游引用，但它们已经不会阻止删除。").replace("{count}", String(blockingItems.length))
+              : translateText("当前没有会阻止或告警本次操作的下游引用。")}
           </p>
         </div>
 
         {!canDelete && deleteReasons.length > 0 ? (
           <div className="dialog-section">
-            <strong>当前不能删除的原因</strong>
+            <strong>{translateText("当前不能删除的原因")}</strong>
             <div className="stack-list">
               {deleteReasons.map((reason) => (
                 <div className="stack-item align-start" key={reason}>
@@ -172,7 +173,7 @@ export function DatasetDeleteDialog({
 
         {blockingItems.length > 0 ? (
           <div className="dialog-section">
-            <strong>现存下游引用</strong>
+            <strong>{translateText("现存下游引用")}</strong>
             <div className="dialog-dependency-list">
               {blockingItems.map((item) =>
                 item.href ? (
@@ -193,7 +194,7 @@ export function DatasetDeleteDialog({
 
         {dependencyItems.length > 0 ? (
           <div className="dialog-section">
-            <strong>全部已知依赖</strong>
+            <strong>{translateText("全部已知依赖")}</strong>
             <div className="dialog-dependency-list">
               {dependencyItems.map((item) =>
                 item.href ? (

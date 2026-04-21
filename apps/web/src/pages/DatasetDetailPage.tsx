@@ -20,6 +20,7 @@ import {
 import type { DatasetDependencyView } from "../shared/api/types";
 import { api } from "../shared/api/client";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
+import { translateText } from "../shared/lib/i18n";
 import { PanelHeader } from "../shared/ui/PanelHeader";
 import { EmptyState, ErrorState, LoadingState } from "../shared/ui/StateViews";
 import { ModalityQualitySummary } from "../shared/ui/ModalityQualitySummary";
@@ -320,7 +321,7 @@ export function DatasetDetailPage() {
     <div className="page-stack">
       <section className="hero-strip compact-hero">
         <div>
-          <div className="eyebrow">数据集详情</div>
+          <div className="eyebrow">{translateText("数据集详情")}</div>
           <h1>{detail.summary.title}</h1>
           <p>{detail.heroSummary}</p>
         </div>
@@ -330,9 +331,9 @@ export function DatasetDetailPage() {
               <LaunchTrainDrawer
                 datasetId={datasetId}
                 datasetLabel={detail.summary.title}
-                triggerLabel="基于此数据集训练"
-                title="发起训练"
-                description="训练流程保持以数据集 ID 为主入口，并会直接使用当前数据集。"
+                triggerLabel={translateText("基于此数据集训练")}
+                title={translateText("发起训练")}
+                description={translateText("训练流程保持以数据集 ID 为主入口，并会直接使用当前数据集。")}
               />
               {datasetModalities.length >= 2 ? (
                 <LaunchDatasetMultimodalTrainDrawer
@@ -344,16 +345,16 @@ export function DatasetDetailPage() {
             </>
           ) : null}
           <a className="link-button" href={downloadHref}>
-            获取该数据集
+            {translateText("获取该数据集")}
           </a>
           <button className="link-button danger-link" onClick={() => setDeleteOpen(true)} type="button">
-            删除数据集
+            {translateText("删除数据集")}
           </button>
           <Link className="comparison-link" to="/datasets/browser">
-            返回浏览器
+            {translateText("返回浏览器")}
           </Link>
           <Link className="comparison-link" to="/datasets/training">
-            训练数据集
+            {translateText("训练数据集")}
           </Link>
         </div>
       </section>
@@ -362,28 +363,28 @@ export function DatasetDetailPage() {
 
       <div className="metric-grid">
         <div className="metric-tile">
-          <span>数据域</span>
+          <span>{translateText("数据域")}</span>
           <strong>{detail.summary.dataDomainLabel}</strong>
         </div>
         <div className="metric-tile">
-          <span>数据集类型</span>
+          <span>{translateText("数据集类型")}</span>
           <strong>{detail.summary.datasetTypeLabel}</strong>
         </div>
         <div className="metric-tile">
-          <span>覆盖范围</span>
+          <span>{translateText("覆盖范围")}</span>
           <strong>{detail.summary.coverageLabel}</strong>
         </div>
         <div className="metric-tile">
-          <span>快照版本</span>
+          <span>{translateText("快照版本")}</span>
           <strong>{detail.summary.snapshotVersion}</strong>
         </div>
       </div>
 
       <section className="panel dataset-roles-panel">
         <PanelHeader
-          eyebrow="数据故事"
-          title="信号链路"
-          description="原始 NLP 事件如何转成带标签的训练面板和结构化特征快照，这里会解释当前数据集在整条链路中的位置。"
+          eyebrow={translateText("数据故事")}
+          title={translateText("信号链路")}
+          description={translateText("原始 NLP 事件如何转成带标签的训练面板和结构化特征快照，这里会解释当前数据集在整条链路中的位置。")}
         />
         <div className="dataset-roles-grid">
           {datasetRoleHighlights.map((item) => (
@@ -394,9 +395,9 @@ export function DatasetDetailPage() {
           ))}
         </div>
         <div className="dataset-callout">
-          <strong>结构化 NLP 信号资产</strong>
+          <strong>{translateText("结构化 NLP 信号资产")}</strong>
           <span>
-            该数据集暴露的是由文本聚合而来的情绪、关键词和关注度指标。训练流程只消费数值特征，不直接消费原始文本，因此既保留可追溯性，也兼容 market-first 的训练 / 回测流程。
+            {translateText("该数据集暴露的是由文本聚合而来的情绪、关键词和关注度指标。训练流程只消费数值特征，不直接消费原始文本，因此既保留可追溯性，也兼容 market-first 的训练 / 回测流程。")}
           </span>
         </div>
       </section>
@@ -404,84 +405,84 @@ export function DatasetDetailPage() {
       {hasNlpSignal ? (
         <section className="panel">
           <PanelHeader
-            eyebrow="NLP 检查"
-            title="文本与事件巡检"
-            description="预览文本事件、关键词集中度、来源构成，以及可直接用于训练的情绪特征。"
+            eyebrow={translateText("NLP 检查")}
+            title={translateText("文本与事件巡检")}
+            description={translateText("预览文本事件、关键词集中度、来源构成，以及可直接用于训练的情绪特征。")}
           />
-          {nlpInspectionQuery.isLoading ? <LoadingState label="正在加载 NLP 巡检..." /> : null}
+          {nlpInspectionQuery.isLoading ? <LoadingState label={translateText("正在加载 NLP 巡检...")} /> : null}
           {nlpInspectionQuery.isError ? <ErrorState message={(nlpInspectionQuery.error as Error).message} /> : null}
           {!nlpInspectionQuery.isLoading && !nlpInspectionQuery.isError ? (
             nlpInspection?.contains_nlp ? (
               <div className="dataset-nlp-layout">
                 <section className="details-panel nlp-summary-panel">
                   <PanelHeader
-                    eyebrow="官方门禁"
-                    title="NLP 质量门禁"
-                    description="这是官方 / 系统模板专用门禁，要求比通用训练 readiness 更严格。"
+                    eyebrow={translateText("官方门禁")}
+                    title={translateText("NLP 质量门禁")}
+                    description={translateText("这是官方 / 系统模板专用门禁，要求比通用训练 readiness 更严格。")}
                   />
                   <div className="nlp-stat-grid">
                     <div className="metric-tile compact">
-                      <span>门禁状态</span>
+                      <span>{translateText("门禁状态")}</span>
                       <strong>{gateStatusLabel(officialGateStatus)}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>官方模板可用</span>
+                      <span>{translateText("官方模板可用")}</span>
                       <strong>{booleanLabel(officialEligible)}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>仅归档型 NLP 数据源</span>
+                      <span>{translateText("仅归档型 NLP 数据源")}</span>
                       <strong>{booleanLabel(archivalSourceOnly)}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>覆盖率</span>
+                      <span>{translateText("覆盖率")}</span>
                       <strong>{formatPercent(coverageRatio, 1)}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>官方测试覆盖率</span>
+                      <span>{translateText("官方测试覆盖率")}</span>
                       <strong>{formatPercent(testCoverageRatio, 1)}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>最大连续空档条数</span>
+                      <span>{translateText("最大连续空档条数")}</span>
                       <strong>{maxEmptyBars ?? "--"}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>重复率</span>
+                      <span>{translateText("重复率")}</span>
                       <strong>{formatPercent(duplicateRatio, 1)}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>实体关联覆盖率</span>
+                      <span>{translateText("实体关联覆盖率")}</span>
                       <strong>{formatPercent(entityLinkCoverageRatio, 1)}</strong>
                     </div>
                   </div>
                   <div className="stack-list">
                     <div className="stack-item align-start">
-                      <strong>实际市场窗口</strong>
+                      <strong>{translateText("实际市场窗口")}</strong>
                       <span>{marketWindowLabel}</span>
                     </div>
                     <div className="stack-item align-start">
-                      <strong>官方测试窗口</strong>
+                      <strong>{translateText("官方测试窗口")}</strong>
                       <span>{officialTestWindowLabel}</span>
                     </div>
                     <div className="stack-item align-start">
-                      <strong>实际文本信号窗口</strong>
+                      <strong>{translateText("实际文本信号窗口")}</strong>
                       <span>{actualRangeLabel}</span>
                     </div>
                     <div className="stack-item align-start">
-                      <strong>请求的文本信号窗口</strong>
+                      <strong>{translateText("请求的文本信号窗口")}</strong>
                       <span>{requestedRangeLabel}</span>
                     </div>
                   </div>
                   <div className="dataset-callout">
-                    <strong>官方模板规则</strong>
-                    <span>时间窗对齐必须和 market 模板窗口一致。</span>
-                    <span>只有归档型 NLP 数据源才允许参加官方对比。</span>
-                    <span>NLP 门禁一旦失败，官方回测发起会被硬阻断。</span>
+                    <strong>{translateText("官方模板规则")}</strong>
+                    <span>{translateText("时间窗对齐必须和 market 模板窗口一致。")}</span>
+                    <span>{translateText("只有归档型 NLP 数据源才允许参加官方对比。")}</span>
+                    <span>{translateText("NLP 门禁一旦失败，官方回测发起会被硬阻断。")}</span>
                   </div>
                   {officialGateReasons.length > 0 ? (
                     <div className="stack-list">
                       {officialGateReasons.map((reason) => (
                         <div className="stack-item align-start" key={reason}>
-                          <strong>门禁说明</strong>
+                          <strong>{translateText("门禁说明")}</strong>
                           <span>{reason}</span>
                         </div>
                       ))}
@@ -490,44 +491,44 @@ export function DatasetDetailPage() {
                 </section>
 
                 <section className="details-panel nlp-summary-panel">
-                  <PanelHeader eyebrow="覆盖情况" title="覆盖范围与来源" />
+                  <PanelHeader eyebrow={translateText("覆盖情况")} title={translateText("覆盖范围与来源")} />
                   <div className="nlp-stat-grid">
                     <div className="metric-tile compact">
-                      <span>请求窗口</span>
+                      <span>{translateText("请求窗口")}</span>
                       <strong>{requestedRangeLabel}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>实际 NLP 覆盖</span>
+                      <span>{translateText("实际 NLP 覆盖")}</span>
                       <strong>{actualRangeLabel}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>来源供应商</span>
+                      <span>{translateText("来源供应商")}</span>
                       <strong>{sourceVendorLabel}</strong>
                     </div>
                     <div className="metric-tile compact">
-                      <span>预览事件数</span>
+                      <span>{translateText("预览事件数")}</span>
                       <strong>{nlpInspection.recent_event_previews?.length ?? 0}</strong>
                     </div>
                   </div>
                   <div className="dataset-callout">
-                    <strong>{nlpInspection.coverage_summary ?? "NLP 巡检结果已就绪。"}</strong>
+                    <strong>{nlpInspection.coverage_summary ?? translateText("NLP 巡检结果已就绪。")}</strong>
                     <span>
-                      这里展示的是从事件元数据派生出的结构化 NLP 信号，比如情绪、计数和关注度，而不是原始文本本身。
+                      {translateText("这里展示的是从事件元数据派生出的结构化 NLP 信号，比如情绪、计数和关注度，而不是原始文本本身。")}
                     </span>
                   </div>
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="时间线" title="事件时间线" />
+                  <PanelHeader eyebrow={translateText("时间线")} title={translateText("事件时间线")} />
                   {nlpTimelineOption ? (
                     <WorkbenchChart option={nlpTimelineOption} />
                   ) : (
-                    <EmptyState title="暂无时间线" body="当前数据集没有可展示的事件时间线数据。" />
+                    <EmptyState title={translateText("暂无时间线")} body={translateText("当前数据集没有可展示的事件时间线数据。")} />
                   )}
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="预览" title="近期文本样本" />
+                  <PanelHeader eyebrow={translateText("预览")} title={translateText("近期文本样本")} />
                   {nlpInspection.recent_event_previews && nlpInspection.recent_event_previews.length > 0 ? (
                     <div className="nlp-preview-list">
                       {nlpInspection.recent_event_previews.slice(0, 4).map((preview, index) => (
@@ -535,26 +536,26 @@ export function DatasetDetailPage() {
                           <div>
                             <strong>{preview.title}</strong>
                             <span>
-                              {(preview.symbol || "混合")} · {preview.source}
+                              {(preview.symbol || translateText("混合"))} · {preview.source}
                             </span>
                             <span>{formatDate(preview.event_time)}</span>
                           </div>
                           <p>{preview.snippet}</p>
                           {preview.url ? (
                             <a href={preview.url} rel="noreferrer" target="_blank">
-                              打开来源
+                              {translateText("打开来源")}
                             </a>
                           ) : null}
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <EmptyState title="暂无文本预览" body="当前数据集没有可展示的事件预览。" />
+                    <EmptyState title={translateText("暂无文本预览")} body={translateText("当前数据集没有可展示的事件预览。")} />
                   )}
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="来源" title="来源构成" />
+                  <PanelHeader eyebrow={translateText("来源")} title={translateText("来源构成")} />
                   <div className="nlp-source-breakdown">
                     {(nlpInspection.source_breakdown ?? []).length > 0 ? (
                       nlpInspection.source_breakdown?.slice(0, 8).map((source, index) => (
@@ -566,13 +567,13 @@ export function DatasetDetailPage() {
                         </div>
                       ))
                     ) : (
-                      <span className="muted">暂无来源构成。</span>
+                      <span className="muted">{translateText("暂无来源构成。")}</span>
                     )}
                   </div>
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="关键词" title="关键词与高频词" />
+                  <PanelHeader eyebrow={translateText("关键词")} title={translateText("关键词与高频词")} />
                   {nlpInspection.keyword_summary && nlpInspection.keyword_summary.length > 0 ? (
                     <div className="nlp-keyword-cloud">
                       {nlpInspection.keyword_summary.slice(0, 12).map((keyword, index) => (
@@ -583,7 +584,7 @@ export function DatasetDetailPage() {
                       ))}
                     </div>
                   ) : (
-                    <EmptyState title="暂无关键词" body="当前数据集的关键词聚合结果为空。" />
+                    <EmptyState title={translateText("暂无关键词")} body={translateText("当前数据集的关键词聚合结果为空。")} />
                   )}
                   {nlpInspection.word_cloud_terms && nlpInspection.word_cloud_terms.length > 0 ? (
                     <div className="nlp-word-cloud compact-cloud">
@@ -600,7 +601,7 @@ export function DatasetDetailPage() {
                 </section>
 
                 <section className="details-panel">
-                  <PanelHeader eyebrow="情绪" title="情绪分布与特征" />
+                  <PanelHeader eyebrow={translateText("情绪")} title={translateText("情绪分布与特征")} />
                   <div className="nlp-sentiment-grid">
                     {(nlpInspection.sentiment_distribution ?? []).length > 0 ? (
                       nlpInspection.sentiment_distribution?.map((bucket, index) => (
@@ -613,7 +614,7 @@ export function DatasetDetailPage() {
                         </div>
                       ))
                     ) : (
-                      <span className="muted">暂无情绪直方图。</span>
+                      <span className="muted">{translateText("暂无情绪直方图。")}</span>
                     )}
                   </div>
                   {nlpInspection.sample_feature_preview && Object.keys(nlpInspection.sample_feature_preview).length > 0 ? (
@@ -626,22 +627,22 @@ export function DatasetDetailPage() {
                       ))}
                     </div>
                   ) : (
-                    <EmptyState title="暂无 NLP 特征" body="当前还没有可展示的训练级 NLP 样例特征。" />
+                    <EmptyState title={translateText("暂无 NLP 特征")} body={translateText("当前还没有可展示的训练级 NLP 样例特征。")} />
                   )}
                 </section>
               </div>
             ) : (
-              <EmptyState title="暂无 NLP 载荷" body="该数据集看起来包含 NLP 信号，但后端没有返回对应巡检载荷。" />
+              <EmptyState title={translateText("暂无 NLP 载荷")} body={translateText("该数据集看起来包含 NLP 信号，但后端没有返回对应巡检载荷。")} />
             )
           ) : null}
         </section>
       ) : null}
 
       <section className="panel">
-        <PanelHeader eyebrow="概览" title="这个数据集是做什么的" description="高层用途、可用性状态和数据形态说明。" />
+        <PanelHeader eyebrow={translateText("概览")} title={translateText("这个数据集是做什么的")} description={translateText("高层用途、可用性状态和数据形态说明。")} />
         <div className="dataset-hero-grid">
           <section className="details-panel">
-            <PanelHeader eyebrow="使用场景" title="预期用途" description={detail.intendedUse} />
+            <PanelHeader eyebrow={translateText("使用场景")} title={translateText("预期用途")} description={detail.intendedUse} />
             <div className="story-list">
               <div className="story-item">
                 <p>{detail.heroSummary}</p>
@@ -653,30 +654,30 @@ export function DatasetDetailPage() {
           </section>
 
           <section className="details-panel">
-            <PanelHeader eyebrow="规模" title="数据形态与覆盖范围" />
+            <PanelHeader eyebrow={translateText("规模")} title={translateText("数据形态与覆盖范围")} />
             <div className="definition-grid">
               <div className="definition-item">
-                <span>行数</span>
+                <span>{translateText("行数")}</span>
                 <strong>{detail.summary.rowCountLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>特征数</span>
+                <span>{translateText("特征数")}</span>
                 <strong>{detail.summary.featureCountLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>标签数</span>
+                <span>{translateText("标签数")}</span>
                 <strong>{detail.summary.labelCountLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>跨度</span>
+                <span>{translateText("跨度")}</span>
                 <strong>{detail.summary.labelHorizonLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>实体范围</span>
+                <span>{translateText("实体范围")}</span>
                 <strong>{detail.summary.entityScopeLabel}</strong>
               </div>
               <div className="definition-item">
-                <span>新鲜度</span>
+                <span>{translateText("新鲜度")}</span>
                 <strong>{detail.summary.freshnessLabel}</strong>
               </div>
             </div>
@@ -685,7 +686,7 @@ export function DatasetDetailPage() {
       </section>
 
       <section className="panel">
-        <PanelHeader eyebrow="就绪度" title="训练就绪状态" description="这里直接展示后端返回的 readiness 合同结果。" />
+        <PanelHeader eyebrow={translateText("就绪度")} title={translateText("训练就绪状态")} description={translateText("这里直接展示后端返回的 readiness 合同结果。")} />
         <div className="dataset-lifecycle-grid">
           <section className="details-panel">
             <div className="split-line">
@@ -697,7 +698,7 @@ export function DatasetDetailPage() {
               <span>
                 {readinessQuery.isError
                   ? (readinessQuery.error as Error).message
-                  : "通用 readiness 负责 schema 和训练安全校验；上方单独展示的官方 NLP 质量门禁会更严格。"}
+                  : translateText("通用 readiness 负责 schema 和训练安全校验；上方单独展示的官方 NLP 质量门禁会更严格。")}
               </span>
             </div>
             <div className="kv-list compact">
@@ -710,28 +711,34 @@ export function DatasetDetailPage() {
             </div>
             {readinessQuery.data?.modality_quality_summary ? (
               <div className="page-stack compact-gap">
-                <strong>Modality Quality Summary</strong>
+                <strong>{translateText("模态质量摘要")}</strong>
+                <div className="dataset-callout">
+                  <strong>{translateText("多频率域按训练主时钟对齐")}</strong>
+                  <span>
+                    {translateText("市场维度保留 1h 主时钟；宏观、链上、衍生品、NLP 会保留原始频率，并通过 as-of / available_time 对齐后再进入训练样本，不会伪造成真实高频原始观测。")}
+                  </span>
+                </div>
                 <ModalityQualitySummary
                   summary={readinessQuery.data.modality_quality_summary}
-                  title="Dataset modality quality summary"
+                  title={translateText("数据集模态质量摘要")}
                 />
               </div>
             ) : null}
             {insufficientObservationModalities.length > 0 ? (
               <div className="dataset-callout">
-                <strong>宏观 / 链上当前是样本量不足，不是 freshness 不足</strong>
+                <strong>{translateText("宏观 / 链上当前是样本量不足，不是 freshness 不足")}</strong>
                 <span>
                   {insufficientObservationModalities
-                    .map((modality) => `${modality === "macro" ? "宏观" : "链上"} freshness lag 为 0 天，但有效观测点数还没达到 300`)
+                    .map((modality) => `${modality === "macro" ? translateText("宏观") : translateText("链上")} freshness lag 为 0 天，但有效观测点数还没达到 300`)
                     .join("；")}
-                  。这通常是因为当前时间窗只有半年左右，而这两类信号按较低频 canonical 采样后，可用点数不足。
+                  {translateText("。这通常是因为当前时间窗只有半年左右，而这两类信号按较低频 canonical 采样后，可用点数不足。")}
                 </span>
-                <span>如果想让它们过门槛，建议优先拉长时间窗，而不是把问题理解成“数据太旧”。</span>
+                <span>{translateText("如果想让它们过门槛，建议优先拉长时间窗，而不是把问题理解成“数据太旧”。")}</span>
               </div>
             ) : null}
             {readinessQuery.data?.aligned_multimodal_quality ? (
               <div className="page-stack compact-gap">
-                <strong>Aligned Multimodal Window</strong>
+                <strong>{translateText("对齐后的多模态窗口")}</strong>
                 <ModalityQualitySummary
                   summary={{
                     aligned_multimodal: {
@@ -741,14 +748,14 @@ export function DatasetDetailPage() {
                         "aligned_multimodal",
                     },
                   }}
-                  title="Aligned multimodal quality"
+                  title={translateText("对齐后的多模态质量")}
                 />
               </div>
             ) : null}
           </section>
 
           <section className="details-panel">
-            <PanelHeader eyebrow="采集" title="请求画像" />
+            <PanelHeader eyebrow={translateText("采集")} title={translateText("请求画像")} />
             <div className="kv-list compact">
               {detail.acquisitionEntries.map((row, index) => (
                 <div className="kv-row" key={`${row.key}-${index}`}>
@@ -760,7 +767,7 @@ export function DatasetDetailPage() {
           </section>
 
           <section className="details-panel">
-            <PanelHeader eyebrow="构建" title="构建与 Schema" />
+            <PanelHeader eyebrow={translateText("构建")} title={translateText("构建与 Schema")} />
             <div className="kv-list compact">
               {detail.buildEntries.concat(detail.schemaEntries).map((row, index) => (
                 <div className="kv-row" key={`${row.key}-${row.value}-${index}`}>

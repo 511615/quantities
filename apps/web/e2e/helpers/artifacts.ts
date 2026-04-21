@@ -1,10 +1,10 @@
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const repoRoot = path.resolve(process.cwd(), "..", "..");
 const artifactRoot = path.resolve(
   repoRoot,
-  process.env.PLAYWRIGHT_ARTIFACT_ROOT || ".tmp/playwright-artifacts",
+  process.env.PLAYWRIGHT_ARTIFACT_ROOT || "artifacts",
 );
 
 async function rewriteJson(filePath: string, updater: (payload: Record<string, unknown>) => void) {
@@ -14,13 +14,31 @@ async function rewriteJson(filePath: string, updater: (payload: Record<string, u
 }
 
 export async function ensureQualityBlockedMarketRun(runId: string) {
-  const sourceRunId = "api-market";
+  const marketRunCandidates = [
+    "workbench-multimodal-market",
+    "debug-mm-market",
+    "market-1776027283427",
+  ];
   const sourceDatasetId = "canonical_five_modality_live_debug_1776457986_fusion";
   const blockedDatasetId = "smoke_dataset";
   const modelsDir = path.join(artifactRoot, "models");
   const predictionsDir = path.join(artifactRoot, "predictions");
   const trackingDir = path.join(artifactRoot, "tracking");
   const targetModelDir = path.join(modelsDir, runId);
+
+  let sourceRunId: string | undefined;
+  for (const candidate of marketRunCandidates) {
+    try {
+      await access(path.join(modelsDir, candidate));
+      sourceRunId = candidate;
+      break;
+    } catch {
+      continue;
+    }
+  }
+  if (!sourceRunId) {
+    throw new Error(`No reusable market source run was found under ${modelsDir}.`);
+  }
 
   await mkdir(modelsDir, { recursive: true });
   await mkdir(predictionsDir, { recursive: true });

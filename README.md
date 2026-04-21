@@ -32,10 +32,22 @@ For the live multi-domain flow `request -> merged dataset -> train -> backtest`:
 1. Copy `.env.example` to `.env`.
 2. Set `FRED_API_KEY` in `.env` if you want real `macro/fred` ingestion.
 3. Restart the backend after changing `.env`.
-4. Start the API with `python -m quant_platform.webapi.main`.
-5. Start the web app from `apps/web` with `npm install` and `npm run dev`.
+4. Read [docs/local-startup.md](docs/local-startup.md) and follow one of the two supported modes:
+   - Frontend/backend split dev mode
+   - Single-port local deployment mode
 
 Without `FRED_API_KEY`, the backend will explicitly fail the macro stage instead of silently falling back.
+
+Recommended local ports:
+
+- frontend dev: `127.0.0.1:5173`
+- backend API / single-port local deployment: `127.0.0.1:8015`
+
+Important:
+
+- `apps/web/vite.config.ts` currently proxies `/api` to `http://127.0.0.1:8015` by default.
+- Preferred one-command local entrypoint is `scripts/dev/start_local.ps1`.
+- If you change startup commands, ports, proxy targets, deployment entrypoints, or startup scripts, update this README, `docs/local-startup.md`, and `scripts/dev/start_local.ps1` in the same change.
 
 或使用脚本入口：
 

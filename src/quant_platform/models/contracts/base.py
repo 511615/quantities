@@ -48,3 +48,6 @@ class BaseModelPlugin(ABC):
 
     def feature_importance(self) -> dict[str, float] | None:
         return None
+
+    def explainability_payload(self) -> dict[str, object] | None:
+        return None

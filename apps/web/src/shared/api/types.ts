@@ -44,6 +44,12 @@ export type ModalityQualityView = {
   non_null_coverage_ratio?: number | null;
   required_feature_names?: string[];
   observed_feature_names?: string[];
+  source_frequency?: string | null;
+  training_frequency?: string | null;
+  alignment_policy?: string | null;
+  forward_fill_enabled?: boolean | null;
+  hours_since_update?: number | null;
+  ffill_span?: number | null;
 };
 
 export type PredictionArtifactView = {
@@ -151,6 +157,11 @@ export type RunDetailView = {
   feature_scope_modality?: string | null;
   feature_scope_feature_names?: string[];
   source_dataset_quality_status?: string | null;
+  lstm_window_spec?: Record<string, unknown>;
+  lstm_subsequence_spec?: Record<string, unknown>;
+  rolling_window_spec?: Record<string, unknown>;
+  effective_alignment_policy?: string | null;
+  feature_frequency_profile?: Record<string, unknown>;
   review_summary: ReviewSummaryView | null;
   warning_summary: WarningSummaryView | null;
   glossary_hints: GlossaryHintView[];
@@ -507,6 +518,7 @@ export type LaunchTrainRequest = {
 export type LaunchModelCompositionRequest = {
   source_run_ids: string[];
   composition_name: string;
+  fusion_strategy?: "attention_late_fusion" | "late_score_blend";
   dataset_ids?: string[];
 };
 
@@ -517,7 +529,7 @@ export type LaunchDatasetMultimodalTrainRequest = {
   trainer_preset?: "fast";
   experiment_name_prefix: string;
   seed: number;
-  fusion_strategy?: "late_score_blend";
+  fusion_strategy?: "attention_late_fusion" | "late_score_blend";
   composition_name?: string | null;
   auto_launch_official_backtest?: boolean;
   official_window_days?: 30 | 90 | 180 | 365 | null;

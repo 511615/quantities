@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -130,6 +130,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
   fetchMock.mockClear();
 });
@@ -190,6 +191,7 @@ test("submits selected modalities with automatic official backtest and blocks fa
     const [, init] = launchCall as [RequestInfo | URL, RequestInit];
     const payload = JSON.parse(String(init.body));
     expect(payload.selected_modalities).toEqual(["market", "macro"]);
+    expect(payload.fusion_strategy).toBe("attention_late_fusion");
     expect(payload.auto_launch_official_backtest).toBe(true);
     expect(payload.official_window_days).toBe(30);
   });
@@ -200,4 +202,36 @@ test("submits selected modalities with automatic official backtest and blocks fa
       "/backtests/backtest-123",
     ),
   );
+});
+
+test("allows switching back to late_score_blend explicitly", async () => {
+  renderDrawer();
+
+  fireEvent.click(screen.getByTestId("launch-dataset-multimodal-train-trigger"));
+
+  const marketCheckbox = await screen.findByTestId("multimodal-modality-market");
+  const macroCheckbox = await screen.findByTestId("multimodal-modality-macro");
+
+  fireEvent.click(marketCheckbox);
+  fireEvent.click(macroCheckbox);
+  fireEvent.change(screen.getByTestId("dataset-multimodal-fusion-strategy"), {
+    target: { value: "late_score_blend" },
+  });
+  fireEvent.click(screen.getByTestId("dataset-multimodal-submit"));
+
+  await waitFor(() => {
+    const launchCall = fetchMock.mock.calls.find(([input, init]) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      return url.endsWith("/api/launch/dataset-multimodal-train") && init?.method === "POST";
+    });
+    expect(launchCall).toBeTruthy();
+    const [, init] = launchCall as [RequestInfo | URL, RequestInit];
+    const payload = JSON.parse(String(init.body));
+    expect(payload.fusion_strategy).toBe("late_score_blend");
+  });
 });

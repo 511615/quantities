@@ -215,8 +215,10 @@ test("renders dataset detail with modality quality and official NLP gate details
   );
   await waitFor(() => expect(screen.getByTestId("dataset-candles-chart")).toBeInTheDocument());
 
-  expect(screen.getByText("Modality Quality Summary")).toBeInTheDocument();
-  expect(screen.getByText("Aligned Multimodal Window")).toBeInTheDocument();
+  expect(screen.getByText("模态质量摘要")).toBeInTheDocument();
+  expect(screen.getByText("对齐后的多模态窗口")).toBeInTheDocument();
+  expect(screen.getByText("多频率域按训练主时钟对齐")).toBeInTheDocument();
+  expect(screen.getAllByText(/available_time/i).length).toBeGreaterThan(0);
   expect(screen.getByText("NLP 质量门禁")).toBeInTheDocument();
   expect(screen.getByText("实际市场窗口")).toBeInTheDocument();
   expect(screen.getByText("官方测试窗口")).toBeInTheDocument();

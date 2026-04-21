@@ -15,6 +15,7 @@ from quant_platform.datasets.splits.time_series import RollingWindowSpec, TimeSe
 from quant_platform.models.contracts.model_spec import ModelSpec
 from quant_platform.models.support import merge_training_hyperparams
 from quant_platform.training.contracts.training import (
+    FitRequest,
     PredictionScope,
     TrackingContext,
     TrainerConfig,
@@ -157,6 +158,26 @@ class BenchmarkWorkflowService:
                     "layer_norm": True,
                 },
             ),
+            ModelSpec(
+                model_name="lstm",
+                family=ModelFamily.SEQUENCE,
+                version="0.1.0",
+                input_schema=schema,
+                output_schema=output_schema,
+                hyperparams={
+                    "lookback": 6,
+                    "forecast_horizon": 1,
+                    "stride": 1,
+                    "subsequence_length": 3,
+                    "subsequence_stride": 3,
+                    "hidden_size": 16,
+                    "num_layers": 1,
+                    "dropout": 0.0,
+                    "bidirectional": False,
+                    "layer_norm": False,
+                    "force_backend": "fallback",
+                },
+            ),
         ]
 
     def run_baseline_benchmark(self) -> BenchmarkWorkflowResult:
@@ -297,11 +318,30 @@ class BenchmarkWorkflowService:
                 }
             }
         )
+        if effective_spec.model_name == "lstm" and (
+            request_rolling := self._default_window_spec(len(samples))
+        ):
+            if "rolling_window_spec" not in effective_spec.hyperparams:
+                effective_spec = effective_spec.model_copy(
+                    update={
+                        "hyperparams": {
+                            **effective_spec.hyperparams,
+                            "rolling_window_spec": request_rolling.model_dump(mode="json"),
+                        }
+                    }
+                )
         effective_spec = merge_training_hyperparams(
             effective_spec,
             trainer_config,
             seed=seed,
         )
+        if effective_spec.model_name == "lstm":
+            return self._evaluate_lstm_rolling_benchmark_spec(
+                dataset_ref=dataset_ref,
+                effective_spec=effective_spec,
+                trainer_config=trainer_config,
+                seed=seed,
+            )
         valid_mae_values: list[float] = []
         test_mae_values: list[float] = []
         fit_metrics_history: list[dict[str, float]] = []
@@ -443,6 +483,52 @@ class BenchmarkWorkflowService:
             mean_valid_mae=sum(valid_mae_values) / max(1, len(valid_mae_values)),
             mean_test_mae=sum(test_mae_values) / max(1, len(test_mae_values)),
             artifact_uri=detail_artifact.uri,
+        )
+
+    def _evaluate_lstm_rolling_benchmark_spec(
+        self,
+        *,
+        dataset_ref: DatasetRef,
+        effective_spec: ModelSpec,
+        trainer_config: TrainerConfig,
+        seed: int,
+    ) -> BenchmarkResultRow:
+        run_id = f"benchmark-{effective_spec.model_name}-{stable_digest(effective_spec)[:8]}"
+        fit_result = self.runtime.training_runner.fit(
+            FitRequest(
+                run_id=run_id,
+                dataset_ref=dataset_ref,
+                model_spec=effective_spec,
+                trainer_config=trainer_config,
+                seed=seed,
+                tracking_context=TrackingContext(
+                    backend="file",
+                    experiment_name="workflow-benchmark-lstm",
+                    tracking_uri=str(self.runtime.artifact_root / "tracking"),
+                ),
+            )
+        )
+        evaluation_summary = self.runtime.store.read_json(
+            str(self.runtime.artifact_root / "models" / run_id / "evaluation_summary.json")
+        )
+        rolling_evaluation = (
+            evaluation_summary.get("rolling_window_evaluation")
+            if isinstance(evaluation_summary.get("rolling_window_evaluation"), dict)
+            else {}
+        )
+        metadata = self.runtime.store.read_json(
+            str(self.runtime.artifact_root / "models" / run_id / "metadata.json")
+        )
+        backend_name = str(metadata.get("backend", "native"))
+        return BenchmarkResultRow(
+            model_name=effective_spec.model_name,
+            family=effective_spec.family.value,
+            advanced_kind="baseline",
+            backend=backend_name,
+            window_count=int(rolling_evaluation.get("window_count", 0) or 0),
+            mean_valid_mae=float(rolling_evaluation.get("mean_valid_mae", fit_result.metrics.get("valid_mae", fit_result.metrics.get("mae", 0.0))) or 0.0),
+            mean_test_mae=float(rolling_evaluation.get("mean_test_mae", fit_result.metrics.get("test_mae", fit_result.metrics.get("valid_mae", fit_result.metrics.get("mae", 0.0)))) or 0.0),
+            artifact_uri=fit_result.model_artifact_uri,
         )
 
     def _build_deep_backend_comparison(

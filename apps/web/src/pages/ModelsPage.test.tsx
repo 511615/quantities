@@ -250,7 +250,7 @@ test("opens dataset-aware train drawer from query params and exposes modality se
   expect(
     screen.getByText(/Cross Asset Training Panel|cross_asset_training_panel_v2/),
   ).toBeInTheDocument();
-  expect(screen.getByLabelText("Feature Modality")).toBeInTheDocument();
+  expect(screen.getByLabelText("特征模态")).toBeInTheDocument();
 });
 
 test("launches composition from distinct quality-ready single-modality runs", async () => {
@@ -311,7 +311,7 @@ test("disables legacy or low-quality runs from composition selection", async () 
   expect(failedCheckbox).toBeDisabled();
 
   const legacyRow = screen.getByText("legacy-run-no-modality").closest("tr") as HTMLElement;
-  expect(within(legacyRow).getByText("Only explicit single-modality runs can be composed.")).toBeInTheDocument();
+  expect(within(legacyRow).getByText("只有显式单模态训练实例才能参与组合。")).toBeInTheDocument();
 });
 
 test("bulk deletes selected trained models from the table", async () => {

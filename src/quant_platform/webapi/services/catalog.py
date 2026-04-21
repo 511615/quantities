@@ -1323,7 +1323,7 @@ class ResearchWorkbenchService:
                 deduped.append(item)
         return deduped
 
-    def _run_composition(self, manifest: dict[str, Any]) -> RunCompositionView | None:
+    def _run_composition(self, manifest: dict[str, Any], metadata: dict[str, Any] | None = None) -> RunCompositionView | None:
         composition = manifest.get("composition")
         if not isinstance(composition, dict):
             return None
@@ -1359,8 +1359,21 @@ class ResearchWorkbenchService:
             for item in composition.get("rules", [])
             if isinstance(item, str) and item.strip()
         ]
+        prediction_metadata = (
+            metadata.get("prediction_metadata")
+            if isinstance(metadata, dict) and isinstance(metadata.get("prediction_metadata"), dict)
+            else {}
+        )
         return RunCompositionView(
-            fusion_strategy=self._str(composition.get("fusion_strategy")) or "late_score_blend",
+            fusion_strategy=self._str(composition.get("fusion_strategy")) or "attention_late_fusion",
+            requested_fusion_strategy=self._str(prediction_metadata.get("requested_fusion_strategy")),
+            effective_fusion_strategy=self._str(prediction_metadata.get("effective_fusion_strategy")),
+            attention_summary=(
+                dict(prediction_metadata.get("attention_summary") or {})
+                if isinstance(prediction_metadata.get("attention_summary"), dict)
+                else {}
+            ),
+            explainability_uri=self._str(prediction_metadata.get("explainability_uri")),
             source_runs=source_runs,
             rules=rules,
         )
@@ -1615,7 +1628,7 @@ class ResearchWorkbenchService:
             manifest=manifest,
             metadata=metadata,
         )
-        composition = self._run_composition(manifest)
+        composition = self._run_composition(manifest, metadata)
         official_template_eligible, official_blocking_reasons = self._official_composition_status(
             manifest
         )
@@ -1654,6 +1667,54 @@ class ResearchWorkbenchService:
         source_dataset_quality_status = self._str(metadata.get("source_dataset_quality_status")) or self._str(
             manifest.get("source_dataset_quality_status")
         )
+        model_spec = metadata.get("model_spec") if isinstance(metadata.get("model_spec"), dict) else {}
+        hyperparams = model_spec.get("hyperparams") if isinstance(model_spec.get("hyperparams"), dict) else {}
+        input_metadata = metadata.get("input_metadata") if isinstance(metadata.get("input_metadata"), dict) else {}
+        prediction_metadata = (
+            metadata.get("prediction_metadata") if isinstance(metadata.get("prediction_metadata"), dict) else {}
+        )
+        lstm_window_spec = {}
+        lstm_subsequence_spec = {}
+        rolling_window_spec = {}
+        effective_alignment_policy = self._str(
+            prediction_metadata.get("effective_alignment_policy")
+        ) or self._str(input_metadata.get("effective_alignment_policy"))
+        feature_frequency_profile = (
+            dict(prediction_metadata.get("feature_frequency_profile") or {})
+            if isinstance(prediction_metadata.get("feature_frequency_profile"), dict)
+            else (
+                dict(input_metadata.get("feature_frequency_profile") or {})
+                if isinstance(input_metadata.get("feature_frequency_profile"), dict)
+                else {}
+            )
+        )
+        if self._str(model_spec.get("model_name")) == "lstm" or model_name == "lstm":
+            lstm_window_spec = (
+                dict(input_metadata.get("window_spec") or {})
+                if isinstance(input_metadata.get("window_spec"), dict)
+                else {
+                    "lookback": hyperparams.get("lookback"),
+                    "forecast_horizon": hyperparams.get("forecast_horizon"),
+                    "stride": hyperparams.get("stride"),
+                }
+            )
+            lstm_subsequence_spec = (
+                dict(input_metadata.get("subsequence_spec") or {})
+                if isinstance(input_metadata.get("subsequence_spec"), dict)
+                else {
+                    "subsequence_length": hyperparams.get("subsequence_length"),
+                    "subsequence_stride": hyperparams.get("subsequence_stride"),
+                }
+            )
+            rolling_window_spec = (
+                dict(input_metadata.get("rolling_window_spec") or {})
+                if isinstance(input_metadata.get("rolling_window_spec"), dict)
+                else (
+                    dict(hyperparams.get("rolling_window_spec") or {})
+                    if isinstance(hyperparams.get("rolling_window_spec"), dict)
+                    else {}
+                )
+            )
         return RunDetailView(
             run_id=run_id,
             model_name=model_name,
@@ -1701,6 +1762,11 @@ class ResearchWorkbenchService:
             feature_scope_modality=feature_scope_modality,
             feature_scope_feature_names=feature_scope_feature_names,
             source_dataset_quality_status=source_dataset_quality_status,
+            lstm_window_spec=lstm_window_spec,
+            lstm_subsequence_spec=lstm_subsequence_spec,
+            rolling_window_spec=rolling_window_spec,
+            effective_alignment_policy=effective_alignment_policy,
+            feature_frequency_profile=feature_frequency_profile,
             summary=StableSummaryView(status="success", headline=f"Run {run_id}"),
             pipeline_summary=None,
             review_summary=self._review_unavailable(),
@@ -3200,6 +3266,12 @@ class ResearchWorkbenchService:
         coverage_by_feature: dict[str, float] = {}
         missing_counts: dict[str, int] = {}
         fusion_domains: set[str] = {base_data_domain}
+        training_frequency = (
+            self._dataset_summary(base_payload).frequency
+            or self._str(base_dataset_ref.feature_view_ref.input_data_refs[0].frequency)
+            or "1h"
+        )
+        training_delta = self._frequency_delta(training_frequency)
         for source in request.sources:
             if source.data_domain not in {"macro", "on_chain", "derivatives", "sentiment_events"}:
                 raise ValueError(
@@ -3225,10 +3297,12 @@ class ResearchWorkbenchService:
                     f"Fusion source '{source.data_domain}/{source.vendor}/{source.identifier}' returned no rows."
                 )
             feature_name = source.feature_name or self._fusion_feature_name(source)
+            feature_domain = "nlp" if source.data_domain == "sentiment_events" else source.data_domain
             snapshot_uri = self._write_fusion_series_rows(dataset_id, feature_name, points)
             source_contexts.append(
                 {
                     "source": source,
+                    "feature_domain": feature_domain,
                     "feature_name": feature_name,
                     "points": points,
                     "resolve_point": self._build_series_point_resolver(
@@ -3297,6 +3371,24 @@ class ResearchWorkbenchService:
                         max_available_time=base_dataset_ref.feature_view_ref.as_of_time,
                     )
                 )
+        domains_with_freshness = sorted({str(context["feature_domain"]) for context in source_contexts})
+        for domain in domains_with_freshness:
+            for feature_name, dtype, description in [
+                (f"{domain}_is_observed", "float", f"Observed flag for aligned {domain} modality at this training bar."),
+                (f"{domain}_hours_since_update", "float", f"Hours since latest visible {domain} update at this training bar."),
+                (f"{domain}_ffill_span", "float", f"Forward-fill span in {training_frequency} bars for {domain} at this training bar."),
+                (f"{domain}_coverage_ratio", "float", f"Coverage ratio across aligned {domain} source features at this training bar."),
+            ]:
+                feature_schema.append(
+                    FeatureField(
+                        name=feature_name,
+                        dtype=dtype,
+                        nullable=False,
+                        description=description,
+                        lineage_source=f"fusion_alignment:{domain}",
+                        max_available_time=base_dataset_ref.feature_view_ref.as_of_time,
+                    )
+                )
 
         enriched_rows: list[FeatureRow] = []
         label_map = {(sample.entity_key, sample.timestamp): sample.target for sample in base_samples}
@@ -3304,7 +3396,13 @@ class ResearchWorkbenchService:
         for sample in sorted(base_samples, key=lambda item: (item.timestamp, item.entity_key)):
             values = dict(sample.features)
             row_missing = False
+            domain_alignment_state: dict[str, dict[str, Any]] = {
+                domain: {"matched": 0, "total": 0, "event_times": [], "available_times": []}
+                for domain in domains_with_freshness
+            }
             for context in source_contexts:
+                domain = str(context["feature_domain"])
+                domain_alignment_state[domain]["total"] += 1
                 match = context["resolve_point"](
                     sample.timestamp,
                     sample.available_time,
@@ -3317,8 +3415,29 @@ class ResearchWorkbenchService:
                         values[f"{context['feature_name']}__missing"] = 1.0
                     continue
                 values[context["feature_name"]] = match.value
+                domain_alignment_state[domain]["matched"] += 1
+                domain_alignment_state[domain]["event_times"].append(match.event_time)
+                domain_alignment_state[domain]["available_times"].append(match.available_time)
                 if keep_with_flags:
                     values[f"{context['feature_name']}__missing"] = 0.0
+            for domain, state in domain_alignment_state.items():
+                matched = int(state["matched"])
+                total = int(state["total"])
+                latest_available = (
+                    max(state["available_times"]) if state["available_times"] else sample.available_time
+                )
+                latest_event = (
+                    max(state["event_times"]) if state["event_times"] else sample.timestamp
+                )
+                values[f"{domain}_is_observed"] = 1.0 if matched > 0 else 0.0
+                values[f"{domain}_coverage_ratio"] = 0.0 if total <= 0 else matched / total
+                values[f"{domain}_hours_since_update"] = max(
+                    (sample.available_time - latest_available).total_seconds() / 3600.0,
+                    0.0,
+                )
+                values[f"{domain}_ffill_span"] = float(
+                    max(int((sample.timestamp - latest_event) / training_delta), 0)
+                )
             if row_missing and not keep_with_flags:
                 dropped_missing_rows += 1
                 continue
@@ -3444,6 +3563,18 @@ class ResearchWorkbenchService:
                         "coverage_by_feature": coverage_by_feature,
                         **request.missing_feature_policy,
                     },
+                    "training_clock_frequency": training_frequency,
+                    "modality_frequency_profile": {
+                        str(domain): sorted(
+                            {
+                                str(item["source"].frequency)
+                                for item in source_contexts
+                                if str(item["feature_domain"]) == str(domain)
+                            }
+                        )
+                        for domain in domains_with_freshness
+                    },
+                    "freshness_features_enabled": True,
                     "source_freshness_candidates": freshness_candidates,
                     "worst_source_freshness": worst_source_freshness,
                 },
@@ -3458,6 +3589,22 @@ class ResearchWorkbenchService:
                     "market_anchor_dataset_id": request.base_dataset_id,
                     "source_dataset_ids": [request.base_dataset_id],
                     "fusion_domains": sorted(fusion_domains),
+                    "training_clock_frequency": training_frequency,
+                    "alignment_policy_name": request.alignment_policy_name,
+                    "forward_fill_policy": {
+                        "enabled": request.alignment_policy_name == "available_time_safe_asof",
+                        "freshness_features_enabled": True,
+                    },
+                    "modality_frequency_profile": {
+                        str(domain): sorted(
+                            {
+                                str(item["source"].frequency)
+                                for item in source_contexts
+                                if str(item["feature_domain"]) == str(domain)
+                            }
+                        )
+                        for domain in domains_with_freshness
+                    },
                     "source_specs": [
                         {
                             "data_domain": base_data_domain,
@@ -4809,6 +4956,12 @@ class ResearchWorkbenchService:
         non_null_coverage_ratio: float | None = None,
         required_feature_names: list[str] | None = None,
         observed_feature_names: list[str] | None = None,
+        source_frequency: str | None = None,
+        training_frequency: str | None = None,
+        alignment_policy: str | None = None,
+        forward_fill_enabled: bool | None = None,
+        hours_since_update: float | None = None,
+        ffill_span: int | None = None,
     ) -> ModalityQualityView:
         return ModalityQualityView(
             modality=modality,
@@ -4822,6 +4975,12 @@ class ResearchWorkbenchService:
             non_null_coverage_ratio=non_null_coverage_ratio,
             required_feature_names=required_feature_names or [],
             observed_feature_names=observed_feature_names or [],
+            source_frequency=source_frequency,
+            training_frequency=training_frequency,
+            alignment_policy=alignment_policy,
+            forward_fill_enabled=forward_fill_enabled,
+            hours_since_update=hours_since_update,
+            ffill_span=ffill_span,
         )
 
     def _series_points_from_storage_uri(self, storage_uri: str) -> list[NormalizedSeriesPoint]:
@@ -4840,6 +4999,70 @@ class ResearchWorkbenchService:
             except Exception:  # noqa: BLE001
                 continue
         return points
+
+    def _training_frequency_for_payload(self, payload: dict[str, Any]) -> str | None:
+        summary = self._dataset_summary(payload)
+        if summary.frequency:
+            return summary.frequency
+        feature_view_ref = payload.get("feature_view_ref") or {}
+        input_refs = feature_view_ref.get("input_data_refs") if isinstance(feature_view_ref, dict) else []
+        if isinstance(input_refs, list):
+            frequencies = {
+                self._str(item.get("frequency"))
+                for item in input_refs
+                if isinstance(item, dict) and self._str(item.get("frequency"))
+            }
+            if len(frequencies) == 1:
+                return next(iter(frequencies))
+        return None
+
+    def _alignment_policy_for_payload(self, payload: dict[str, Any]) -> str | None:
+        manifest = self._dataset_manifest(payload)
+        build_config = manifest.get("build_config") if isinstance(manifest.get("build_config"), dict) else {}
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        for value in [
+            self._str(build_config.get("alignment_policy_name")),
+            self._str(acquisition_profile.get("alignment_policy_name")),
+            self._str(acquisition_profile.get("merge_policy_name")),
+        ]:
+            if value:
+                return value
+        if self._resolved_dataset_type(payload, manifest) == "fusion_training_panel":
+            return "available_time_safe_asof"
+        return None
+
+    def _source_frequency_for_modality(
+        self,
+        payload: dict[str, Any],
+        modality: str,
+        points: list[NormalizedSeriesPoint] | None = None,
+    ) -> str | None:
+        if points:
+            frequencies = {
+                point.frequency
+                for point in points
+                if isinstance(point.frequency, str) and point.frequency
+            }
+            if len(frequencies) == 1:
+                return next(iter(frequencies))
+        normalized_modality = self._normalize_modality_name(modality)
+        for input_ref in self._dataset_input_refs(payload):
+            if self._input_ref_modality(input_ref) != normalized_modality:
+                continue
+            frequency = self._str(input_ref.get("frequency"))
+            if frequency:
+                return frequency
+        manifest = self._dataset_manifest(payload)
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        for source in acquisition_profile.get("fusion_sources") or []:
+            if not isinstance(source, dict):
+                continue
+            if self._normalize_modality_name(self._str(source.get("data_domain"))) != normalized_modality:
+                continue
+            frequency = self._str(source.get("frequency"))
+            if frequency:
+                return frequency
+        return None
 
     def _dataset_auxiliary_points(self, payload: dict[str, Any], modality: str) -> list[NormalizedSeriesPoint]:
         normalized_modality = self._normalize_modality_name(modality)
@@ -4936,6 +5159,7 @@ class ResearchWorkbenchService:
                 observed_feature_names=observed_feature_names,
             )
         frequency = self._dataset_summary(payload).frequency or "1h"
+        alignment_policy = self._alignment_policy_for_payload(payload)
         unique_times = sorted({self._floor_time_to_frequency(bar.event_time, frequency) for bar in bars})
         covered_times = set(unique_times)
         input_refs = [
@@ -4987,6 +5211,10 @@ class ResearchWorkbenchService:
             max_gap_bars=max_gap_bars,
             required_feature_names=list(OFFICIAL_MARKET_STANDARD_FEATURES_V1),
             observed_feature_names=observed_feature_names,
+            source_frequency=frequency,
+            training_frequency=frequency,
+            alignment_policy=alignment_policy or "native_market_clock",
+            forward_fill_enabled=False,
         )
 
     def _freshness_modality_quality(
@@ -5016,6 +5244,9 @@ class ResearchWorkbenchService:
         duplicate_ratio = self._duplicate_ratio(len(points), len(unique_keys))
         requested_end_time = self._requested_end_time_for_modality(payload, modality)
         actual_end_time = max((point.available_time for point in points), default=None)
+        source_frequency = self._source_frequency_for_modality(payload, modality, points)
+        training_frequency = self._training_frequency_for_payload(payload)
+        alignment_policy = self._alignment_policy_for_payload(payload)
         freshness_lag_days = (
             round(
                 max((requested_end_time - actual_end_time).total_seconds(), 0.0) / 86400.0,
@@ -5044,6 +5275,15 @@ class ResearchWorkbenchService:
             freshness_lag_days=freshness_lag_days,
             required_feature_names=required_feature_names,
             observed_feature_names=observed_feature_names,
+            source_frequency=source_frequency,
+            training_frequency=training_frequency,
+            alignment_policy=alignment_policy,
+            forward_fill_enabled=alignment_policy == "available_time_safe_asof",
+            hours_since_update=(
+                round(max((requested_end_time - actual_end_time).total_seconds(), 0.0) / 3600.0, 4)
+                if requested_end_time is not None and actual_end_time is not None
+                else None
+            ),
         )
 
     def _derivatives_modality_quality(
@@ -5067,6 +5307,8 @@ class ResearchWorkbenchService:
                     break
         requested_end_time = self._requested_end_time_for_modality(payload, "derivatives")
         frequency = "1h"
+        training_frequency = self._training_frequency_for_payload(payload)
+        alignment_policy = self._alignment_policy_for_payload(payload)
         expected_times = self._expected_timestamps(
             min((point.event_time for point in points), default=None),
             requested_end_time or max((point.event_time for point in points), default=None),
@@ -5118,6 +5360,11 @@ class ResearchWorkbenchService:
             max_gap_bars=max(gap_values) if gap_values else None,
             required_feature_names=list(DERIVATIVES_REQUIRED_FEATURES_V1),
             observed_feature_names=observed_feature_names,
+            source_frequency=frequency,
+            training_frequency=training_frequency,
+            alignment_policy=alignment_policy,
+            forward_fill_enabled=alignment_policy == "available_time_safe_asof",
+            ffill_span=max(gap_values) if gap_values else None,
         )
 
     def _nlp_modality_quality(
@@ -5136,6 +5383,8 @@ class ResearchWorkbenchService:
             }
         )
         blocking_reasons = list(nlp_gate.get("official_template_gate_reasons") or [])
+        training_frequency = self._training_frequency_for_payload(payload)
+        alignment_policy = self._alignment_policy_for_payload(payload)
         if event_bucket_count < 500:
             blocking_reasons.append(f"NLP event_count buckets {event_bucket_count} is below 500.")
         status = "ready" if (nlp_gate.get("official_template_gate_status") == "passed" and event_bucket_count >= 500) else "failed"
@@ -5149,6 +5398,12 @@ class ResearchWorkbenchService:
             max_gap_bars=self._int_or_none(nlp_gate.get("max_consecutive_empty_bars")),
             required_feature_names=list(OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1),
             observed_feature_names=observed_feature_names,
+            source_frequency="1h",
+            training_frequency=training_frequency,
+            alignment_policy=alignment_policy,
+            forward_fill_enabled=alignment_policy == "available_time_safe_asof",
+            hours_since_update=self._float(nlp_gate.get("hours_since_update")),
+            ffill_span=self._int_or_none(nlp_gate.get("max_consecutive_empty_bars")),
         )
 
     def _aligned_multimodal_quality(
@@ -5197,6 +5452,9 @@ class ResearchWorkbenchService:
                 for modality in relevant_modalities
                 for feature_name in feature_names_by_modality.get(modality, [])
             ],
+            training_frequency=self._training_frequency_for_payload(payload),
+            alignment_policy=self._alignment_policy_for_payload(payload),
+            forward_fill_enabled=self._alignment_policy_for_payload(payload) == "available_time_safe_asof",
         )
 
     def _dataset_modality_quality_summary(

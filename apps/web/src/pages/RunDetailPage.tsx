@@ -6,7 +6,7 @@ import { LaunchBacktestDrawer } from "../features/launch-backtest/LaunchBacktest
 import { useArtifactPreview, useRunDetail } from "../shared/api/hooks";
 import type { ArtifactView, RunDetailView } from "../shared/api/types";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
-import { I18N } from "../shared/lib/i18n";
+import { I18N, translateText } from "../shared/lib/i18n";
 import { formatArtifactLabel, formatModalityLabel, formatStatusLabel } from "../shared/lib/labels";
 import { mapRunDetail } from "../shared/view-model/mappers";
 import { GlossaryHint } from "../shared/ui/GlossaryHint";
@@ -293,6 +293,10 @@ export function RunDetailPage() {
   const detail = mapRunDetail(runQuery.data);
   const evaluation = asRecord(detail.evaluation_summary);
   const regressionMetrics = asNumericMap(evaluation.regression_metrics);
+  const rollingEvaluation = asRecord(evaluation.rolling_window_evaluation);
+  const rollingWindowRows = Array.isArray(rollingEvaluation.windows)
+    ? (rollingEvaluation.windows as Array<Record<string, unknown>>)
+    : [];
   const datasetSummary = asRecord(detail.dataset_summary);
   const timeRange = asRecord(detail.time_range);
   const series = asRecord(evaluation.series);
@@ -327,6 +331,11 @@ export function RunDetailPage() {
     { label: "快照版本", value: stringValue(datasetSummary.snapshot_version) },
     { label: "训练参数", value: stringValue(detail.tracking_params) },
     { label: "复现实验上下文", value: stringValue(detail.repro_context) },
+    { label: "LSTM Window", value: stringValue(detail.lstm_window_spec) },
+    { label: "LSTM Subsequence", value: stringValue(detail.lstm_subsequence_spec) },
+    { label: "Rolling OOS", value: stringValue(detail.rolling_window_spec) },
+    { label: "对齐策略", value: stringValue(detail.effective_alignment_policy) },
+    { label: "频率画像", value: stringValue(detail.feature_frequency_profile) },
   ];
   const displaySummaryMetrics = [
     { label: "模型", value: detail.model_name },
@@ -358,6 +367,8 @@ export function RunDetailPage() {
   const contextItems = displayContextItems;
   const summaryMetrics = displaySummaryMetrics;
   const coreMetrics = displayCoreMetrics;
+  const compositionEmptyTitle = translateText("组合模型暂无独立训练评估");
+  const compositionEmptyBody = translateText("这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。");
 
   return (
     <div className="page-stack">
@@ -365,7 +376,7 @@ export function RunDetailPage() {
         <PanelHeader
           eyebrow={I18N.nav.trainedModels}
           title={detail.run_id}
-          description="这里汇总训练后的模型摘要、组合来源、评估产物和回测入口，方便快速确认这个 run 能否按预期工作。"
+          description={translateText("这里汇总训练后的模型摘要、组合来源、评估产物和回测入口，方便快速确认这个 run 能否按预期工作。")}
           action={
             <div className="table-actions">
               <Link className="link-button" to="/models?tab=trained">
@@ -386,15 +397,15 @@ export function RunDetailPage() {
 
       <section className="panel">
         <PanelHeader
-          eyebrow="组合来源"
-            title="多模态来源运行"
-            description="这里列出参与融合的源运行、模态、权重和各自数据集，方便确认组合是否符合预期。"
+          eyebrow={translateText("组合来源")}
+            title={translateText("多模态来源运行")}
+            description={translateText("这里列出参与融合的源运行、模态、权重和各自数据集，方便确认组合是否符合预期。")}
           />
         {datasetIds.length > 0 ? (
           <SummaryList
             items={[
               {
-                label: "数据集 IDs",
+                label: translateText("数据集 IDs"),
                 value: (
                   <div className="table-title-cell">
                     {datasetIds.map((datasetId) => (
@@ -408,23 +419,23 @@ export function RunDetailPage() {
             ]}
           />
         ) : (
-          <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
         )}
       </section>
 
       <section className="panel">
         <PanelHeader
-          eyebrow="核心评估"
-          title="回归指标总览"
-          description={`主展示范围：${stringValue(evaluation.selected_scope)}。如果这是组合 run，训练阶段本身可能不产出完整评估快照。`}
+          eyebrow={translateText("核心评估")}
+          title={translateText("回归指标总览")}
+          description={translateText("主展示范围：{scope}。如果这是组合 run，训练阶段本身可能不产出完整评估快照。").replace("{scope}", stringValue(evaluation.selected_scope))}
         />
         <MetricGrid items={displayCoreMetrics} />
         {compositionSources.length > 0 && Object.keys(regressionMetrics).length === 0 ? (
           <EmptyState
-            title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+            title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
         ) : null}
       </section>
@@ -432,15 +443,15 @@ export function RunDetailPage() {
       {compositionSources.length > 0 ? (
         <section className="panel">
           <PanelHeader
-            eyebrow="组合来源"
-            title="多模态来源运行"
-            description="这里列出参与融合的源运行、模态、权重和各自数据集，方便确认组合是否符合预期。"
+            eyebrow={translateText("组合来源")}
+            title={translateText("多模态来源运行")}
+            description={translateText("这里列出参与融合的源运行、模态、权重和各自数据集，方便确认组合是否符合预期。")}
           />
           <div className="stack-list">
             {compositionSources.map((source) => (
               <div className="stack-item align-start" key={`${source.run_id}-${source.modality}`}>
                 <strong>{source.run_id}</strong>
-                <span>{`模态：${formatModalityLabel(source.modality)} / 权重：${source.weight ?? "--"} / 模型：${source.model_name || "--"}`}</span>
+                <span>{`${translateText("模态")}：${formatModalityLabel(source.modality)} / ${translateText("权重")}：${source.weight ?? "--"} / ${translateText("模型")}：${source.model_name || "--"}`}</span>
                 <span className="table-title-cell">
                   {(source.dataset_ids ?? []).length > 0
                     ? (source.dataset_ids ?? []).map((datasetId) => (
@@ -458,24 +469,24 @@ export function RunDetailPage() {
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
-          <PanelHeader eyebrow="回归曲线" title="预测与真实对比" />
+          <PanelHeader eyebrow={translateText("回归曲线")} title={translateText("预测与真实对比")} />
           {predictionVsTarget.length > 0 ? (
             <WorkbenchChart option={compareChartOption(predictionVsTarget)} style={{ height: 320 }} />
           ) : (
             <EmptyState
-              title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+              title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
           )}
         </section>
 
         <section className="panel">
-          <PanelHeader eyebrow="误差分布" title="残差直方图" />
+          <PanelHeader eyebrow={translateText("误差分布")} title={translateText("残差直方图")} />
           {histogramSeries.length > 0 ? (
             <WorkbenchChart option={histogramChartOption(histogramSeries)} style={{ height: 320 }} />
           ) : (
-            <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+            <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
           )}
         </section>
@@ -483,26 +494,26 @@ export function RunDetailPage() {
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
-          <PanelHeader eyebrow="回归诊断" title="预测散点图" />
+          <PanelHeader eyebrow={translateText("回归诊断")} title={translateText("预测散点图")} />
           {scatterSeries.length > 0 ? (
             <WorkbenchChart option={scatterChartOption(scatterSeries)} style={{ height: 320 }} />
           ) : (
-            <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+            <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
           )}
         </section>
 
         <section className="panel">
-          <PanelHeader eyebrow="误差序列" title="残差时间线" />
+          <PanelHeader eyebrow={translateText("误差序列")} title={translateText("残差时间线")} />
           {residualSeries.length > 0 ? (
             <WorkbenchChart
-              option={lineChartOption(residualSeries, "residual", "残差")}
+              option={lineChartOption(residualSeries, "residual", translateText("残差"))}
               style={{ height: 320 }}
             />
           ) : (
-            <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+            <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
           )}
         </section>
@@ -510,12 +521,12 @@ export function RunDetailPage() {
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
-          <PanelHeader eyebrow="训练上下文" title="数据与配置线索" />
+          <PanelHeader eyebrow={translateText("训练上下文")} title={translateText("数据与配置线索")} />
           <SummaryList items={displayContextItems} />
         </section>
 
         <section className="panel">
-          <PanelHeader eyebrow="特征解释" title="特征重要性" />
+          <PanelHeader eyebrow={translateText("特征解释")} title={translateText("特征重要性")} />
           {Object.keys(detail.feature_importance).length > 0 ? (
             <div className="stack-list">
               {Object.entries(detail.feature_importance)
@@ -528,26 +539,26 @@ export function RunDetailPage() {
                 ))}
             </div>
           ) : (
-            <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+            <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
           )}
           {evaluationArtifacts.length > 0 ? (
-            <p className="drawer-copy">评估摘要和特征解释工件已经落盘，可在下方工件区继续预览。</p>
+            <p className="drawer-copy">{translateText("评估摘要和特征解释工件已经落盘，可在下方工件区继续预览。")}</p>
           ) : null}
         </section>
       </div>
 
       <div className="detail-grid wide-secondary">
         <section className="panel">
-          <PanelHeader eyebrow="预测产物" title="可用预测产物" />
+          <PanelHeader eyebrow={translateText("预测产物")} title={translateText("可用预测产物")} />
           {detail.predictions.length > 0 ? (
             <div className="stack-list">
               {detail.predictions.map((prediction) => (
                 <div className="stack-item align-start" key={prediction.uri}>
                   <div>
                     <strong>{prediction.scope}</strong>
-                    <div>{`${prediction.sample_count} 条样本`}</div>
+                    <div>{`${prediction.sample_count} ${translateText("条样本")}`}</div>
                   </div>
                   <button className="link-button" onClick={() => setPreviewUri(prediction.uri)} type="button">
                     {I18N.action.preview}
@@ -556,14 +567,14 @@ export function RunDetailPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+            <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
           )}
         </section>
 
         <section className="panel">
-          <PanelHeader eyebrow={I18N.nav.backtests} title="关联回测" />
+          <PanelHeader eyebrow={I18N.nav.backtests} title={translateText("关联回测")} />
           {detail.related_backtests.length > 0 ? (
             <div className="stack-list">
               {detail.related_backtests.map((backtest) => (
@@ -573,7 +584,7 @@ export function RunDetailPage() {
                       <Link to={`/backtests/${encodeURIComponent(backtest.backtest_id)}`}>{backtest.backtest_id}</Link>
                     </strong>
                     <div>{`${researchBackendLabel(backtest.research_backend)} / ${portfolioMethodLabel(backtest.portfolio_method)}`}</div>
-                    <div>{`年化收益 ${formatPercent(backtest.annual_return)}`}</div>
+                    <div>{`${translateText("年化收益")} ${formatPercent(backtest.annual_return)}`}</div>
                     <div>
                       <GlossaryHint hintKey="max_drawdown" /> {formatPercent(backtest.max_drawdown)}
                     </div>
@@ -583,21 +594,21 @@ export function RunDetailPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+            <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
           )}
         </section>
       </div>
 
       <section className="panel">
-        <PanelHeader eyebrow="详细指标" title="评估指标明细" />
+        <PanelHeader eyebrow={translateText("详细指标")} title={translateText("评估指标明细")} />
         {Object.keys(regressionMetrics).length > 0 ? (
           <table className="data-table compact-table">
             <thead>
               <tr>
-                <th>指标</th>
-                <th>值</th>
+                <th>{translateText("指标")}</th>
+                <th>{translateText("值")}</th>
               </tr>
             </thead>
             <tbody>
@@ -610,14 +621,62 @@ export function RunDetailPage() {
             </tbody>
           </table>
         ) : (
-          <EmptyState title="组合模型暂无独立训练评估"
-            body="这是由多个单模态 run 组合出来的模型实例，创建阶段不会重新训练，因此这里不会像单模型那样生成完整训练评估。请优先查看来源运行和关联回测。"
+          <EmptyState title={compositionEmptyTitle}
+            body={compositionEmptyBody}
           />
         )}
       </section>
 
+      {Object.keys(rollingEvaluation).length > 0 ? (
+        <section className="panel">
+          <PanelHeader eyebrow={translateText("Rolling OOS")} title={translateText("滚动样本外评估")} />
+          <MetricGrid
+            items={[
+              {
+                label: translateText("窗口数"),
+                value: stringValue(rollingEvaluation.window_count),
+              },
+              {
+                label: translateText("均值验证集 MAE"),
+                value: formatMetricValue("valid_mae", Number(rollingEvaluation.mean_valid_mae ?? NaN)),
+              },
+              {
+                label: translateText("均值测试集 MAE"),
+                value: formatMetricValue("mae", Number(rollingEvaluation.mean_test_mae ?? NaN)),
+              },
+            ]}
+          />
+          {rollingWindowRows.length > 0 ? (
+            <table className="data-table compact-table">
+              <thead>
+                <tr>
+                  <th>{translateText("窗口")}</th>
+                  <th>{translateText("训练样本")}</th>
+                  <th>{translateText("验证样本")}</th>
+                  <th>{translateText("测试样本")}</th>
+                  <th>{translateText("验证集 MAE")}</th>
+                  <th>{translateText("测试集 MAE")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rollingWindowRows.map((row) => (
+                  <tr key={stringValue(row.window_id)}>
+                    <td>{stringValue(row.window_id)}</td>
+                    <td>{stringValue(row.train_sample_count)}</td>
+                    <td>{stringValue(row.valid_sample_count)}</td>
+                    <td>{stringValue(row.test_sample_count)}</td>
+                    <td>{formatMetricValue("valid_mae", Number(row.valid_mae ?? NaN))}</td>
+                    <td>{formatMetricValue("mae", Number(row.test_mae ?? NaN))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+        </section>
+      ) : null}
+
       <section className="panel">
-        <PanelHeader eyebrow="工件浏览" title="训练与评估工件" />
+        <PanelHeader eyebrow={translateText("工件浏览")} title={translateText("训练与评估工件")} />
         <div className="artifact-grid">
           <div className="artifact-list">
             {artifacts.map((artifact) => (
@@ -639,7 +698,7 @@ export function RunDetailPage() {
               previewQuery.data ? (
                 <pre>{JSON.stringify(previewQuery.data.content, null, 2)}</pre>
               ) : (
-                <EmptyState body="点击左侧工件即可预览内容。" title={I18N.state.selectArtifact} />
+                <EmptyState body={translateText("点击左侧工件即可预览内容。")} title={I18N.state.selectArtifact} />
               )
             ) : null}
           </div>
@@ -648,7 +707,7 @@ export function RunDetailPage() {
 
       {detail.notes.length > 0 || (detail.missing_artifacts?.length ?? 0) > 0 ? (
         <section className="panel">
-          <PanelHeader eyebrow="说明" title="运行备注" />
+          <PanelHeader eyebrow={translateText("说明")} title={translateText("运行备注")} />
           <div className="stack-list">
             {detail.notes.map((note) => (
               <div className="stack-item align-start" key={note}>
@@ -657,7 +716,7 @@ export function RunDetailPage() {
             ))}
             {(detail.missing_artifacts ?? []).map((item) => (
               <div className="stack-item align-start" key={item}>
-                <strong>{`缺失工件：${item}`}</strong>
+                <strong>{translateText("缺失工件：{item}").replace("{item}", item)}</strong>
               </div>
             ))}
           </div>

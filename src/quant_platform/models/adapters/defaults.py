@@ -205,6 +205,37 @@ def _modality_history_masks(
     return masks
 
 
+def _modality_presence_history(
+    samples: list[DatasetSample],
+    modality_feature_names: dict[str, list[str]],
+    lookback: int,
+) -> dict[str, list[list[bool]]]:
+    history_rows: dict[str, list[list[bool]]] = {modality: [] for modality in modality_feature_names}
+    history_by_entity: dict[str, dict[str, list[bool]]] = {}
+    for sample in samples:
+        entity_history = history_by_entity.setdefault(sample.entity_key, {})
+        sample_presence = _feature_presence_by_modality(sample, modality_feature_names)
+        for modality in modality_feature_names:
+            modality_history = entity_history.setdefault(modality, [])
+            observed = modality_history[-(lookback - 1) :] + [sample_presence.get(modality, False)]
+            padded = ([False] * max(0, lookback - len(observed))) + observed
+            history_rows[modality].append(padded)
+            modality_history.append(sample_presence.get(modality, False))
+    return history_rows
+
+
+def _modality_coverage_ratio(
+    modality_presence_history: dict[str, list[list[bool]]],
+) -> dict[str, list[float]]:
+    coverage_ratio: dict[str, list[float]] = {}
+    for modality, rows in modality_presence_history.items():
+        coverage_ratio[modality] = [
+            (sum(1.0 for item in row if item) / max(1, len(row))) if row else 0.0
+            for row in rows
+        ]
+    return coverage_ratio
+
+
 class TabularInputAdapter(ModelInputAdapter):
     def build_train_input(
         self,
@@ -448,6 +479,12 @@ class MarketTextAlignedInputAdapter(ModelInputAdapter):
             for modality, matrix in modality_matrices.items()
         }
         modality_masks = _modality_history_masks(samples, modality_feature_names, lookback)
+        modality_presence_history = _modality_presence_history(
+            samples,
+            modality_feature_names,
+            lookback,
+        )
+        modality_coverage_ratio = _modality_coverage_ratio(modality_presence_history)
         market_names = modality_feature_names.get(CanonicalModality.MARKET.value, [])
         text_names = modality_feature_names.get(CanonicalModality.NLP.value, [])
         market_block = modality_blocks.get(CanonicalModality.MARKET.value, [[] for _ in samples])
@@ -467,6 +504,8 @@ class MarketTextAlignedInputAdapter(ModelInputAdapter):
                 "modality_order": modality_order,
                 "modality_blocks": modality_blocks,
                 "modality_presence_mask": modality_masks,
+                "modality_presence_history": modality_presence_history,
+                "modality_coverage_ratio": modality_coverage_ratio,
                 "modality_feature_names": modality_feature_names,
                 "lookback": lookback,
             },

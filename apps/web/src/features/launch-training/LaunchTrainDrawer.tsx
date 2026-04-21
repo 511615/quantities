@@ -35,7 +35,7 @@ function localizeTrainOptionLabel(value: string, label?: string | null) {
     return translateText("真实基准");
   }
   if (normalized === "elastic net default") {
-    return "Elastic Net Default";
+    return translateText("Elastic Net Default");
   }
   return label ?? value;
 }
@@ -175,33 +175,33 @@ export function LaunchTrainDrawer({
       return;
     }
     if (!featureScopeModality) {
-      setFormError("Please choose a modality for this training run.");
+      setFormError(translateText("请先为这次训练选择一个模态。"));
       return;
     }
     if (!experimentName.trim()) {
-      setFormError("Please enter an experiment name.");
+      setFormError(translateText("请输入实验名称。"));
       return;
     }
     if (!seed.trim() || Number.isNaN(Number(seed))) {
-      setFormError("Please enter a valid numeric seed.");
+      setFormError(translateText("请输入有效的随机种子。"));
       return;
     }
     if (datasetId && readinessQuery.isLoading) {
-      setFormError("Dataset readiness is still loading. Please try again in a moment.");
+      setFormError(translateText("数据集就绪状态仍在加载，请稍后再试。"));
       return;
     }
     if (datasetId && readinessQuery.isError) {
-      setFormError("Dataset readiness could not be loaded. Please verify the dataset detail first.");
+      setFormError(translateText("无法加载数据集就绪状态，请先检查数据集详情页。"));
       return;
     }
     if (datasetId && readinessStatus === "not_ready") {
-      setFormError("This dataset is not trainable yet because readiness checks are still failing.");
+      setFormError(translateText("当前数据集还不能训练，因为 readiness 检查尚未通过。"));
       return;
     }
     if (datasetId && selectedModalityQuality && selectedModalityQuality.status !== "ready") {
       setFormError(
         selectedModalityQuality.blocking_reasons[0] ??
-          `Selected modality ${formatModalityLabel(featureScopeModality)} is not quality-ready.`,
+          translateText("所选模态 {modality} 还没有达到可训练状态。").replace("{modality}", formatModalityLabel(featureScopeModality)),
       );
       return;
     }
@@ -230,35 +230,35 @@ export function LaunchTrainDrawer({
           {datasetId ? (
             <div className="page-stack compact-gap">
               <div className="dataset-callout">
-                <strong>当前训练数据集</strong>
+                <strong>{translateText("当前训练数据集")}</strong>
                 <span>{datasetLabel ?? datasetId}</span>
               </div>
               <div className="dataset-callout">
                 <strong>
                   {readinessQuery.isLoading
-                    ? "Loading readiness"
+                    ? translateText("正在加载就绪状态")
                     : readinessQuery.isError
-                      ? "Readiness unavailable"
-                      : `Dataset status: ${formatStatusLabel(readinessStatus)}`}
+                      ? translateText("就绪状态不可用")
+                      : `${translateText("数据集状态")}：${formatStatusLabel(readinessStatus)}`}
                 </strong>
                 <span>
                   {readinessQuery.isLoading
-                    ? "We wait for dataset readiness before launching a dataset-bound training run."
+                    ? translateText("发起绑定数据集的训练前，需要先等就绪状态加载完成。")
                     : readinessQuery.isError
-                      ? "Open the dataset detail page to inspect the readiness response."
+                      ? translateText("请打开数据集详情页检查 readiness 返回结果。")
                       : readinessStatus === "not_ready"
-                        ? "Dataset creation stays allowed, but training is blocked until readiness becomes ready."
-                        : "This launch will use the current dataset directly instead of falling back to a preset."}
+                        ? translateText("数据集本身仍会保留，但在 readiness 变为可训练前，这里不会允许继续训练。")
+                        : translateText("这次训练会直接使用当前数据集，而不是回退到预置数据集。")}
                 </span>
               </div>
 
               {readinessQuery.data?.modality_quality_summary ? (
                 <section className="details-panel">
-                  <strong>Dataset modality quality</strong>
+                  <strong>{translateText("数据集模态质量")}</strong>
                   <ModalityQualitySummary
-                    emptyText="No modality quality summary available for this dataset."
+                    emptyText={translateText("当前数据集还没有可展示的模态质量摘要。")}
                     summary={readinessQuery.data.modality_quality_summary}
-                    title="Dataset modality quality"
+                    title={translateText("数据集模态质量")}
                   />
                 </section>
               ) : null}
@@ -267,11 +267,11 @@ export function LaunchTrainDrawer({
                 <div className="table-actions">
                   {datasetDetailPath ? (
                     <Link className="link-button" to={datasetDetailPath}>
-                      Open dataset detail
+                      {translateText("打开数据集详情")}
                     </Link>
                   ) : null}
                   <Link className="link-button" to="/datasets/training">
-                    Back to training datasets
+                    {translateText("返回训练数据集")}
                   </Link>
                 </div>
               ) : null}
@@ -285,7 +285,7 @@ export function LaunchTrainDrawer({
                 }
                 value={datasetPreset}
               >
-                <option value="">Use template default dataset preset</option>
+                <option value="">{translateText("使用模板默认数据集预置")}</option>
                 {(optionsQuery.data?.dataset_presets ?? []).map((option) => (
                   <option key={option.value} value={option.value}>
                     {localizeTrainOptionLabel(option.value, option.label)}
@@ -310,16 +310,16 @@ export function LaunchTrainDrawer({
           ) : null}
 
           <label>
-            <span>Feature Modality</span>
+            <span>{translateText("特征模态")}</span>
             <select
-              aria-label="Feature Modality"
+              aria-label={translateText("特征模态")}
               data-testid="feature-modality-select"
               onChange={(event) =>
                 setFeatureScopeModality(event.target.value as FeatureScopeModality | "")
               }
               value={featureScopeModality}
             >
-              <option value="">Select a modality</option>
+              <option value="">{translateText("请选择模态")}</option>
               {modalityOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label ?? formatModalityLabel(option.value)}
@@ -330,22 +330,22 @@ export function LaunchTrainDrawer({
 
           {featureScopeModality ? (
             <div className="dataset-callout">
-              <strong>{`Selected modality: ${formatModalityLabel(featureScopeModality)}`}</strong>
+              <strong>{`${translateText("已选模态")}：${formatModalityLabel(featureScopeModality)}`}</strong>
               <span>
                 {selectedModalityQuality
                   ? modalityBlockingSummary(selectedModalityQuality)
-                  : "This run will train using only the selected modality feature scope."}
+                  : translateText("这次训练会只使用当前选中的模态特征范围。")}
               </span>
             </div>
           ) : null}
 
           {selectedModalityQuality ? (
             <section className="details-panel">
-              <strong>Selected modality quality</strong>
+              <strong>{translateText("已选模态质量")}</strong>
               <ModalityQualitySummary
                 modalities={[featureScopeModality]}
                 summary={{ [featureScopeModality]: selectedModalityQuality }}
-                title="Selected modality quality"
+                title={translateText("已选模态质量")}
               />
             </section>
           ) : null}
@@ -355,7 +355,7 @@ export function LaunchTrainDrawer({
             <input onChange={(event) => setExperimentName(event.target.value)} value={experimentName} />
           </label>
           <label>
-            <span>Seed</span>
+            <span>{translateText("随机种子")}</span>
             <input inputMode="numeric" onChange={(event) => setSeed(event.target.value)} value={seed} />
           </label>
 

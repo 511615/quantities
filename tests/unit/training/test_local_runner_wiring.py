@@ -10,8 +10,11 @@ from quant_platform.common.io.files import LocalArtifactStore
 from quant_platform.common.enums.core import ModelFamily
 from quant_platform.datasets.manifests.dataset_manifest import DatasetBuildManifest
 from quant_platform.experiment.manifests.run_manifest import RunManifest
+from quant_platform.models.contracts.model_spec import ModelSpec
 from quant_platform.models.adapters.defaults import StandardPredictionAdapter
 from quant_platform.models.contracts.registration import AdvancedModelKind, ModelRegistration
+from quant_platform.models.registry.default_models import register_default_models
+from quant_platform.models.registry.model_registry import ModelRegistry
 from quant_platform.training.contracts.training import FitRequest, TrackingContext, TrainerConfig
 from quant_platform.training.runners.local import LocalTrainingRunner
 from tests.fixtures.model_specs import build_model_spec
@@ -232,3 +235,59 @@ def test_local_runner_persists_dataset_readiness_context_in_manifest(
     assert evaluation_summary["task_type"] == "regression"
     assert evaluation_summary["selected_scope"] in {"test", "valid", "full", "train"}
     assert "regression_metrics" in evaluation_summary
+
+
+def test_local_runner_records_lstm_rolling_window_evaluation(
+    artifact_root,
+    built_dataset,
+) -> None:
+    dataset_ref, samples = built_dataset
+    registry = ModelRegistry()
+    register_default_models(registry)
+    runner = LocalTrainingRunner(
+        model_registry=registry,
+        dataset_store={dataset_ref.dataset_id: samples},
+        artifact_root=artifact_root,
+    )
+
+    result = runner.fit(
+        FitRequest(
+            run_id="lstm-rolling-runner",
+            dataset_ref=dataset_ref,
+            model_spec=ModelSpec(
+                model_name="lstm",
+                family=ModelFamily.SEQUENCE,
+                version="0.1.0",
+                input_schema=build_model_spec().input_schema,
+                output_schema=build_model_spec().output_schema,
+                hyperparams={
+                    "lookback": 3,
+                    "forecast_horizon": 1,
+                    "stride": 1,
+                    "subsequence_length": 2,
+                    "subsequence_stride": 1,
+                    "force_backend": "fallback",
+                        "rolling_window_spec": {
+                            "train_size": 3,
+                            "valid_size": 1,
+                            "test_size": 0,
+                            "step_size": 1,
+                            "min_train_size": 3,
+                            "embargo": 0,
+                        "purge_gap": 0,
+                        "expanding_train": True,
+                    },
+                },
+            ),
+            trainer_config=TrainerConfig(runner="local", epochs=1, batch_size=8, deterministic=True),
+            seed=7,
+            tracking_context=TrackingContext(backend="file", experiment_name="tests"),
+        )
+    )
+
+    evaluation_summary = LocalArtifactStore(artifact_root).read_json(
+        str(artifact_root / "models" / "lstm-rolling-runner" / "evaluation_summary.json")
+    )
+    assert result.metrics["rolling_window_count"] >= 1.0
+    assert "rolling_window_evaluation" in evaluation_summary
+    assert evaluation_summary["rolling_window_evaluation"]["window_count"] >= 1

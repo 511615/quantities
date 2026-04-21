@@ -74,6 +74,40 @@ models:
     benchmark_eligible: true
     default_eligible: true
     enabled: true
+  lstm:
+    family: sequence
+    advanced_kind: baseline
+    entrypoint: quant_platform.models.baselines.lstm.LSTMSequenceModel
+    input_adapter_key: sequence_market
+    prediction_adapter_key: standard_prediction
+    artifact_adapter_key: json_manifest
+    capabilities:
+      - sequence_input
+    default_hyperparams:
+      lookback: 6
+      forecast_horizon: 1
+      stride: 1
+      subsequence_length: 3
+      subsequence_stride: 3
+      hidden_size: 16
+      num_layers: 1
+      dropout: 0.0
+      bidirectional: false
+      layer_norm: false
+      rolling_window_spec:
+        train_size: 48
+        valid_size: 12
+        test_size: 12
+        step_size: 12
+        min_train_size: 24
+        embargo: 0
+        purge_gap: 0
+        expanding_train: true
+    config_schema_version: "1"
+    aliases: []
+    benchmark_eligible: true
+    default_eligible: true
+    enabled: true
   transformer_reference:
     family: deep
     advanced_kind: transformer
@@ -166,7 +200,12 @@ models:
         - text_
         - sentiment_
         - news_
-      text_weight: 0.5
+      fusion_strategy: attention_late_fusion
+      fusion_fallback_strategy: late_score_blend
+      encoder_hidden_dim: 64
+      attention_hidden_dim: 32
+      dropout: 0.1
+      temperature: 1.0
     config_schema_version: "1"
     aliases:
       - multimodal
