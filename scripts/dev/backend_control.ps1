@@ -58,8 +58,8 @@ function Get-ManagedBackendExecutablePath {
 function Resolve-PythonExecutable {
     $candidates = @(
         (Get-ManagedBackendExecutablePath),
-        (Get-PythonCommandPath),
-        (Join-Path $repoRoot ".venv\\Scripts\\python.exe")
+        (Join-Path $repoRoot ".venv\\Scripts\\python.exe"),
+        (Get-PythonCommandPath)
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 
     foreach ($candidate in $candidates) {
