@@ -13,11 +13,12 @@ import {
 import {
   useDatasetDependencies,
   useDatasetDetail,
+  useDatasetFeatureSeries,
   useDatasetNlpInspection,
   useDatasetOhlcvAll,
   useDatasetReadiness,
 } from "../shared/api/hooks";
-import type { DatasetDependencyView } from "../shared/api/types";
+import type { DatasetDependencyView, DatasetFeatureSeriesView } from "../shared/api/types";
 import { api } from "../shared/api/client";
 import { formatDate, formatNumber, formatPercent } from "../shared/lib/format";
 import { translateText } from "../shared/lib/i18n";
@@ -30,6 +31,13 @@ import { LaunchTrainDrawer } from "../features/launch-training/LaunchTrainDrawer
 import { LaunchDatasetMultimodalTrainDrawer } from "../features/launch-training/LaunchDatasetMultimodalTrainDrawer";
 
 const NLP_FEATURE_REGEX = /^(sentiment|text|news)_/i;
+const FEATURE_DOMAIN_LABELS: Record<string, string> = {
+  macro: "宏观数据",
+  on_chain: "链上数据",
+  derivatives: "衍生品",
+  sentiment_events: "NLP / 情绪",
+  other: "其他信号",
+};
 
 function dependencyKindLabel(kind: string) {
   const normalized = kind.trim().toLowerCase();
@@ -75,6 +83,18 @@ function toCandles(
   }));
 }
 
+function trailingAverage(
+  items: Array<{ close: number }>,
+  windowSize: number,
+) {
+  if (items.length < windowSize) {
+    return null;
+  }
+  const slice = items.slice(items.length - windowSize);
+  const mean = slice.reduce((sum, item) => sum + item.close, 0) / slice.length;
+  return Number(mean.toFixed(2));
+}
+
 function formatWindow(startTime?: string | null, endTime?: string | null) {
   if (startTime && endTime) {
     return `${formatDate(startTime)} - ${formatDate(endTime)}`;
@@ -114,6 +134,94 @@ function resolveDatasetDownloadHref(datasetId: string, links: Array<{ kind?: str
     return marker.includes("download") || marker.includes("export") || marker.includes("获取");
   });
   return explicitLink?.href ?? explicitLink?.api_path ?? api.datasetDownloadUrl(datasetId);
+}
+
+function safeExternalUrl(value?: string | null) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSeriesValues(values: Array<number | null>) {
+  const numeric = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (numeric.length === 0) {
+    return values.map(() => null);
+  }
+  const min = Math.min(...numeric);
+  const max = Math.max(...numeric);
+  const span = max - min;
+  if (span === 0) {
+    return values.map((value) => (typeof value === "number" && Number.isFinite(value) ? 0 : null));
+  }
+  return values.map((value) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Number((((value - min) / span) * 2 - 1).toFixed(4))
+      : null,
+  );
+}
+
+function featureSeriesChartOption(seriesItems: DatasetFeatureSeriesView[]): EChartsOption {
+  const firstSeries = seriesItems[0];
+  const xAxisData = (firstSeries?.points ?? []).map((point) => formatDate(point.timestamp));
+  const rawValuesBySeries = Object.fromEntries(
+    seriesItems.map((series) => [
+      series.label,
+      series.points.map((point) => point.value),
+    ]),
+  );
+  return {
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: unknown) => {
+        const items = Array.isArray(params) ? params : [params];
+        const axisLabel = String((items[0] as { axisValueLabel?: string } | undefined)?.axisValueLabel ?? "");
+        const rows = items
+          .map((item) => {
+            const entry = item as { seriesName?: string; dataIndex?: number; marker?: string };
+            const seriesName = entry.seriesName ?? "";
+            const rawValue = rawValuesBySeries[seriesName]?.[entry.dataIndex ?? -1];
+            return `${entry.marker ?? ""}${seriesName}: ${formatNumber(rawValue, 6)}`;
+          })
+          .join("<br/>");
+        return `${axisLabel}<br/>${rows}`;
+      },
+    },
+    legend: {
+      data: seriesItems.map((series) => series.label),
+      textStyle: { color: "#6f6a60" },
+    },
+    grid: { left: 56, right: 28, top: 48, bottom: 72 },
+    xAxis: {
+      type: "category",
+      data: xAxisData,
+      axisLabel: { color: "#6f6a60" },
+      axisLine: { lineStyle: { color: "rgba(55, 53, 46, 0.22)" } },
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      name: "标准化走势",
+      axisLabel: { color: "#6f6a60" },
+      splitLine: { lineStyle: { color: "rgba(55, 53, 46, 0.1)" } },
+    },
+    dataZoom: [
+      { type: "inside", start: 70, end: 100 },
+      { type: "slider", start: 70, end: 100, height: 24, bottom: 24 },
+    ],
+    series: seriesItems.map((series) => ({
+      name: series.label,
+      type: "line",
+      showSymbol: false,
+      smooth: false,
+      data: normalizeSeriesValues(series.points.map((point) => point.value)),
+    })),
+  };
 }
 
 function normalizedDatasetModalities(dataDomains: string[] = []) {
@@ -173,8 +281,28 @@ export function DatasetDetailPage() {
 
   const nlpInspectionQuery = useDatasetNlpInspection(activeDatasetId, hasNlpSignal);
 
-  const canRenderMarketSlice =
-    activeDatasetId && detail?.summary.dataDomain === "market" && Boolean(detail.summary.symbol);
+  const datasetLinks = [
+    ...(detailQuery.data?.links ?? []),
+    ...(detailQuery.data?.dataset.links ?? []),
+  ];
+  const detailDataDomains = Array.isArray(detail?.summary.raw.data_domains)
+    ? detail.summary.raw.data_domains
+    : [];
+  const hasNonMarketSignals = detailDataDomains.some(
+    (domain) => domain !== "market" && domain !== "unknown",
+  );
+  const hasMarketDomain =
+    detail?.summary.dataDomain === "market" || detailDataDomains.includes("market");
+  const hasOhlcvLink = datasetLinks.some((link) => {
+    const marker = `${link.kind ?? ""} ${link.label ?? ""} ${link.href ?? ""} ${link.api_path ?? ""}`.toLowerCase();
+    return marker.includes("ohlcv") || marker.includes("kline") || marker.includes("candlestick");
+  });
+  const canRenderMarketSlice = Boolean(
+    activeDatasetId &&
+      detail &&
+      hasMarketDomain &&
+      (hasOhlcvLink || Boolean(detail.summary.symbol)),
+  );
   const barsQuery = useDatasetOhlcvAll(canRenderMarketSlice ? activeDatasetId : null, {
     per_page: 5000,
     start_time: detail?.summary.raw.freshness.data_start_time ?? null,
@@ -182,6 +310,33 @@ export function DatasetDetailPage() {
   });
   const bars = barsQuery.data?.items ?? [];
   const candles = useMemo(() => toCandles(bars), [bars]);
+  const latestMa5 = useMemo(() => trailingAverage(bars, 5), [bars]);
+  const latestMa10 = useMemo(() => trailingAverage(bars, 10), [bars]);
+  const featureSeriesQuery = useDatasetFeatureSeries(
+    activeDatasetId,
+    { max_points: 900 },
+    Boolean(activeDatasetId && detail && hasNonMarketSignals),
+  );
+  const featureSeriesByDomain = useMemo(() => {
+    const grouped: Record<string, DatasetFeatureSeriesView[]> = {};
+    for (const item of featureSeriesQuery.data?.items ?? []) {
+      if (item.data_domain === "market") {
+        continue;
+      }
+      grouped[item.data_domain] = [...(grouped[item.data_domain] ?? []), item];
+    }
+    return grouped;
+  }, [featureSeriesQuery.data?.items]);
+  const visibleFeatureDomains = ["macro", "on_chain", "derivatives", "sentiment_events", "other"].filter(
+    (domain) => (featureSeriesByDomain[domain] ?? []).length > 0,
+  );
+  const marketPreviewSymbol =
+    barsQuery.data?.symbol ??
+    bars.find((row) => row.symbol)?.symbol ??
+    detail?.summary.symbol ??
+    detail?.summary.symbolsPreview[0] ??
+    detail?.summary.symbolLabel ??
+    "--";
 
   const nlpTimelineOption = useMemo(() => {
     const timeline = nlpInspectionQuery.data?.event_timeline ?? [];
@@ -253,10 +408,7 @@ export function DatasetDetailPage() {
   const dependencyItems = dependenciesQuery.data?.items ?? [];
   const blockingDependencies = dependenciesQuery.data?.blocking_items ?? [];
   const nlpInspection = nlpInspectionQuery.data;
-  const downloadHref = resolveDatasetDownloadHref(datasetId, [
-    ...(detailQuery.data?.links ?? []),
-    ...(detailQuery.data?.dataset.links ?? []),
-  ]);
+  const downloadHref = resolveDatasetDownloadHref(datasetId, datasetLinks);
   const requestedRangeLabel =
     nlpInspection?.requested_start_time || readinessQuery.data?.nlp_requested_start_time
       ? formatWindow(
@@ -531,7 +683,9 @@ export function DatasetDetailPage() {
                   <PanelHeader eyebrow={translateText("预览")} title={translateText("近期文本样本")} />
                   {nlpInspection.recent_event_previews && nlpInspection.recent_event_previews.length > 0 ? (
                     <div className="nlp-preview-list">
-                      {nlpInspection.recent_event_previews.slice(0, 4).map((preview, index) => (
+                      {nlpInspection.recent_event_previews.slice(0, 4).map((preview, index) => {
+                        const sourceUrl = safeExternalUrl(preview.url);
+                        return (
                         <div className="nlp-preview-row" key={`${preview.event_id}-${index}`}>
                           <div>
                             <strong>{preview.title}</strong>
@@ -541,13 +695,20 @@ export function DatasetDetailPage() {
                             <span>{formatDate(preview.event_time)}</span>
                           </div>
                           <p>{preview.snippet}</p>
-                          {preview.url ? (
-                            <a href={preview.url} rel="noreferrer" target="_blank">
+                          {sourceUrl ? (
+                            <a
+                              href={sourceUrl}
+                              rel="noopener noreferrer"
+                              target="_blank"
+                            >
                               {translateText("打开来源")}
                             </a>
-                          ) : null}
+                          ) : (
+                            <span className="muted">{translateText("归档样本无外部链接")}</span>
+                          )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <EmptyState title={translateText("暂无文本预览")} body={translateText("当前数据集没有可展示的事件预览。")} />
@@ -688,7 +849,7 @@ export function DatasetDetailPage() {
       <section className="panel">
         <PanelHeader eyebrow={translateText("就绪度")} title={translateText("训练就绪状态")} description={translateText("这里直接展示后端返回的 readiness 合同结果。")} />
         <div className="dataset-lifecycle-grid">
-          <section className="details-panel">
+          <section className="details-panel readiness-contract-panel">
             <div className="split-line">
               <strong>{detail.readiness.statusLabel}</strong>
               <StatusPill status={detail.readiness.rawStatus} />
@@ -779,6 +940,55 @@ export function DatasetDetailPage() {
           </section>
         </div>
       </section>
+
+      {hasNonMarketSignals ? (
+        <section className="panel">
+          <PanelHeader
+            eyebrow="融合维度"
+            title="多模态信号预览"
+            description="展示训练面板中模型实际消费的 as-of 对齐特征；低频域会保留 freshness / ffill 语义，不伪装成原始高频观测。"
+          />
+          {featureSeriesQuery.isLoading ? <LoadingState label="正在加载多模态信号..." /> : null}
+          {featureSeriesQuery.isError ? <ErrorState message={(featureSeriesQuery.error as Error).message} /> : null}
+          {!featureSeriesQuery.isLoading && !featureSeriesQuery.isError && visibleFeatureDomains.length === 0 ? (
+            <EmptyState title="暂无信号预览" body="当前训练面板没有可展示的非市场特征序列。" />
+          ) : null}
+          {visibleFeatureDomains.length > 0 ? (
+            <div className="dataset-domain-grid">
+              {visibleFeatureDomains.map((domain) => {
+                const seriesItems = featureSeriesByDomain[domain] ?? [];
+                const latestPoints = seriesItems
+                  .map((series) => ({
+                    label: series.label,
+                    value: series.points[series.points.length - 1]?.value ?? null,
+                  }))
+                  .filter((item) => item.value !== null);
+                return (
+                  <article className="details-panel" key={domain}>
+                    <PanelHeader
+                      eyebrow={FEATURE_DOMAIN_LABELS[domain] ?? domain}
+                      title={`${FEATURE_DOMAIN_LABELS[domain] ?? domain}时序`}
+                      description={`${seriesItems.length} 个训练特征，来自融合面板的 point-in-time 对齐结果；图中按特征各自区间标准化，下面保留最新原始值。`}
+                    />
+                    <WorkbenchChart
+                      option={featureSeriesChartOption(seriesItems)}
+                      style={{ height: 300 }}
+                    />
+                    <div className="kv-list compact">
+                      {latestPoints.slice(0, 4).map((item) => (
+                        <div className="kv-row" key={item.label}>
+                          <span>{item.label}</span>
+                          <strong>{formatNumber(item.value, 4)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="panel">
         <PanelHeader
@@ -900,7 +1110,11 @@ export function DatasetDetailPage() {
       </section>
 
       <section className="panel">
-        <PanelHeader eyebrow="市场切片" title="行情预览" description="只有市场数据集才会渲染 K 线预览，其他数据域不会使用伪造回退图。" />
+        <PanelHeader
+          eyebrow="市场切片"
+          title="行情预览"
+          description="包含真实市场锚点的训练面板会渲染 K 线预览；纯非市场数据域不会使用伪造回退图。"
+        />
         {canRenderMarketSlice ? (
           <div className="page-stack">
             {barsQuery.isLoading ? <LoadingState label="正在加载行情条目..." /> : null}
@@ -921,11 +1135,19 @@ export function DatasetDetailPage() {
                   </div>
                   <div className="metric-tile">
                     <span>标的</span>
-                    <strong>{detail.summary.symbolLabel}</strong>
+                    <strong>{marketPreviewSymbol}</strong>
                   </div>
                   <div className="metric-tile">
                     <span>频率</span>
                     <strong>{detail.summary.frequencyLabel}</strong>
+                  </div>
+                  <div className="metric-tile">
+                    <span>最新 5 bar 均线</span>
+                    <strong>{formatNumber(latestMa5, 2)}</strong>
+                  </div>
+                  <div className="metric-tile">
+                    <span>最新 10 bar 均线</span>
+                    <strong>{formatNumber(latestMa10, 2)}</strong>
                   </div>
                 </div>
                 <div className="dataset-callout">
@@ -972,7 +1194,7 @@ export function DatasetDetailPage() {
             ) : null}
           </div>
         ) : (
-          <EmptyState title="暂无市场预览" body="这个数据集不是带真实行情条目的单一市场切片。" />
+          <EmptyState title="暂无市场预览" body="这个数据集没有声明可查询的真实市场 OHLCV 锚点。" />
         )}
       </section>
 

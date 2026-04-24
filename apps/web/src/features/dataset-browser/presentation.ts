@@ -56,6 +56,7 @@ export type DatasetCardView = {
   entityScope: string;
   symbolsPreview: string[];
   asOfTime: string | null;
+  requestedAt: string | null;
   raw: DatasetSummaryView;
 };
 
@@ -383,6 +384,7 @@ export function buildDatasetCard(summary: DatasetSummaryView): DatasetCardView {
     entityScope: summary.entity_scope ?? "unknown",
     symbolsPreview: summarizeSymbols(summary),
     asOfTime: summary.as_of_time,
+    requestedAt: summary.requested_at ?? null,
     raw: summary,
   };
 }

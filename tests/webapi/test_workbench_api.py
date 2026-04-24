@@ -19,6 +19,7 @@ from quant_platform.datasets.contracts.dataset import DatasetRef
 from quant_platform.datasets.manifests.dataset_manifest import DatasetBuildManifest
 from quant_platform.models.baselines.mean_baseline import MeanBaselineModel
 from quant_platform.models.contracts.model_spec import ModelSpec
+from quant_platform.training.contracts.training import PredictionFrame, PredictionMetadata, PredictionRow
 from quant_platform.webapi.app import create_app
 
 
@@ -544,15 +545,27 @@ def _materialize_stub_run(
         },
         "run_id": run_id,
     }
-    prediction_stub = {
-        "rows": [],
-        "metadata": {
-            "feature_view_ref": None,
-            "prediction_time": created_at,
-            "inference_latency_ms": 0,
-            "target_horizon": dataset_detail.dataset.label_horizon or 1,
-        },
-    }
+    dataset_ref = app.state.services.jobs._load_dataset_from_artifacts(dataset_id)  # noqa: SLF001
+    samples = list(app.state.services.jobs.facade.dataset_store.get(dataset_id, []))[:128]  # noqa: SLF001
+    prediction_stub = PredictionFrame(
+        rows=[
+            PredictionRow(
+                entity_keys={"instrument": sample.entity_key},
+                timestamp=max(sample.timestamp, sample.available_time),
+                prediction=float(sample.target),
+                confidence=0.5,
+                model_run_id=run_id,
+                feature_available_time=sample.available_time,
+            )
+            for sample in samples
+        ],
+        metadata=PredictionMetadata(
+            feature_view_ref=dataset_ref.feature_view_ref,
+            prediction_time=datetime.now(UTC),
+            inference_latency_ms=0,
+            target_horizon=dataset_detail.dataset.label_horizon or 1,
+        ),
+    )
 
     (artifact_root / "tracking").mkdir(parents=True, exist_ok=True)
     (artifact_root / "tracking" / f"{run_id}.json").write_text(
@@ -565,7 +578,7 @@ def _materialize_stub_run(
         json.dumps(evaluation_summary, indent=2),
         encoding="utf-8",
     )
-    (prediction_dir / "full.json").write_text(json.dumps(prediction_stub, indent=2), encoding="utf-8")
+    (prediction_dir / "full.json").write_text(prediction_stub.model_dump_json(indent=2), encoding="utf-8")
     estimator_state = {
         "estimator": {
             "weights": [0.0 for _ in feature_names],
@@ -1217,6 +1230,34 @@ def test_dataset_and_ohlcv_endpoints() -> None:
     assert bars_response.status_code == 200
     bars_payload = bars_response.json()
     assert "items" in bars_payload
+
+
+def test_dataset_rename_updates_display_name_and_preserves_dataset_id() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    rename_response = client.patch(
+        "/api/datasets/smoke_dataset",
+        json={"display_name": "Smoke Dataset Renamed"},
+    )
+    assert rename_response.status_code == 200
+    rename_payload = rename_response.json()
+    assert rename_payload["dataset_id"] == "smoke_dataset"
+    assert rename_payload["display_name"] == "Smoke Dataset Renamed"
+
+    detail_response = client.get("/api/datasets/smoke_dataset")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["display_name"] == "Smoke Dataset Renamed"
+    assert detail_payload["dataset"]["display_name"] == "Smoke Dataset Renamed"
+
+    list_response = client.get("/api/datasets", params={"page": 1, "per_page": 200})
+    assert list_response.status_code == 200
+    renamed_item = next(
+        item for item in list_response.json()["items"] if item["dataset_id"] == "smoke_dataset"
+    )
+    assert renamed_item["display_name"] == "Smoke Dataset Renamed"
+    assert renamed_item["requested_at"] is not None
 
 
 def test_dataset_registry_endpoints_expose_facets_slices_series_and_dependencies() -> None:
@@ -3013,6 +3054,19 @@ def test_model_composition_allows_platform_compatible_sources() -> None:
     composition_job = _wait_for_job(client, composition_response.json()["job_id"], timeout_seconds=120.0)
     assert composition_job["status"] == "success"
     composed_run_id = composition_job["result"]["run_ids"][0]
+    artifact_root = app.state.services.jobs.artifact_root
+    metadata_path = artifact_root / "models" / composed_run_id / "metadata.json"
+    evaluation_summary_path = artifact_root / "models" / composed_run_id / "evaluation_summary.json"
+    metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    evaluation_summary_payload = json.loads(evaluation_summary_path.read_text(encoding="utf-8"))
+    assert metadata_payload["feature_names"]
+    assert metadata_payload["model_spec"]["input_schema"]
+    assert metadata_payload["prediction_metadata"]["required_feature_names"]
+    assert metadata_payload["prediction_metadata"]["required_modalities"] == ["market", "nlp"]
+    assert metadata_payload["prediction_metadata"]["aligned_prediction_sample_count"] > 0
+    assert metadata_payload["prediction_metadata"]["official_contract"]["required_feature_names"]
+    assert evaluation_summary_payload["sample_count"] > 0
+    assert evaluation_summary_payload["split_metrics"]["full"]["sample_count"] > 0
     run_detail_response = client.get(f"/api/runs/{composed_run_id}")
     assert run_detail_response.status_code == 200
     run_detail_payload = run_detail_response.json()
@@ -3230,6 +3284,75 @@ def test_model_composition_attention_strategy_records_explainability_metadata() 
     assert prediction_metadata["requested_fusion_strategy"] == "attention_late_fusion"
     assert prediction_metadata["effective_fusion_strategy"] == "attention_late_fusion"
     assert prediction_metadata["explainability_uri"].endswith("full_explainability.json")
+
+
+def test_model_composition_preflight_fails_when_composed_contract_mismatches_sources() -> None:
+    app = create_app()
+    client = TestClient(app)
+    suffix = str(int(time.time() * 1000))
+    market_run_id = f"contract-mismatch-market-{suffix}"
+    nlp_run_id = f"contract-mismatch-nlp-{suffix}"
+
+    _materialize_stub_run(
+        app,
+        run_id=market_run_id,
+        dataset_id="baseline_real_benchmark_dataset",
+        feature_names=[
+            "lag_return_1",
+            "lag_return_2",
+            "momentum_3",
+            "realized_vol_3",
+        ],
+    )
+    _materialize_stub_run(
+        app,
+        run_id=nlp_run_id,
+        dataset_id="official_reddit_pullpush_multimodal_v2_fusion",
+        feature_names=[
+            "sentiment_score",
+            "news_event_count",
+            "text_reddit_sentiment_mean_1h",
+        ],
+    )
+
+    composition_response = client.post(
+        "/api/launch/model-composition",
+        json={
+            "source_run_ids": [market_run_id, nlp_run_id],
+            "composition_name": f"contract_mismatch_multimodal_{suffix}",
+            "fusion_strategy": "attention_late_fusion",
+            "weights": {
+                market_run_id: 0.5,
+                nlp_run_id: 0.5,
+            },
+        },
+    )
+    assert composition_response.status_code == 200
+    composition_job = _wait_for_job(client, composition_response.json()["job_id"], timeout_seconds=120.0)
+    assert composition_job["status"] == "success"
+    composed_run_id = composition_job["result"]["run_ids"][0]
+
+    metadata_path = app.state.services.jobs.artifact_root / "models" / composed_run_id / "metadata.json"
+    metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata_payload["prediction_metadata"]["required_feature_names"].append("text_reddit_embedding_768")
+    metadata_payload["prediction_metadata"]["official_contract"]["required_feature_names"].append(
+        "text_reddit_embedding_768"
+    )
+    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+
+    preflight_response = client.post(
+        "/api/launch/backtest/preflight",
+        json={
+            "run_id": composed_run_id,
+            "mode": "official",
+            "template_id": "system::official_backtest_protocol_v1",
+            "official_window_days": 30,
+        },
+    )
+    assert preflight_response.status_code == 200
+    preflight_payload = preflight_response.json()
+    assert preflight_payload["compatible"] is False
+    assert any("Composed contract mismatch" in reason for reason in preflight_payload["blocking_reasons"])
 
 
 def test_official_composed_backtest_writes_attention_explainability_sidecar() -> None:

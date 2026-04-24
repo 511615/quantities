@@ -847,6 +847,51 @@ strong,
   min-width: 0;
 }
 
+.job-progress-track {
+  position: relative;
+  overflow: hidden;
+  height: 0.7rem;
+  border-radius: 999px;
+  background: rgba(24, 35, 26, 0.08);
+}
+
+.job-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(178, 220, 89, 0.92), rgba(113, 194, 109, 0.92));
+  transition: width 220ms ease;
+}
+
+.job-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  min-width: 0;
+  color: rgba(24, 35, 26, 0.86);
+  font-size: 0.92rem;
+}
+
+.job-progress-meta.subdued {
+  color: rgba(24, 35, 26, 0.62);
+  font-size: 0.84rem;
+}
+
+.job-stage.detailed {
+  align-items: flex-start;
+}
+
+.job-stage-copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.job-stage-time {
+  color: rgba(24, 35, 26, 0.58);
+  font-size: 0.8rem;
+}
+
 .align-start,
 .table-title-cell {
   align-items: flex-start;
@@ -1168,6 +1213,11 @@ strong,
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
+  align-items: start;
+}
+
+.readiness-contract-panel {
+  grid-column: 1 / -1;
 }
 
 .feature-group-card {
@@ -1246,6 +1296,11 @@ strong,
   border: 1px solid rgba(182, 230, 75, 0.18);
   border-radius: 22px;
   background: linear-gradient(135deg, rgba(182, 230, 75, 0.12), rgba(255, 255, 255, 0.4));
+}
+
+.dataset-callout.compact {
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
 }
 
 .backtest-callout {
@@ -1708,6 +1763,75 @@ strong,
   border-radius: 18px;
   background: var(--bg-elevated);
   box-shadow: var(--shadow);
+}
+
+.dataset-delete-dialog {
+  width: min(760px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.dataset-delete-dialog-body {
+  padding: 1rem 1rem 0.5rem;
+  overflow: auto;
+}
+
+.dataset-delete-dialog .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  padding: 0.85rem 1rem 1rem;
+  border-top: 1px solid var(--line);
+  background: var(--bg-elevated);
+}
+
+.dataset-rename-dialog {
+  width: min(560px, calc(100vw - 2rem));
+}
+
+.dataset-rename-dialog-body {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.bulk-delete-dialog {
+  width: min(720px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.bulk-delete-dialog-body {
+  padding: 1rem 1rem 0.5rem;
+  overflow: auto;
+}
+
+.bulk-delete-dialog .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  padding: 0.85rem 1rem 1rem;
+  border-top: 1px solid var(--line);
+  background: var(--bg-elevated);
+}
+
+.field-group {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.form-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.error-text {
+  color: var(--danger);
 }
 
 .backtest-launch-backdrop {

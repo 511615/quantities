@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+﻿import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -17,7 +17,8 @@ import type {
 } from "../../shared/api/types";
 import { formatDate } from "../../shared/lib/format";
 import { I18N } from "../../shared/lib/i18n";
-import { formatModalityLabel, formatStageNameLabel } from "../../shared/lib/labels";
+import { formatModalityLabel } from "../../shared/lib/labels";
+import { JobProgressCard } from "../../shared/ui/JobProgressCard";
 import {
   localizeBlockingReason,
   localizeBacktestGateReason,
@@ -27,7 +28,6 @@ import {
   localizeBacktestTemplateName,
 } from "../../shared/lib/protocolI18n";
 import { ModalityQualitySummary } from "../../shared/ui/ModalityQualitySummary";
-import { StatusPill } from "../../shared/ui/StatusPill";
 
 type LaunchBacktestDrawerProps = {
   initialRunId?: string | null;
@@ -69,13 +69,13 @@ function normalizeDatasetIds(value: string) {
 
 function formatWindow(startTime?: string | null, endTime?: string | null) {
   if (startTime && endTime) {
-    return `${formatDate(startTime)} - ${formatDate(endTime)}`;
+    return formatDate(startTime) + " - " + formatDate(endTime);
   }
   if (startTime) {
-    return `${formatDate(startTime)} - --`;
+    return formatDate(startTime) + " - --";
   }
   if (endTime) {
-    return `-- - ${formatDate(endTime)}`;
+    return "-- - " + formatDate(endTime);
   }
   return "--";
 }
@@ -130,7 +130,7 @@ function compatibilityTone(
   if (label === "检查中") {
     return "pending";
   }
-  if (label === "错误") {
+  if (label === "閿欒") {
     return "error";
   }
   return "default";
@@ -151,22 +151,22 @@ function localizeBacktestOptionLabel(value: string, label?: string | null) {
     return "测试集";
   }
   if (normalized === "sign") {
-    return "方向信号";
+    return "鏂瑰悜淇″彿";
   }
   if (normalized === "research_default" || normalized === "default") {
     return "默认组合";
   }
   if (normalized === "standard") {
-    return "标准成本";
+    return "鏍囧噯鎴愭湰";
   }
   if (normalized === "native" || normalized === "native research") {
-    return "原生引擎";
+    return "鍘熺敓寮曟搸";
   }
   if (normalized === "vectorbt") {
     return "vectorbt";
   }
   if (normalized === "proportional") {
-    return "比例分配";
+    return "姣斾緥鍒嗛厤";
   }
   if (normalized === "skfolio_mean_risk" || normalized === "skfolio mean-risk") {
     return "skfolio 均值-风险";
@@ -177,7 +177,7 @@ function localizeBacktestOptionLabel(value: string, label?: string | null) {
 function localizeOfficialWindowOptionLabel(value: string, label?: string | null) {
   const days = Number.parseInt(value, 10);
   if (OFFICIAL_WINDOW_OPTIONS.includes(days as OfficialWindowDays)) {
-    return `最近 ${days} 天`;
+    return "Recent " + String(days) + "d";
   }
   return label ?? value;
 }
@@ -263,29 +263,37 @@ function templateRequirementItems(template: BacktestTemplateView | undefined) {
   if (!template) {
     return [];
   }
-  const items = [
-    "如果使用 NLP，申请的 NLP 采集时间窗必须与市场模板时间窗一致。",
-    "如果使用 NLP，只有归档型 NLP 数据源才允许参加官方同模板对比。",
-    "如果 NLP 质量门禁失败，官方模板会被阻断。",
-    template.output_contract_version
-      ? `模型输出必须遵守 ${template.output_contract_version}。`
-      : null,
-    template.fixed_prediction_scope
-      ? `官方模式会将预测范围固定为 ${localizeBacktestOptionLabel(template.fixed_prediction_scope)}。`
-      : null,
-    ...template.eligibility_rules.map(
-      (item, index) =>
-        `准入要求：${localizeBacktestRequirement(item, template.eligibility_rule_keys?.[index])}`,
-    ),
-    ...template.required_metadata.map(
-      (item, index) =>
-        `必填披露：${localizeBacktestMetadata(item, template.required_metadata_keys?.[index])}`,
-    ),
-    ...template.notes.map(
-      (item, index) => `说明：${localizeBacktestNote(item, template.note_keys?.[index])}`,
-    ),
-  ];
-  return items.filter((item): item is string => Boolean(item)).map(localizeRequirementItemText);
+  const items: string[] = [];
+  items.push("如果使用 NLP，请求的 NLP 采集时间窗口必须与市场模板时间窗口一致。");
+  items.push("如果使用 NLP，只有归档型 NLP 数据源才允许参加官方同模板对比。");
+  items.push("如果 NLP 质量门禁失败，官方模板会被阻断。");
+
+  if (template.output_contract_version) {
+    items.push("Output contract must match " + template.output_contract_version + ".");
+  }
+  if (template.fixed_prediction_scope) {
+    items.push(
+      "Official mode fixes prediction scope to " +
+        localizeBacktestOptionLabel(template.fixed_prediction_scope) +
+        ".",
+    );
+  }
+
+  for (const [index, item] of template.eligibility_rules.entries()) {
+    items.push(
+      "准入要求：" + localizeBacktestRequirement(item, template.eligibility_rule_keys?.[index]),
+    );
+  }
+  for (const [index, item] of template.required_metadata.entries()) {
+    items.push(
+      "必填披露：" + localizeBacktestMetadata(item, template.required_metadata_keys?.[index]),
+    );
+  }
+  for (const [index, item] of template.notes.entries()) {
+    items.push("说明：" + localizeBacktestNote(item, template.note_keys?.[index]));
+  }
+
+  return items.map(localizeRequirementItemText);
 }
 
 function listSummary(value: string[]) {
@@ -297,8 +305,8 @@ function SummaryGrid({ items }: { items: SummaryItem[] }) {
     <div className="backtest-launch-kv-grid">
       {items.map((item) => (
         <div
-          className={`backtest-launch-kv${item.tone === "danger" ? " is-danger" : ""}`}
-          key={`${item.label}-${item.value}`}
+          className={"backtest-launch-kv" + (item.tone === "danger" ? " is-danger" : "")}
+          key={String(item.label) + "-" + String(item.value)}
         >
           <span>{item.label}</span>
           <strong>{item.value}</strong>
@@ -492,7 +500,7 @@ export function LaunchBacktestDrawer({
       ? optionsQuery.data.official_window_options
       : OFFICIAL_WINDOW_OPTIONS.map((days) => ({
           value: String(days),
-          label: `Recent ${days}d`,
+          label: "Recent " + String(days) + "d",
           description: null,
           recommended: days === 180,
         }));
@@ -585,7 +593,7 @@ export function LaunchBacktestDrawer({
             ]
           : []),
         ...(officialSchemaMissingFeatures.length > 0
-          ? [{ label: "缺失官方特征", value: `${officialSchemaMissingFeatures.length} 项`, tone: "danger" as const }]
+          ? [{ label: "缺失官方特征", value: String(officialSchemaMissingFeatures.length) + " 项", tone: "danger" as const }]
           : []),
       ]
     : [];
@@ -602,13 +610,13 @@ export function LaunchBacktestDrawer({
       : []),
   ];
   const bindingItems = [
-    boundDatasetIds.length > 0 ? `训练参考数据集：${boundDatasetIds.join(", ")}` : null,
-    `官方市场数据集 ID：${officialPreflight?.official_market_dataset_id ?? OFFICIAL_MARKET_DATASET_ID}`,
+    boundDatasetIds.length > 0 ? "训练参考数据集：" + boundDatasetIds.join(", ") : null,
+    "官方市场数据集 ID：" + (officialPreflight?.official_market_dataset_id ?? OFFICIAL_MARKET_DATASET_ID),
     officialPreflight?.official_multimodal_dataset_id || hasOfficialAuxiliaryContext
-      ? `官方多模态数据集 ID：${officialPreflight?.official_multimodal_dataset_id ?? OFFICIAL_MULTIMODAL_DATASET_ID}`
+      ? "官方多模态数据集 ID：" + (officialPreflight?.official_multimodal_dataset_id ?? OFFICIAL_MULTIMODAL_DATASET_ID)
       : null,
     officialTemplate?.scenario_bundle?.length
-      ? `场景包：${officialTemplate.scenario_bundle.join(", ")}`
+      ? "场景包：" + officialTemplate.scenario_bundle.join(", ")
       : null,
   ].filter((item): item is string => Boolean(item));
   const localizedGateReasons = officialGateReasons.map((reason, index) =>
@@ -618,21 +626,21 @@ export function LaunchBacktestDrawer({
     ),
   );
   const featureItems = [
-    `官方 Schema 版本：${officialSchemaVersion}`,
+    "官方 Schema 版本：" + officialSchemaVersion,
     ...(officialPreflight?.required_feature_names?.length
-      ? officialPreflight.required_feature_names.map((featureName) => `模型实际所需特征：${featureName}`)
+      ? officialPreflight.required_feature_names.map((featureName) => "模型实际所需特征：" + featureName)
       : []),
-    ...officialSchemaMissingFeatures.map((featureName) => `缺失官方特征：${featureName}`),
-    ...officialSchemaFeatureNames.map((featureName) => `官方标准特征：${featureName}`),
+    ...officialSchemaMissingFeatures.map((featureName) => "缺失官方特征：" + featureName),
+    ...officialSchemaFeatureNames.map((featureName) => "官方标准特征：" + featureName),
   ];
   const customDatasetSummary =
     customDatasetIds.length > 1
-      ? `将提交 ${customDatasetIds.length} 个数据集 ID。`
+      ? "将提交 " + String(customDatasetIds.length) + " 个数据集 ID。"
       : customDatasetIds.length === 1
-        ? `将直接使用数据集 ${customDatasetIds[0]}。`
+        ? "将直接使用数据集 " + customDatasetIds[0] + "。"
         : datasetId.trim()
-          ? `将直接使用数据集 ${datasetId.trim()}。`
-          : `当前会使用数据集预置：${localizeBacktestOptionLabel(datasetPreset)}。`;
+          ? "将直接使用数据集 " + datasetId.trim() + "。"
+          : "当前会使用数据集预置：" + localizeBacktestOptionLabel(datasetPreset) + "。";
 
   useEffect(() => {
     if (initialRunId) {
@@ -854,7 +862,7 @@ export function LaunchBacktestDrawer({
             <div className="backtest-launch-scroll">
               <div className="segmented-tabs" role="tablist" aria-label="回测模式">
                 <button
-                  className={`tab-chip ${mode === "official" ? "active" : ""}`}
+                  className={"tab-chip " + (mode === "official" ? "active" : "")}
                   data-testid="backtest-mode-official"
                   onClick={() => setMode("official")}
                   type="button"
@@ -862,7 +870,7 @@ export function LaunchBacktestDrawer({
                   官方模板
                 </button>
                 <button
-                  className={`tab-chip ${mode === "custom" ? "active" : ""}`}
+                  className={"tab-chip " + (mode === "custom" ? "active" : "")}
                   data-testid="backtest-mode-custom"
                   onClick={() => setMode("custom")}
                   type="button"
@@ -945,7 +953,7 @@ export function LaunchBacktestDrawer({
                     <span>
                       {mode === "official"
                         ? "官方模板会固定使用测试集，并按官方窗口发起。"
-                        : "自定义模式会优先采用你填写的数据集 ID。"}
+                        : "自定义模式会优先使用你填写的数据集 ID。"}
                     </span>
                   </div>
                 </div>
@@ -964,9 +972,9 @@ export function LaunchBacktestDrawer({
                             )}
                           </strong>
                           <p>请先输入训练实例 ID，再查看兼容性摘要和官方协议细节。</p>
+                          </div>
                         </div>
-                      </div>
-                    </section>
+                      </section>
                   ) : (
                     <>
                       <section className="backtest-launch-summary">
@@ -985,9 +993,9 @@ export function LaunchBacktestDrawer({
                             </p>
                           </div>
                           <span
-                            className={`backtest-launch-status is-${compatibilityTone(
+                            className={"backtest-launch-status is-" + compatibilityTone(
                               officialCompatibilityLabel,
-                            )}`}
+                            )}
                           >
                             {officialCompatibilityLabel}
                           </span>
@@ -999,7 +1007,7 @@ export function LaunchBacktestDrawer({
                       <section className="backtest-launch-section">
                         <div className="backtest-launch-section-head">
                           <strong>关键窗口</strong>
-                          <span>只展示最影响发起判断的时间窗。</span>
+                          <span>只展示最影响发起判断的时间窗口。</span>
                         </div>
                         <SummaryGrid items={officialWindowItems} />
                       </section>
@@ -1180,7 +1188,7 @@ export function LaunchBacktestDrawer({
                     </label>
                   </div>
                   <p className="backtest-launch-disclosure-empty">
-                    默认路径保持为原生引擎 + 比例分配，只有研究对比时才建议改这里。
+                    默认路径保持为原生引擎加比例分配，只有研究对比时才建议修改这里。
                   </p>
                 </div>
               </details>
@@ -1196,30 +1204,20 @@ export function LaunchBacktestDrawer({
                     <strong>提交结果</strong>
                     <span>任务创建后会在这里更新状态和跳转入口。</span>
                   </div>
-                  <div className="job-box">
-                    <div className="split-line">
-                      <strong>{jobQuery.data.job_id}</strong>
-                      <StatusPill status={jobQuery.data.status} />
-                    </div>
-                    {jobQuery.data.stages.map((stage) => (
-                      <div className="job-stage" key={stage.name}>
-                        <span>{formatStageNameLabel(stage.name)}</span>
-                        <span>{stage.summary}</span>
-                      </div>
-                    ))}
-                    {jobQuery.data.error_message ? (
-                      <p className="form-error">{jobQuery.data.error_message}</p>
-                    ) : null}
-                    {jobQuery.data.status === "success" && backtestLink ? (
-                      <button
-                        className="link-button"
-                        onClick={() => navigate(backtestLink)}
-                        type="button"
-                      >
-                        打开回测详情
-                      </button>
-                    ) : null}
-                  </div>
+                  <JobProgressCard
+                    footer={
+                      jobQuery.data.status === "success" && backtestLink ? (
+                        <button
+                          className="link-button"
+                          onClick={() => navigate(backtestLink)}
+                          type="button"
+                        >
+                          打开回测详情
+                        </button>
+                      ) : null
+                    }
+                    job={jobQuery.data}
+                  />
                 </section>
               ) : null}
             </div>
@@ -1229,3 +1227,6 @@ export function LaunchBacktestDrawer({
     </div>
   );
 }
+
+
+

@@ -311,6 +311,21 @@ export function useDeleteTrainedModelMutation() {
   });
 }
 
+export function useDatasetFeatureSeries(
+  datasetId: string | null,
+  params: {
+    features?: string[];
+    max_points?: number;
+  } = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["dataset-feature-series", datasetId, params],
+    queryFn: () => api.datasetFeatureSeries(datasetId ?? "", params),
+    enabled: enabled && Boolean(datasetId),
+  });
+}
+
 export function useBacktestOptions() {
   return useQuery({
     queryKey: ["launch-options", "backtest"],
@@ -401,6 +416,29 @@ export function useDeleteDatasetMutation() {
         queryClient.invalidateQueries({ queryKey: ["datasets"] }),
         queryClient.invalidateQueries({ queryKey: ["datasets", "training"] }),
         queryClient.invalidateQueries({ queryKey: ["workbench-overview"] }),
+      ]);
+    },
+  });
+}
+
+export function useRenameDatasetMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      datasetId,
+      body,
+    }: {
+      datasetId: string;
+      body: { display_name: string };
+    }) => api.renameDataset(datasetId, body),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["datasets"] }),
+        queryClient.invalidateQueries({ queryKey: ["datasets", "training"] }),
+        queryClient.invalidateQueries({ queryKey: ["dataset", result.dataset_id] }),
+        queryClient.invalidateQueries({ queryKey: ["workbench-overview"] }),
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+        queryClient.invalidateQueries({ queryKey: ["run"] }),
       ]);
     },
   });

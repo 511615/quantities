@@ -8,6 +8,8 @@ type ConfirmDialogProps = {
   cancelLabel: string;
   tone?: "default" | "danger";
   confirmDisabled?: boolean;
+  className?: string;
+  bodyClassName?: string;
   children?: ReactNode;
   onConfirm: () => void;
   onCancel: () => void;
@@ -21,6 +23,8 @@ export function ConfirmDialog({
   cancelLabel,
   tone = "default",
   confirmDisabled = false,
+  className,
+  bodyClassName,
   children,
   onConfirm,
   onCancel,
@@ -33,10 +37,10 @@ export function ConfirmDialog({
     <div className="dialog-backdrop" role="presentation">
       <div
         aria-modal="true"
-        className="dialog-shell"
+        className={`dialog-shell${className ? ` ${className}` : ""}`}
         role="dialog"
       >
-        <div className="dialog-copy">
+        <div className={`dialog-copy${bodyClassName ? ` ${bodyClassName}` : ""}`}>
           <strong>{title}</strong>
           <p>{message}</p>
           {children}

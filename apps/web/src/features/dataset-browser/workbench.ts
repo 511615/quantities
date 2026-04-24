@@ -603,7 +603,34 @@ function stringifyValue(value: unknown): string {
     return value.length > 0 ? value.map((item) => stringifyValue(item)).join(" / ") : "--";
   }
   if (typeof value === "object") {
-    return JSON.stringify(value);
+    const record = value as Record<string, unknown>;
+    const startTime = typeof record.start_time === "string" ? record.start_time.slice(0, 10) : null;
+    const endTime = typeof record.end_time === "string" ? record.end_time.slice(0, 10) : null;
+    if (startTime || endTime) {
+      return `${startTime ?? "--"} 至 ${endTime ?? "--"}`;
+    }
+    if (typeof record.strategy === "string") {
+      const coverageCount =
+        record.coverage_by_feature && typeof record.coverage_by_feature === "object"
+          ? Object.keys(record.coverage_by_feature).length
+          : 0;
+      return coverageCount > 0
+        ? `${record.strategy} · 覆盖率按 ${coverageCount} 个特征记录`
+        : record.strategy;
+    }
+    if (typeof record.alignment_policy_name === "string") {
+      return [
+        record.alignment_policy_name,
+        typeof record.missing_feature_policy_name === "string" ? record.missing_feature_policy_name : null,
+      ]
+        .filter(Boolean)
+        .join(" / ");
+    }
+    const compactEntries = Object.entries(record)
+      .filter(([, item]) => item !== null && item !== undefined && item !== "")
+      .slice(0, 3)
+      .map(([key, item]) => `${humanizeKey(key)}: ${stringifyValue(item)}`);
+    return compactEntries.length > 0 ? compactEntries.join(" / ") : "--";
   }
   return String(value);
 }

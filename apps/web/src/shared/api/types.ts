@@ -129,6 +129,10 @@ export type RunDetailView = {
       dataset_ids?: string[];
     }>;
     rules?: string[];
+    required_modalities?: string[];
+    required_feature_names?: string[];
+    aligned_prediction_sample_count?: number | null;
+    official_contract?: Record<string, unknown>;
   } | null;
   source_run_ids?: string[];
   task_type?: string | null;
@@ -694,6 +698,7 @@ export type DatasetSummaryView = {
   data_source: string | null;
   frequency: string | null;
   as_of_time: string | null;
+  requested_at?: string | null;
   sample_count: number | null;
   row_count: number | null;
   feature_count: number | null;
@@ -1004,6 +1009,17 @@ export type DatasetDeleteResponse = {
   deleted_files: string[];
 };
 
+export type DatasetRenameRequest = {
+  display_name: string;
+};
+
+export type DatasetRenameResponse = {
+  dataset_id: string;
+  display_name: string;
+  previous_display_name?: string | null;
+  message: string;
+};
+
 export type DatasetNlpInspectionView = {
   dataset_id: string;
   contains_nlp: boolean;
@@ -1107,6 +1123,27 @@ export type OhlcvBarsResponse = {
   start_time: string | null;
   end_time: string | null;
   items: OhlcvBarView[];
+};
+
+export type DatasetFeatureSeriesPointView = {
+  timestamp: string;
+  available_time: string | null;
+  value: number | null;
+};
+
+export type DatasetFeatureSeriesView = {
+  feature_name: string;
+  label: string;
+  data_domain: string;
+  points: DatasetFeatureSeriesPointView[];
+};
+
+export type DatasetFeatureSeriesResponse = {
+  dataset_id: string;
+  total_rows: number;
+  max_points: number;
+  downsampled: boolean;
+  items: DatasetFeatureSeriesView[];
 };
 
 export type RecommendedActionView = {

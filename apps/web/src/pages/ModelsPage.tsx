@@ -1181,7 +1181,9 @@ export function ModelsPage() {
         ) : null}
       </ConfirmDialog>
       <ConfirmDialog
+        bodyClassName="bulk-delete-dialog-body"
         cancelLabel={I18N.action.cancel}
+        className="bulk-delete-dialog"
         confirmDisabled={pendingBulkDeleteRunIds.length === 0 || deleteTrainedModelMutation.isPending}
         confirmLabel={deleteTrainedModelMutation.isPending ? translateText("删除中...") : I18N.action.confirmDelete}
         message={

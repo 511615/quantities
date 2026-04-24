@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+﻿import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -10,9 +10,9 @@ import {
   useTrainOptions,
 } from "../../shared/api/hooks";
 import type { ModalityQualityView } from "../../shared/api/types";
-import { formatModalityLabel, formatStageNameLabel } from "../../shared/lib/labels";
+import { formatModalityLabel } from "../../shared/lib/labels";
+import { JobProgressCard } from "../../shared/ui/JobProgressCard";
 import { ModalityQualitySummary } from "../../shared/ui/ModalityQualitySummary";
-import { StatusPill } from "../../shared/ui/StatusPill";
 
 type SupportedModality = "market" | "macro" | "on_chain" | "derivatives" | "nlp";
 type OfficialWindowDays = 30 | 90 | 180 | 365;
@@ -35,7 +35,7 @@ function blockingReasonForModality(item: ModalityQualityView | null | undefined)
   if (item.status === "ready") {
     return null;
   }
-  return item.blocking_reasons[0] ?? `${formatModalityLabel(item.modality)} 当前不允许训练。`;
+  return item.blocking_reasons[0] ?? `${formatModalityLabel(item.modality)} 当前暂不可训练。`;
 }
 
 function parseOfficialWindowDays(value: string): OfficialWindowDays {
@@ -300,7 +300,7 @@ export function LaunchDatasetMultimodalTrainDrawer({
             />
           </label>
           <label>
-            <span>融合策略</span>
+            <span>铻嶅悎绛栫暐</span>
             <select
               className="field"
               data-testid="dataset-multimodal-fusion-strategy"
@@ -324,7 +324,7 @@ export function LaunchDatasetMultimodalTrainDrawer({
 
           <section className="details-panel">
             <div className="split-line">
-              <strong>自动 official backtest</strong>
+              <strong>鑷姩 official backtest</strong>
               <label className="table-actions">
                 <input
                   checked={autoLaunchOfficialBacktest}
@@ -339,7 +339,7 @@ export function LaunchDatasetMultimodalTrainDrawer({
               开启后会在融合完成后自动用 official template 发起回测。如果当前组合不满足官方协议，训练和融合产物仍会保留，但作业会在回测阶段给出精确失败原因。
             </p>
             <label>
-              <span>官方回测窗口</span>
+              <span>瀹樻柟鍥炴祴绐楀彛</span>
               <select
                 className="field"
                 data-testid="dataset-multimodal-official-window"
@@ -374,31 +374,23 @@ export function LaunchDatasetMultimodalTrainDrawer({
           </button>
 
           {jobQuery.data ? (
-            <div className="job-box">
-              <div className="split-line">
-                <strong>{jobQuery.data.job_id}</strong>
-                <StatusPill status={jobQuery.data.status} />
-              </div>
-              {jobQuery.data.stages.map((stage) => (
-                <div className="job-stage" key={stage.name}>
-                  <span>{formatStageNameLabel(stage.name)}</span>
-                  <span>{stage.summary}</span>
-                </div>
-              ))}
-              {jobQuery.data.error_message ? <p className="form-error">{jobQuery.data.error_message}</p> : null}
-              <div className="table-actions">
-                {jobQuery.data.result.deeplinks.run_detail ? (
-                  <Link className="link-button" to={jobQuery.data.result.deeplinks.run_detail}>
-                    打开融合模型
-                  </Link>
-                ) : null}
-                {jobQuery.data.result.deeplinks.backtest_detail ? (
-                  <Link className="link-button" to={jobQuery.data.result.deeplinks.backtest_detail}>
-                    打开官方回测
-                  </Link>
-                ) : null}
-              </div>
-            </div>
+            <JobProgressCard
+              footer={
+                <>
+                  {jobQuery.data.result.deeplinks.run_detail ? (
+                    <Link className="link-button" to={jobQuery.data.result.deeplinks.run_detail}>
+                      打开融合模型
+                    </Link>
+                  ) : null}
+                  {jobQuery.data.result.deeplinks.backtest_detail ? (
+                    <Link className="link-button" to={jobQuery.data.result.deeplinks.backtest_detail}>
+                      鎵撳紑瀹樻柟鍥炴祴
+                    </Link>
+                  ) : null}
+                </>
+              }
+              job={jobQuery.data}
+            />
           ) : null}
         </div>
       ) : null}

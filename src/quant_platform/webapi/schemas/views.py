@@ -154,6 +154,10 @@ class RunCompositionView(ApiModel):
     effective_fusion_strategy: str | None = None
     attention_summary: dict[str, Any] = Field(default_factory=dict)
     explainability_uri: str | None = None
+    required_modalities: list[str] = Field(default_factory=list)
+    required_feature_names: list[str] = Field(default_factory=list)
+    aligned_prediction_sample_count: int | None = None
+    official_contract: dict[str, Any] = Field(default_factory=dict)
 
 
 class BacktestAlignmentView(ApiModel):
@@ -176,6 +180,7 @@ class DatasetSummaryView(ApiModel):
     data_source: str | None = None
     frequency: str | None = None
     as_of_time: datetime | None = None
+    requested_at: datetime | None = None
     sample_count: int | None = None
     row_count: int | None = None
     feature_count: int | None = None
@@ -1114,6 +1119,27 @@ class OhlcvBarsResponse(ApiModel):
     items: list[OhlcvBarView] = Field(default_factory=list)
 
 
+class DatasetFeatureSeriesPointView(ApiModel):
+    timestamp: datetime
+    available_time: datetime | None = None
+    value: float | None = None
+
+
+class DatasetFeatureSeriesView(ApiModel):
+    feature_name: str
+    label: str
+    data_domain: str
+    points: list[DatasetFeatureSeriesPointView] = Field(default_factory=list)
+
+
+class DatasetFeatureSeriesResponse(ApiModel):
+    dataset_id: str
+    total_rows: int
+    max_points: int
+    downsampled: bool = False
+    items: list[DatasetFeatureSeriesView] = Field(default_factory=list)
+
+
 class TrainingDatasetsResponse(ApiModel):
     items: list[TrainingDatasetSummaryView] = Field(default_factory=list)
     total: int
@@ -1191,3 +1217,14 @@ class DatasetDeleteResponse(ApiModel):
     message: str
     blocking_items: list[DatasetDependencyView] = Field(default_factory=list)
     deleted_files: list[str] = Field(default_factory=list)
+
+
+class DatasetRenameRequest(ApiModel):
+    display_name: str
+
+
+class DatasetRenameResponse(ApiModel):
+    dataset_id: str
+    display_name: str
+    previous_display_name: str | None = None
+    message: str

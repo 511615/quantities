@@ -68,6 +68,9 @@ from quant_platform.webapi.schemas.views import (
     DatasetDetailView,
     DatasetFacetBucketView,
     DatasetFacetsView,
+    DatasetFeatureSeriesPointView,
+    DatasetFeatureSeriesResponse,
+    DatasetFeatureSeriesView,
     DatasetFieldGroupView,
     DatasetFreshnessView,
     DatasetFusionBuildResponse,
@@ -78,6 +81,7 @@ from quant_platform.webapi.schemas.views import (
     DatasetReadinessSummaryView,
     DatasetRequestOptionsView,
     DatasetRequestOptionView,
+    DatasetRenameResponse,
     DatasetSeriesResponse,
     DatasetSeriesView,
     DatasetSliceView,
@@ -177,9 +181,25 @@ OFFICIAL_MULTIMODAL_STANDARD_AUX_FEATURES_V1: list[str] = [
     "derivatives_open_interest",
     "derivatives_global_long_short_ratio",
     "derivatives_taker_buy_sell_ratio",
+    "macro_is_observed",
+    "macro_hours_since_update",
+    "macro_ffill_span",
+    "macro_coverage_ratio",
+    "on_chain_is_observed",
+    "on_chain_hours_since_update",
+    "on_chain_ffill_span",
+    "on_chain_coverage_ratio",
+    "derivatives_is_observed",
+    "derivatives_hours_since_update",
+    "derivatives_ffill_span",
+    "derivatives_coverage_ratio",
+    "nlp_is_observed",
+    "nlp_hours_since_update",
+    "nlp_ffill_span",
+    "nlp_coverage_ratio",
 ]
 
-OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION = "official_multimodal_standard_v3"
+OFFICIAL_MULTIMODAL_STANDARD_SCHEMA_VERSION = "official_multimodal_standard_v4"
 WORKBENCH_MODALITIES: tuple[str, ...] = ("market", "macro", "on_chain", "derivatives", "nlp")
 DERIVATIVES_REQUIRED_FEATURES_V1: tuple[str, ...] = (
     "derivatives_funding_rate",
@@ -325,6 +345,8 @@ class ResearchWorkbenchService:
             return False
         market_snapshot_version = self._str(acquisition_profile.get("market_snapshot_version"))
         sentiment_snapshot_version = self._str(acquisition_profile.get("sentiment_snapshot_version"))
+        if not sentiment_snapshot_version:
+            return False
         current_market_snapshot_version = self._str(self._dataset_manifest(market_payload).get("snapshot_version"))
         if market_snapshot_version and market_snapshot_version != current_market_snapshot_version:
             return False
@@ -367,14 +389,31 @@ class ResearchWorkbenchService:
         }
         if not {"macro", "on_chain", "derivatives", "sentiment_events"}.issubset(fusion_domains):
             return False
-        if sentiment_snapshot_version and not any(self._str(item.get("storage_uri")) for item in fusion_sources):
+        sentiment_storage_sources = [
+            item
+            for item in fusion_sources
+            if isinstance(item, dict)
+            and self._str(item.get("data_domain")) == "sentiment_events"
+            and self._str(item.get("storage_uri"))
+        ]
+        if not sentiment_storage_sources:
             return False
-        readiness = self.get_dataset_readiness(OFFICIAL_MULTIMODAL_BENCHMARK_DATASET_ID)
-        if readiness is None:
+        artifact_root = self.repository.artifact_root.resolve()
+        for item in sentiment_storage_sources:
+            storage_uri = self._str(item.get("storage_uri"))
+            if not storage_uri or storage_uri.startswith("artifact://"):
+                continue
+            storage_path = Path(storage_uri)
+            if storage_path.is_absolute():
+                try:
+                    storage_path.resolve().relative_to(artifact_root)
+                except ValueError:
+                    return False
+        usable_count = manifest.get("usable_sample_count") or manifest.get("sample_count") or payload.get("sample_count")
+        try:
+            return int(usable_count or 0) >= 24
+        except (TypeError, ValueError):
             return False
-        if readiness.readiness_status != "ready" or readiness.official_nlp_gate_status == "failed":
-            return False
-        return (readiness.usable_row_count or 0) >= 24
 
     @staticmethod
     def _official_nlp_feature_name_from_metric_name(metric_name: str) -> str | None:
@@ -863,7 +902,13 @@ class ResearchWorkbenchService:
             auxiliary_values: dict[str, float] = {}
             auxiliary_available_times: list[datetime] = []
             missing_aux_features: list[str] = []
+            domain_alignment_state: dict[str, dict[str, Any]] = {
+                "macro": {"matched": 0, "total": 0, "event_times": [], "available_times": []},
+                "on_chain": {"matched": 0, "total": 0, "event_times": [], "available_times": []},
+                "derivatives": {"matched": 0, "total": 0, "event_times": [], "available_times": []},
+            }
             for context in auxiliary_contexts:
+                domain_alignment_state[str(context["data_domain"])]["total"] += 1
                 aligned_point = context["resolve_point"](
                     market_sample.timestamp,
                     market_sample.available_time,
@@ -873,6 +918,9 @@ class ResearchWorkbenchService:
                     continue
                 auxiliary_values[context["feature_name"]] = float(aligned_point.value)
                 auxiliary_available_times.append(aligned_point.available_time)
+                domain_alignment_state[str(context["data_domain"])]["matched"] += 1
+                domain_alignment_state[str(context["data_domain"])]["event_times"].append(aligned_point.event_time)
+                domain_alignment_state[str(context["data_domain"])]["available_times"].append(aligned_point.available_time)
             if nlp_sample is None or missing_aux_features:
                 dropped_missing_rows += 1
                 for feature_name in missing_aux_features:
@@ -901,6 +949,33 @@ class ResearchWorkbenchService:
                     for feature_name in OFFICIAL_MULTIMODAL_STANDARD_NLP_FEATURES_V1
                 },
             }
+            for domain, state in domain_alignment_state.items():
+                matched = int(state["matched"])
+                total = int(state["total"])
+                latest_available = (
+                    max(state["available_times"]) if state["available_times"] else market_sample.available_time
+                )
+                latest_event = (
+                    max(state["event_times"]) if state["event_times"] else market_sample.timestamp
+                )
+                values[f"{domain}_is_observed"] = 1.0 if matched > 0 else 0.0
+                values[f"{domain}_hours_since_update"] = max(
+                    (market_sample.available_time - latest_available).total_seconds() / 3600.0,
+                    0.0,
+                )
+                values[f"{domain}_ffill_span"] = float(
+                    max(int((market_sample.timestamp - latest_event) / timedelta(hours=1)), 0)
+                )
+                values[f"{domain}_coverage_ratio"] = 0.0 if total <= 0 else matched / total
+            values["nlp_is_observed"] = 1.0
+            values["nlp_hours_since_update"] = max(
+                (market_sample.available_time - nlp_sample.available_time).total_seconds() / 3600.0,
+                0.0,
+            )
+            values["nlp_ffill_span"] = float(
+                max(int((market_sample.timestamp - nlp_sample.timestamp) / timedelta(hours=1)), 0)
+            )
+            values["nlp_coverage_ratio"] = 1.0
             available_time = max(
                 [market_sample.available_time, nlp_sample.available_time, *auxiliary_available_times]
             )
@@ -926,6 +1001,31 @@ class ResearchWorkbenchService:
                 max_available_time=max(point.available_time for point in context["points"]),
             )
             for context in auxiliary_contexts
+        ] + [
+            FeatureField(
+                name=name,
+                dtype="float",
+                lineage_source="official_multimodal_alignment",
+                max_available_time=market_dataset_ref.feature_view_ref.as_of_time,
+            )
+            for name in [
+                "macro_is_observed",
+                "macro_hours_since_update",
+                "macro_ffill_span",
+                "macro_coverage_ratio",
+                "on_chain_is_observed",
+                "on_chain_hours_since_update",
+                "on_chain_ffill_span",
+                "on_chain_coverage_ratio",
+                "derivatives_is_observed",
+                "derivatives_hours_since_update",
+                "derivatives_ffill_span",
+                "derivatives_coverage_ratio",
+                "nlp_is_observed",
+                "nlp_hours_since_update",
+                "nlp_ffill_span",
+                "nlp_coverage_ratio",
+            ]
         ] + [
             FeatureField(
                 name=name,
@@ -1374,6 +1474,34 @@ class ResearchWorkbenchService:
                 else {}
             ),
             explainability_uri=self._str(prediction_metadata.get("explainability_uri")),
+            required_modalities=[
+                str(item)
+                for item in (prediction_metadata.get("required_modalities") or composition.get("required_modalities") or [])
+                if isinstance(item, str) and item
+            ],
+            required_feature_names=[
+                str(item)
+                for item in (prediction_metadata.get("required_feature_names") or composition.get("required_feature_names") or [])
+                if isinstance(item, str) and item
+            ],
+            aligned_prediction_sample_count=(
+                int(prediction_metadata.get("aligned_prediction_sample_count"))
+                if isinstance(prediction_metadata.get("aligned_prediction_sample_count"), int)
+                else (
+                    int(composition.get("aligned_prediction_sample_count"))
+                    if isinstance(composition.get("aligned_prediction_sample_count"), int)
+                    else None
+                )
+            ),
+            official_contract=(
+                dict(prediction_metadata.get("official_contract") or {})
+                if isinstance(prediction_metadata.get("official_contract"), dict)
+                else (
+                    dict(composition.get("official_contract") or {})
+                    if isinstance(composition.get("official_contract"), dict)
+                    else {}
+                )
+            ),
             source_runs=source_runs,
             rules=rules,
         )
@@ -3205,6 +3333,28 @@ class ResearchWorkbenchService:
             deleted_files=sorted(set(deleted_files)),
         )
 
+    def rename_dataset(self, dataset_id: str, display_name: str) -> DatasetRenameResponse | None:
+        entry = self._dataset_entry(dataset_id)
+        if entry is None:
+            return None
+        normalized_display_name = " ".join(str(display_name).strip().split())
+        if not normalized_display_name:
+            raise ValueError("Dataset display name cannot be empty.")
+        previous_display_name = self._dataset_display_meta(entry.payload).get("display_name") or dataset_id
+        self._update_dataset_acquisition_profile(
+            dataset_id,
+            {
+                "display_name_override": normalized_display_name,
+                "display_name_updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        return DatasetRenameResponse(
+            dataset_id=dataset_id,
+            display_name=normalized_display_name,
+            previous_display_name=previous_display_name,
+            message="Dataset display name was updated. Existing references keep the same dataset id and now resolve to the new name.",
+        )
+
     def download_dataset_archive(self, dataset_id: str) -> tuple[str, BytesIO] | None:
         entry = self._dataset_entry(dataset_id)
         if entry is None:
@@ -4544,6 +4694,74 @@ class ResearchWorkbenchService:
             )
         return DatasetSeriesResponse(dataset_id=dataset_id, items=items)
 
+    def get_dataset_feature_series(
+        self,
+        dataset_id: str,
+        *,
+        feature_names: list[str] | None = None,
+        max_points: int = 900,
+    ) -> DatasetFeatureSeriesResponse | None:
+        payload = self._dataset_ref(dataset_id)
+        if payload is None:
+            return None
+        rows = [
+            row
+            for row in self._dataset_feature_rows(payload)
+            if isinstance(row, dict) and isinstance(row.get("values"), dict)
+        ]
+        rows.sort(key=lambda row: (self._dt(row.get("timestamp")) or datetime.min.replace(tzinfo=UTC), str(row.get("entity_key") or "")))
+        available_features = {
+            str(name)
+            for row in rows
+            for name in (row.get("values") or {}).keys()
+            if isinstance(name, str)
+        }
+        requested_features = [
+            name for name in (feature_names or self._default_feature_series_names(available_features)) if name in available_features
+        ]
+        seen: set[str] = set()
+        selected_features = [
+            name for name in requested_features if not (name in seen or seen.add(name))
+        ]
+        safe_max_points = max(50, min(int(max_points or 900), 5000))
+        step = max(1, (len(rows) + safe_max_points - 1) // safe_max_points)
+        sampled_rows = rows[::step]
+        items: list[DatasetFeatureSeriesView] = []
+        for feature_name in selected_features:
+            points: list[DatasetFeatureSeriesPointView] = []
+            for row in sampled_rows:
+                timestamp = self._dt(row.get("timestamp"))
+                if timestamp is None:
+                    continue
+                raw_value = (row.get("values") or {}).get(feature_name)
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError):
+                    value = None
+                points.append(
+                    DatasetFeatureSeriesPointView(
+                        timestamp=timestamp,
+                        available_time=self._dt(row.get("available_time")),
+                        value=value,
+                    )
+                )
+            if points:
+                items.append(
+                    DatasetFeatureSeriesView(
+                        feature_name=feature_name,
+                        label=self._feature_series_label(feature_name),
+                        data_domain=self._feature_series_domain(feature_name),
+                        points=points,
+                    )
+                )
+        return DatasetFeatureSeriesResponse(
+            dataset_id=dataset_id,
+            total_rows=len(rows),
+            max_points=safe_max_points,
+            downsampled=step > 1,
+            items=items,
+        )
+
     def query_dataset_ohlcv(
         self,
         dataset_id: str,
@@ -5784,6 +6002,46 @@ class ResearchWorkbenchService:
             for row in self._dataset_bars_rows(payload)
             if isinstance(row, dict)
         )
+
+    @staticmethod
+    def _default_feature_series_names(available_features: set[str]) -> list[str]:
+        candidates = [
+            "macro_dff_value",
+            "on_chain_ethereum_tvl",
+            "derivatives_funding_rate",
+            "derivatives_open_interest",
+            "derivatives_global_long_short_ratio",
+            "derivatives_taker_buy_sell_ratio",
+            "news_event_count",
+            "sentiment_score",
+        ]
+        return [feature_name for feature_name in candidates if feature_name in available_features]
+
+    @staticmethod
+    def _feature_series_domain(feature_name: str) -> str:
+        if feature_name.startswith("macro_"):
+            return "macro"
+        if feature_name.startswith("on_chain_"):
+            return "on_chain"
+        if feature_name.startswith("derivatives_"):
+            return "derivatives"
+        if feature_name.startswith("text_") or feature_name.startswith("news_") or feature_name.startswith("sentiment_"):
+            return "sentiment_events"
+        return "other"
+
+    @staticmethod
+    def _feature_series_label(feature_name: str) -> str:
+        labels = {
+            "macro_dff_value": "联邦基金利率 DFF",
+            "on_chain_ethereum_tvl": "Ethereum TVL",
+            "derivatives_funding_rate": "资金费率",
+            "derivatives_open_interest": "未平仓量",
+            "derivatives_global_long_short_ratio": "多空比",
+            "derivatives_taker_buy_sell_ratio": "主动买卖比",
+            "news_event_count": "新闻事件数",
+            "sentiment_score": "情绪得分",
+        }
+        return labels.get(feature_name, feature_name)
 
     def _input_ref_domain(self, input_ref: dict[str, Any]) -> str | None:
         tags = input_ref.get("tags")
@@ -7422,6 +7680,7 @@ class ResearchWorkbenchService:
             None,
         )
         protection = self._dataset_protection_meta(dataset_id, payload)
+        requested_at = self._dataset_requested_at(payload, manifest)
         return DatasetSummaryView(
             dataset_id=dataset_id,
             display_name=display_meta["display_name"],
@@ -7434,6 +7693,7 @@ class ResearchWorkbenchService:
             data_source=source_vendor or (sources[0] if len(sources) == 1 else None),
             frequency=frequency,
             as_of_time=as_of_time,
+            requested_at=requested_at,
             sample_count=sample_count,
             row_count=row_count,
             feature_count=len(feature_schema),
@@ -7703,6 +7963,7 @@ class ResearchWorkbenchService:
         input_refs = self._dataset_input_refs(payload)
         manifest = self._dataset_manifest(payload)
         acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        display_name_override = self._str(acquisition_profile.get("display_name_override"))
         frequency_candidates = [
             self._str(ref.get("frequency")) for ref in input_refs if self._str(ref.get("frequency"))
         ]
@@ -7747,6 +8008,11 @@ class ResearchWorkbenchService:
             },
         }.get(dataset_id)
         if known:
+            if display_name_override:
+                return {
+                    **known,
+                    "display_name": display_name_override,
+                }
             return known
         dataset_type_key = self._resolved_dataset_type(payload, manifest)
         dataset_type = {
@@ -7768,10 +8034,39 @@ class ResearchWorkbenchService:
         subtitle = f"{scope_label} · {self._frequency_label(frequency)} · 技术标识 {dataset_id}"
         category = dataset_type
         return {
-            "display_name": base_name,
+            "display_name": display_name_override or base_name,
             "subtitle": subtitle,
             "dataset_category": category,
         }
+
+    def _dataset_requested_at(
+        self,
+        payload: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> datetime | None:
+        acquisition_profile = dict(manifest.get("acquisition_profile") or {})
+        explicit_candidates = [
+            self._dt(acquisition_profile.get("request_submitted_at")),
+            self._dt(manifest.get("created_at")),
+            self._dt(payload.get("created_at")),
+        ]
+        explicit = min((value for value in explicit_candidates if value is not None), default=None)
+        if explicit is not None:
+            return explicit
+        dataset_id = str(payload.get("dataset_id", "unknown"))
+        candidate_paths = [
+            self.repository.artifact_root / "datasets" / f"{dataset_id}_dataset_ref.json",
+            self.repository.artifact_root / "datasets" / f"{dataset_id}_dataset_manifest.json",
+        ]
+        if isinstance(payload.get("dataset_manifest_uri"), str) and payload.get("dataset_manifest_uri"):
+            candidate_paths.append(self._resolve_artifact_path(str(payload.get("dataset_manifest_uri"))))
+        existing_paths = [path for path in candidate_paths if path.exists()]
+        if not existing_paths:
+            return None
+        return min(
+            (datetime.fromtimestamp(path.stat().st_ctime, tz=UTC) for path in existing_paths),
+            default=None,
+        )
 
     def _dataset_detail_meta(self, payload: dict[str, Any]) -> dict[str, Any]:
         summary = self._dataset_summary(payload)

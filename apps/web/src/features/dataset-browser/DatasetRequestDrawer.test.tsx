@@ -101,11 +101,20 @@ const jobStatusById: Record<string, object> = {
       benchmark_names: [],
       fit_result_uris: [],
       summary_artifacts: [],
+      requested_stages: ["acquire", "prepare", "readiness"],
       deeplinks: {
         dataset_detail: "/datasets/frontend-multi-dataset",
         run_detail: "/runs/frontend-multi-run",
         backtest_detail: null,
         review_detail: null,
+      },
+      summary: {
+        headline: "数据集申请已完成",
+        detail: "市场锚点和合并数据集已经准备完成",
+        highlights: ["market anchor ready", "readiness passed"],
+      },
+      pipeline_summary: {
+        requested_stages: ["acquire", "prepare", "readiness"],
       },
     },
     error_message: null,
@@ -132,11 +141,15 @@ const jobStatusById: Record<string, object> = {
       benchmark_names: [],
       fit_result_uris: [],
       summary_artifacts: [],
+      requested_stages: ["acquire", "prepare", "readiness"],
       deeplinks: {
         dataset_detail: "/datasets/frontend-single-dataset",
         run_detail: null,
         backtest_detail: null,
         review_detail: null,
+      },
+      pipeline_summary: {
+        requested_stages: ["acquire", "prepare", "readiness"],
       },
     },
     error_message: null,
@@ -195,6 +208,9 @@ test("submits multi-domain request and surfaces dataset/run deeplinks", async ()
 
   await waitFor(() => screen.getByRole("button", { name: /添加数据域/i }));
   fireEvent.click(screen.getByRole("button", { name: /添加数据域/i }));
+  fireEvent.change(screen.getByTestId("dataset-request-name"), {
+    target: { value: "btc_multi_domain_live" },
+  });
 
   const dateInputs = container.querySelectorAll('input[type="date"]');
   fireEvent.change(dateInputs[0], { target: { value: "2026-03-28" } });
@@ -217,9 +233,11 @@ test("submits multi-domain request and surfaces dataset/run deeplinks", async ()
         const body = JSON.parse(String(init.body)) as {
           sources: { data_domain: string; source_vendor: string; frequency: string }[];
           merge_policy_name?: string;
+          request_name?: string;
         };
         return (
           Array.isArray(body.sources) &&
+          body.request_name === "btc_multi_domain_live" &&
           body.sources.some(
             (source) =>
               source.data_domain === "market" &&
@@ -240,6 +258,8 @@ test("submits multi-domain request and surfaces dataset/run deeplinks", async ()
 
   const runLink = await screen.findByRole("link", { name: "查看运行详情" });
   expect(runLink).toHaveAttribute("href", "/runs/frontend-multi-run");
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+  expect(screen.getByText("数据集申请已完成")).toBeInTheDocument();
 
   const datasetLink = screen.getByRole("link", { name: "查看数据集详情" });
   expect(datasetLink).toHaveAttribute("href", "/datasets/frontend-multi-dataset");

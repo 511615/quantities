@@ -13,12 +13,15 @@ from quant_platform.webapi.schemas.views import (
     DatasetDependenciesResponse,
     DatasetDetailView,
     DatasetFacetsView,
+    DatasetFeatureSeriesResponse,
     DatasetFusionBuildResponse,
     DatasetFusionRequest,
     DatasetListResponse,
     DatasetNlpInspectionView,
     DatasetPipelinePlanView,
     DatasetPipelineRequest,
+    DatasetRenameRequest,
+    DatasetRenameResponse,
     DatasetReadinessSummaryView,
     DatasetRequestOptionsView,
     DatasetSeriesResponse,
@@ -125,6 +128,21 @@ def delete_dataset(
     return result
 
 
+@router.patch("/{dataset_id}", response_model=DatasetRenameResponse)
+def rename_dataset(
+    services: ServicesDep,
+    dataset_id: str,
+    request: DatasetRenameRequest,
+) -> DatasetRenameResponse:
+    try:
+        result = services.workbench.rename_dataset(dataset_id, request.display_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return result
+
+
 @router.get("/{dataset_id}/download")
 def download_dataset(
     services: ServicesDep,
@@ -161,6 +179,28 @@ def get_dataset_series(
     if series is None:
         raise HTTPException(status_code=404, detail="Dataset not found.")
     return series
+
+
+@router.get("/{dataset_id}/feature-series", response_model=DatasetFeatureSeriesResponse)
+def get_dataset_feature_series(
+    services: ServicesDep,
+    dataset_id: str,
+    features: str | None = Query(default=None),
+    max_points: int = Query(default=900, ge=50, le=5000),
+) -> DatasetFeatureSeriesResponse:
+    feature_names = [
+        item.strip()
+        for item in (features or "").split(",")
+        if item.strip()
+    ] or None
+    result = services.workbench.get_dataset_feature_series(
+        dataset_id,
+        feature_names=feature_names,
+        max_points=max_points,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return result
 
 
 @router.get("/{dataset_id}/readiness", response_model=DatasetReadinessSummaryView)

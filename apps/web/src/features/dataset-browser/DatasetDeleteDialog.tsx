@@ -112,7 +112,9 @@ export function DatasetDeleteDialog({
 
   return (
     <ConfirmDialog
+      bodyClassName="dataset-delete-dialog-body"
       cancelLabel={translateText("取消")}
+      className="dataset-delete-dialog"
       confirmDisabled={!datasetId || deleteMutation.isPending || !canDelete}
       confirmLabel={
         !canDelete ? translateText("当前不可删除") : deleteMutation.isPending ? translateText("删除中...") : translateText("硬删除数据集")

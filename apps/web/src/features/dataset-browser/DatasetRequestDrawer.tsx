@@ -12,9 +12,8 @@ import type {
   DatasetRequestOptionsView,
 } from "../../shared/api/types";
 import { I18N, translateText } from "../../shared/lib/i18n";
-import { formatStageNameLabel } from "../../shared/lib/labels";
 import { GlossaryHint } from "../../shared/ui/GlossaryHint";
-import { StatusPill } from "../../shared/ui/StatusPill";
+import { JobProgressCard } from "../../shared/ui/JobProgressCard";
 
 type DatasetRequestDrawerProps = {
   title?: string;
@@ -382,6 +381,20 @@ function canonicalFiveModalityDrafts(options: DatasetRequestOptionsView | undefi
   );
 }
 
+function slugifyRequestName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function suggestedRequestName(drafts: SourceDraft[]) {
+  const domains = Array.from(new Set(drafts.map((draft) => draft.dataDomain).filter(Boolean)));
+  return slugifyRequestName(`workbench_${domains.join("_")}_dataset`) || "workbench_dataset";
+}
+
 export function DatasetRequestDrawer({
   title = translateText("申请数据集"),
   description = translateText("一次选择 1..n 个域，多域时直接产出合并数据集，然后用数据集 ID 连到训练和回测。"),
@@ -395,11 +408,15 @@ export function DatasetRequestDrawer({
   const [open, setOpen] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const initialDrafts = useMemo(
+    () => [createDraft(initialValues?.dataDomain || "market")],
+    [initialValues?.dataDomain],
+  );
+  const [requestName, setRequestName] = useState(() => suggestedRequestName(initialDrafts));
+  const [requestNameTouched, setRequestNameTouched] = useState(false);
   const [startDate, setStartDate] = useState(initialDateRange.startDate);
   const [endDate, setEndDate] = useState(initialDateRange.endDate);
-  const [sourceDrafts, setSourceDrafts] = useState<SourceDraft[]>([
-    createDraft(initialValues?.dataDomain || "market"),
-  ]);
+  const [sourceDrafts, setSourceDrafts] = useState<SourceDraft[]>(initialDrafts);
   const jobQuery = useJobStatus(jobId);
 
   useEffect(() => {
@@ -407,6 +424,13 @@ export function DatasetRequestDrawer({
       current.map((draft) => hydrateDraft(draft, optionsQuery.data, initialValues)),
     );
   }, [initialValues, optionsQuery.data]);
+
+  useEffect(() => {
+    if (requestNameTouched) {
+      return;
+    }
+    setRequestName(suggestedRequestName(sourceDrafts));
+  }, [requestNameTouched, sourceDrafts]);
 
   const domainOptions = useMemo(() => {
     const apiValues = optionsQuery.data?.domains?.map((option) => option.value) ?? [];
@@ -467,6 +491,9 @@ export function DatasetRequestDrawer({
   }
 
   function validateRequest(drafts: SourceDraft[]) {
+    if (!requestName.trim()) {
+      return "请先为这次申请填写一个数据集名称。";
+    }
     if (!startDate || !endDate) {
       return "\u8bf7\u5148\u9009\u62e9\u5b8c\u6574\u7684\u65f6\u95f4\u7a97\u53e3\u3002";
     }
@@ -497,7 +524,11 @@ export function DatasetRequestDrawer({
   function applyCanonicalPreset() {
     setStartDate(canonicalDateRange.startDate);
     setEndDate(canonicalDateRange.endDate);
-    setSourceDrafts(canonicalFiveModalityDrafts(optionsQuery.data));
+    const nextDrafts = canonicalFiveModalityDrafts(optionsQuery.data);
+    setSourceDrafts(nextDrafts);
+    if (!requestNameTouched) {
+      setRequestName(suggestedRequestName(nextDrafts));
+    }
     setFormError(null);
   }
 
@@ -526,7 +557,7 @@ export function DatasetRequestDrawer({
         : "explicit";
 
     const payload: DatasetAcquisitionRequest = {
-      request_name: `workbench-${normalizedDrafts.length > 1 ? "merged" : singleDomain}-${Date.now()}`,
+      request_name: slugifyRequestName(requestName) || suggestedRequestName(normalizedDrafts),
       data_domain: isSingleDomain ? singleDomain : "market",
       dataset_type: "training_panel",
       asset_mode: "single_asset",
@@ -610,6 +641,19 @@ export function DatasetRequestDrawer({
             }}
           >
             <div className="form-section-grid">
+              <label>
+                <span>数据集名称</span>
+                <input
+                  className="field"
+                  data-testid="dataset-request-name"
+                  onChange={(event) => {
+                    setRequestName(event.target.value);
+                    setRequestNameTouched(true);
+                  }}
+                  placeholder="例如 btc_multimodal_live_dataset"
+                  value={requestName}
+                />
+              </label>
               <label>
                 <span>{"\u5f00\u59cb\u65e5\u671f"}</span>
                 <input
@@ -866,40 +910,30 @@ export function DatasetRequestDrawer({
           </form>
 
           {jobQuery.data ? (
-            <div className="job-box">
-              <div className="split-line">
-                <strong>{jobQuery.data.job_id}</strong>
-                <StatusPill status={jobQuery.data.status} />
-              </div>
-              {jobQuery.data.stages.map((stage) => (
-                <div className="job-stage" key={stage.name}>
-                  <span>{formatStageNameLabel(stage.name)}</span>
-                  <span>{stage.summary}</span>
-                </div>
-              ))}
-              {jobQuery.data.error_message ? (
-                <p className="form-error">{jobQuery.data.error_message}</p>
-              ) : null}
-              {jobQuery.data.status === "success" ? (
-                <div className="table-actions">
-                  {datasetDetailHref ? (
-                    <Link className="link-button" to={datasetDetailHref}>
-                      {"\u67e5\u770b\u6570\u636e\u96c6\u8be6\u60c5"}
-                    </Link>
-                  ) : null}
-                  {runDetailHref ? (
-                    <Link className="link-button" to={runDetailHref}>
-                      {"\u67e5\u770b\u8fd0\u884c\u8be6\u60c5"}
-                    </Link>
-                  ) : null}
-                  {!runDetailHref && trainHref ? (
-                    <Link className="link-button" to={trainHref}>
-                      {"\u7ee7\u7eed\u8fd9\u4efd\u6570\u636e\u96c6\u8bad\u7ec3"}
-                    </Link>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+            <JobProgressCard
+              footer={
+                jobQuery.data.status === "success" ? (
+                  <>
+                    {datasetDetailHref ? (
+                      <Link className="link-button" to={datasetDetailHref}>
+                        {"\u67e5\u770b\u6570\u636e\u96c6\u8be6\u60c5"}
+                      </Link>
+                    ) : null}
+                    {runDetailHref ? (
+                      <Link className="link-button" to={runDetailHref}>
+                        {"\u67e5\u770b\u8fd0\u884c\u8be6\u60c5"}
+                      </Link>
+                    ) : null}
+                    {!runDetailHref && trainHref ? (
+                      <Link className="link-button" to={trainHref}>
+                        {"\u7ee7\u7eed\u8fd9\u4efd\u6570\u636e\u96c6\u8bad\u7ec3"}
+                      </Link>
+                    ) : null}
+                  </>
+                ) : null
+              }
+              job={jobQuery.data}
+            />
           ) : null}
         </div>
       ) : null}

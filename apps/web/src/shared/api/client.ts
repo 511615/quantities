@@ -11,11 +11,14 @@ import type {
   DatasetDeleteResponse,
   DatasetDependenciesResponse,
   DatasetDetailView,
+  DatasetFeatureSeriesResponse,
   DatasetFusionBuildResponse,
   DatasetFusionRequest,
   DatasetListResponse,
   DatasetPipelinePlanView,
   DatasetPipelineRequest,
+  DatasetRenameRequest,
+  DatasetRenameResponse,
   DatasetReadinessSummaryView,
   DatasetRequestOptionsView,
   ExperimentsResponse,
@@ -181,6 +184,12 @@ export const api = {
       method: "DELETE",
     });
   },
+  renameDataset(datasetId: string, body: DatasetRenameRequest) {
+    return request<DatasetRenameResponse>(`/api/datasets/${encodeURIComponent(datasetId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
   datasetReadiness(datasetId: string) {
     return request<DatasetReadinessSummaryView>(
       `/api/datasets/${encodeURIComponent(datasetId)}/readiness`,
@@ -211,6 +220,25 @@ export const api = {
     }
     return request<OhlcvBarsResponse>(
       `/api/datasets/${encodeURIComponent(datasetId)}/ohlcv?${query.toString()}`,
+    );
+  },
+  datasetFeatureSeries(
+    datasetId: string,
+    params: {
+      features?: string[];
+      max_points?: number;
+    } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (params.features?.length) {
+      query.set("features", params.features.join(","));
+    }
+    if (params.max_points) {
+      query.set("max_points", String(params.max_points));
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<DatasetFeatureSeriesResponse>(
+      `/api/datasets/${encodeURIComponent(datasetId)}/feature-series${suffix}`,
     );
   },
   compare(body: {

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+﻿import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -197,7 +197,7 @@ test("submits selected modalities with automatic official backtest and blocks fa
   });
 
   await waitFor(() =>
-    expect(screen.getByRole("link", { name: "打开官方回测" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "鎵撳紑瀹樻柟鍥炴祴" })).toHaveAttribute(
       "href",
       "/backtests/backtest-123",
     ),
@@ -235,3 +235,4 @@ test("allows switching back to late_score_blend explicitly", async () => {
     expect(payload.fusion_strategy).toBe("late_score_blend");
   });
 });
+

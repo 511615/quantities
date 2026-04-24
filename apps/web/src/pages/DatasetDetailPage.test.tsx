@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -59,6 +59,44 @@ const fetchMock = vi.fn(
     (url) =>
       url.includes("/api/datasets/smoke_dataset/ohlcv")
         ? jsonResponse(datasetOhlcvFixture)
+        : undefined,
+    (url) =>
+      url.includes("/api/datasets/smoke_dataset/feature-series")
+        ? jsonResponse({
+            dataset_id: "smoke_dataset",
+            total_rows: 120,
+            max_points: 900,
+            downsampled: false,
+            items: [
+              {
+                feature_name: "macro_dff_value",
+                label: "联邦基金利率 DFF",
+                data_domain: "macro",
+                points: [
+                  { timestamp: "2026-03-01T00:00:00Z", available_time: "2026-03-01T00:00:00Z", value: 4.33 },
+                  { timestamp: "2026-03-01T01:00:00Z", available_time: "2026-03-01T01:00:00Z", value: 4.34 },
+                ],
+              },
+              {
+                feature_name: "on_chain_ethereum_tvl",
+                label: "Ethereum TVL",
+                data_domain: "on_chain",
+                points: [
+                  { timestamp: "2026-03-01T00:00:00Z", available_time: "2026-03-01T00:00:00Z", value: 1000 },
+                  { timestamp: "2026-03-01T01:00:00Z", available_time: "2026-03-01T01:00:00Z", value: 1010 },
+                ],
+              },
+              {
+                feature_name: "derivatives_funding_rate",
+                label: "资金费率",
+                data_domain: "derivatives",
+                points: [
+                  { timestamp: "2026-03-01T00:00:00Z", available_time: "2026-03-01T00:00:00Z", value: 0.0001 },
+                  { timestamp: "2026-03-01T01:00:00Z", available_time: "2026-03-01T01:00:00Z", value: 0.0002 },
+                ],
+              },
+            ],
+          })
         : undefined,
     (url) =>
       url.endsWith("/api/launch/train/options")
@@ -181,6 +219,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
   fetchMock.mockClear();
 });
@@ -227,6 +266,52 @@ test("renders dataset detail with modality quality and official NLP gate details
   expect(screen.getByRole("link", { name: "获取该数据集" })).toHaveAttribute(
     "href",
     "/api/datasets/smoke_dataset/download",
+  );
+});
+
+test("renders OHLCV preview for fusion datasets with a market anchor", async () => {
+  datasetDetailResponse = {
+    ...datasetDetailFixture,
+    dataset: {
+      ...datasetDetailFixture.dataset,
+      asset_id: null,
+      data_domain: "market",
+      data_domains: ["market", "macro", "on_chain", "sentiment_events"],
+      dataset_type: "fusion_training_panel",
+      symbols_preview: ["BTCUSDT", "DFF", "ethereum", "btc_news"],
+      links: [
+        ...(datasetDetailFixture.dataset.links ?? []),
+        {
+          kind: "dataset_ohlcv",
+          label: "OHLCV",
+          href: "/datasets/smoke_dataset/ohlcv",
+          api_path: "/api/datasets/smoke_dataset/ohlcv",
+        },
+      ],
+    },
+    links: [
+      ...datasetDetailFixture.links,
+      {
+        kind: "dataset_ohlcv",
+        label: "OHLCV",
+        href: "/datasets/smoke_dataset/ohlcv",
+        api_path: "/api/datasets/smoke_dataset/ohlcv",
+      },
+    ],
+  };
+
+  renderPage();
+
+  await waitFor(() => expect(screen.getByTestId("dataset-candles-chart")).toBeInTheDocument());
+  expect(screen.getByText("多模态信号预览")).toBeInTheDocument();
+  expect(screen.getByText("宏观数据时序")).toBeInTheDocument();
+  expect(screen.getByText("链上数据时序")).toBeInTheDocument();
+  expect(screen.getByText("衍生品时序")).toBeInTheDocument();
+  expect(screen.queryByText("暂无市场预览")).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("/api/datasets/smoke_dataset/ohlcv")),
+    ).toBe(true),
   );
 });
 

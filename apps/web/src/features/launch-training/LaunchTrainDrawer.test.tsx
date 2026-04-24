@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+﻿import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { LaunchTrainDrawer } from "./LaunchTrainDrawer";
@@ -170,10 +170,10 @@ test("submits a modality-scoped train launch and shows the run deeplink button",
   fireEvent.click(screen.getByText("发起训练"));
   await waitFor(() => expect(screen.getByRole("option", { name: "Market" })).toBeInTheDocument());
 
-  fireEvent.change(screen.getByLabelText("特征模态"), {
+  fireEvent.change(screen.getByTestId("feature-modality-select"), {
     target: { value: "market" },
   });
-  fireEvent.click(screen.getByText("提交"));
+  fireEvent.click(screen.getByRole("button", { name: "提交" }));
 
   await waitFor(() =>
     expect(
@@ -232,8 +232,8 @@ test("renders dataset-aware launch with a modality selector and quality summary"
   const drawerQueries = within(panel as HTMLElement);
 
   await waitFor(() => expect(drawerQueries.getByRole("option", { name: "Market" })).toBeInTheDocument());
-  expect(drawerQueries.queryByText("数据集预置")).not.toBeInTheDocument();
-  expect(drawerQueries.getByLabelText("特征模态")).toBeInTheDocument();
+  expect(drawerQueries.queryByText(/数据集预置|dataset preset/i)).not.toBeInTheDocument();
+  expect(drawerQueries.getByTestId("feature-modality-select")).toBeInTheDocument();
   expect(drawerQueries.getByText("当前训练数据集")).toBeInTheDocument();
   expect(drawerQueries.getByText("数据集模态质量")).toBeInTheDocument();
   expect(drawerQueries.getByText("Market")).toBeInTheDocument();
@@ -253,13 +253,13 @@ test("blocks dataset-aware train launch when selected modality quality is not re
   fireEvent.click(screen.getByText("Train from dataset"));
   await waitFor(() => expect(screen.getByRole("option", { name: "Macro" })).toBeInTheDocument());
 
-  fireEvent.change(screen.getByLabelText("特征模态"), {
+  fireEvent.change(screen.getByTestId("feature-modality-select"), {
     target: { value: "macro" },
   });
-  fireEvent.click(screen.getByText("提交"));
+  fireEvent.click(screen.getByRole("button", { name: "提交" }));
 
   await waitFor(() =>
-    expect(screen.getAllByText("macro freshness lag is too high").length).toBeGreaterThan(0),
+    expect(screen.getAllByText(/macro freshness lag is too high/i).length).toBeGreaterThan(0),
   );
   expect(
     fetchMock.mock.calls.some(([input, init]) => {
@@ -287,10 +287,10 @@ test("blocks dataset-aware train launch when dataset readiness is not ready", as
   fireEvent.click(screen.getByText("Train from blocked dataset"));
   await waitFor(() => expect(screen.getByRole("option", { name: "Market" })).toBeInTheDocument());
 
-  fireEvent.change(screen.getByLabelText("特征模态"), {
+  fireEvent.change(screen.getByTestId("feature-modality-select"), {
     target: { value: "market" },
   });
-  fireEvent.click(screen.getByText("提交"));
+  fireEvent.click(screen.getByRole("button", { name: "提交" }));
 
   await waitFor(() =>
     expect(screen.getByText("当前数据集还不能训练，因为 readiness 检查尚未通过。")).toBeInTheDocument(),
@@ -307,3 +307,4 @@ test("blocks dataset-aware train launch when dataset readiness is not ready", as
     }),
   ).toBe(false);
 });
+

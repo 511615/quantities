@@ -416,6 +416,29 @@ export function RunDetailPage() {
                   </div>
                 ),
               },
+              {
+                label: translateText("要求模态"),
+                value:
+                  detail.composition?.required_modalities?.length
+                    ? detail.composition.required_modalities
+                        .map((modality) => formatModalityLabel(modality))
+                        .join(", ")
+                    : "--",
+              },
+              {
+                label: translateText("要求特征数"),
+                value:
+                  detail.composition?.required_feature_names?.length
+                    ? String(detail.composition.required_feature_names.length)
+                    : "--",
+              },
+              {
+                label: translateText("对齐预测样本数"),
+                value:
+                  detail.composition?.aligned_prediction_sample_count != null
+                    ? String(detail.composition.aligned_prediction_sample_count)
+                    : "--",
+              },
             ]}
           />
         ) : (

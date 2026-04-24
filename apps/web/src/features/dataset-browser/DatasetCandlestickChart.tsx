@@ -1,7 +1,6 @@
 import type { EChartsOption } from "echarts";
 
 import { useChartTheme } from "../../shared/lib/chartTheme";
-import { translateText } from "../../shared/lib/i18n";
 import { WorkbenchChart } from "../../shared/ui/WorkbenchChart";
 
 export type CandlePoint = {
@@ -20,6 +19,11 @@ type DatasetCandlestickChartProps = {
   showVolume: boolean;
 };
 
+const PRICE_LABEL = "价格";
+const MA5_LABEL = "5 bar 均线";
+const MA10_LABEL = "10 bar 均线";
+const VOLUME_LABEL = "成交量";
+
 export function DatasetCandlestickChart({
   candles,
   showMA5,
@@ -31,18 +35,23 @@ export function DatasetCandlestickChart({
   const values = candles.map((item) => [item.open, item.close, item.low, item.high]);
   const volumes = candles.map((item) => item.volume);
   const closes = candles.map((item) => item.close);
+  const ma5 = showMA5 ? movingAverage(closes, 5) : [];
+  const ma10 = showMA10 ? movingAverage(closes, 10) : [];
 
   const option: EChartsOption = {
-    animationDuration: 300,
-    tooltip: { trigger: "axis" },
+    animationDuration: 250,
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: unknown) => formatTooltip(params, candles, ma5, ma10),
+    },
     legend: {
       top: 0,
       textStyle: { color: chartTheme.legendText },
       data: [
-        translateText("价格"),
-        ...(showMA5 ? [translateText("5日均线")] : []),
-        ...(showMA10 ? [translateText("10日均线")] : []),
-        ...(showVolume ? [translateText("成交量")] : []),
+        PRICE_LABEL,
+        ...(showMA5 ? [MA5_LABEL] : []),
+        ...(showMA10 ? [MA10_LABEL] : []),
+        ...(showVolume ? [VOLUME_LABEL] : []),
       ],
     },
     grid: [
@@ -51,7 +60,7 @@ export function DatasetCandlestickChart({
     ],
     xAxis: [
       {
-        type: "category" as const,
+        type: "category",
         data: categories,
         boundaryGap: true,
         axisLine: { lineStyle: { color: chartTheme.axisLine } },
@@ -93,44 +102,50 @@ export function DatasetCandlestickChart({
     ],
     series: [
       {
-        name: translateText("价格"),
-        type: "candlestick" as const,
+        name: PRICE_LABEL,
+        type: "candlestick",
         data: values,
+        z: 1,
         itemStyle: {
           color: chartTheme.accent,
           color0: chartTheme.danger,
           borderColor: chartTheme.accent,
           borderColor0: chartTheme.danger,
+          opacity: 0.42,
         },
       },
       ...(showMA5
         ? [
             {
-              name: translateText("5日均线"),
+              name: MA5_LABEL,
               type: "line" as const,
-              data: movingAverage(closes, 5),
-              smooth: true,
+              data: ma5,
+              smooth: false,
+              connectNulls: false,
               showSymbol: false,
-              lineStyle: { width: 1.6, color: chartTheme.accentAlt },
+              z: 10,
+              lineStyle: { width: 3.2, color: chartTheme.accentAlt, opacity: 1, type: "solid" as const },
             },
           ]
         : []),
       ...(showMA10
         ? [
             {
-              name: translateText("10日均线"),
+              name: MA10_LABEL,
               type: "line" as const,
-              data: movingAverage(closes, 10),
-              smooth: true,
+              data: ma10,
+              smooth: false,
+              connectNulls: false,
               showSymbol: false,
-              lineStyle: { width: 1.6, color: chartTheme.warning },
+              z: 11,
+              lineStyle: { width: 3.2, color: chartTheme.warning, opacity: 1, type: "dashed" as const },
             },
           ]
         : []),
       ...(showVolume
         ? [
             {
-              name: translateText("成交量"),
+              name: VOLUME_LABEL,
               type: "bar" as const,
               xAxisIndex: 1,
               yAxisIndex: 1,
@@ -142,16 +157,49 @@ export function DatasetCandlestickChart({
     ],
   };
 
-  return <WorkbenchChart loadingLabel={translateText("加载 K 线中...")} option={option} style={{ height: 420 }} />;
+  return <WorkbenchChart loadingLabel="加载 K 线中..." option={option} style={{ height: 420 }} />;
 }
 
-function movingAverage(values: number[], windowSize: number): Array<number | "-"> {
+function movingAverage(values: number[], windowSize: number): Array<number | null> {
   return values.map((_, index) => {
     if (index < windowSize - 1) {
-      return "-";
+      return null;
     }
     const slice = values.slice(index - windowSize + 1, index + 1);
     const mean = slice.reduce((sum, item) => sum + item, 0) / slice.length;
     return Number(mean.toFixed(2));
   });
+}
+
+function formatTooltip(
+  params: unknown,
+  candles: CandlePoint[],
+  ma5: Array<number | null>,
+  ma10: Array<number | null>,
+) {
+  const items = Array.isArray(params) ? params : [];
+  const dataIndex = typeof items[0]?.dataIndex === "number" ? items[0].dataIndex : -1;
+  const candle = dataIndex >= 0 ? candles[dataIndex] : null;
+  if (!candle) {
+    return "";
+  }
+  const rows = [
+    candle.time,
+    `${PRICE_LABEL} open ${formatValue(candle.open)} close ${formatValue(candle.close)} lowest ${formatValue(candle.low)} highest ${formatValue(candle.high)}`,
+    `${MA5_LABEL} ${formatNullableValue(ma5[dataIndex] ?? null)}`,
+    `${MA10_LABEL} ${formatNullableValue(ma10[dataIndex] ?? null)}`,
+    `${VOLUME_LABEL} ${formatValue(candle.volume)}`,
+  ];
+  return rows.join("<br/>");
+}
+
+function formatValue(value: number) {
+  return value.toLocaleString("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatNullableValue(value: number | null) {
+  return value === null ? "--" : formatValue(value);
 }
